@@ -1,0 +1,52 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-3);
+}
+
+.title {
+  font-size: var(--gs-font-size-body);
+  font-weight: var(--gs-font-weight-semibold);
+}
+
+.addNote {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-2);
+  align-items: flex-end;
+}
+
+.addNote > :first-child {
+  width: 100%;
+}
+
+.empty {
+  color: var(--gs-muted);
+  font-size: var(--gs-font-size-body);
+  font-style: italic;
+}
+
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-3);
+}
+
+.note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-1);
+  padding: var(--gs-space-3);
+  border: 1px solid var(--gs-border);
+  border-radius: var(--gs-control-radius);
+}
+
+.noteContent {
+  font-size: var(--gs-font-size-body);
+  white-space: pre-wrap;
+}
+
+.noteMeta {
+  font-size: var(--gs-font-size-body);
+  color: var(--gs-muted);
+}

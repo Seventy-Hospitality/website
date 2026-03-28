@@ -1,0 +1,26 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-1);
+}
+
+.label {
+  font-size: var(--gs-font-size-body);
+  font-weight: var(--gs-font-weight-medium);
+  color: var(--gs-muted);
+}
+
+.control {
+  display: flex;
+  flex-direction: column;
+}
+
+.helper {
+  font-size: var(--gs-font-size-body);
+  color: var(--gs-muted);
+}
+
+.error {
+  font-size: var(--gs-font-size-body);
+  color: var(--gs-danger);
+}

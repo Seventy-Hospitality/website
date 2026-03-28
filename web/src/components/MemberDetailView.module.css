@@ -1,0 +1,65 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-4);
+}
+
+.headerGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-2);
+}
+
+.back {
+  background: none;
+  border: none;
+  color: var(--gs-link);
+  font-size: var(--gs-font-size-body);
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.back:hover {
+  text-decoration: underline;
+}
+
+.title {
+  font-size: var(--gs-font-size-title);
+  font-weight: var(--gs-font-weight-semibold);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gs-space-4);
+}
+
+.membershipCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-3);
+}
+
+.actions {
+  display: flex;
+  gap: var(--gs-space-2);
+}
+
+.noMembership {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-3);
+  padding: var(--gs-space-4);
+}
+
+.muted {
+  color: var(--gs-muted);
+  font-size: var(--gs-font-size-body);
+}
+
+.planButtons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-2);
+}

@@ -1,0 +1,86 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--gs-bg);
+  color: var(--gs-text);
+}
+
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--gs-space-2) var(--gs-space-4);
+  border-bottom: 1px solid var(--gs-border);
+  background: var(--gs-bg);
+  flex-shrink: 0;
+  z-index: var(--gs-z-header);
+}
+
+.navLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--gs-space-2);
+}
+
+.logoButton {
+  appearance: none;
+  border: none;
+  padding: 0;
+  width: var(--gs-control-height);
+  height: var(--gs-control-height);
+  background: var(--gs-surface);
+  border-radius: var(--gs-control-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.logoButton:hover {
+  background: var(--gs-hover-bg);
+}
+
+.logoButton:focus-visible {
+  outline: 2px solid var(--gs-focus-ring);
+  outline-offset: 2px;
+}
+
+.logoImage {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: var(--gs-space-1);
+}
+
+.navItem {
+  font-size: var(--gs-font-size-body);
+  color: var(--gs-muted);
+  text-decoration: none;
+  padding: var(--gs-space-1) var(--gs-space-2);
+  border-radius: var(--gs-control-radius);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.navItem:hover {
+  color: var(--gs-text);
+  background: var(--gs-hover-bg);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}

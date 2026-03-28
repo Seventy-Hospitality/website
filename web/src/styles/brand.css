@@ -1,0 +1,34 @@
+/*
+ * Seventy brand tokens — overrides octahedron defaults.
+ */
+
+:root {
+  /* Brand accent (forest green) */
+  --octa-brand: #4a7c59;
+  --octa-brand-hover: #5a9468;
+  --octa-brand-dim: rgba(74, 124, 89, 0.08);
+  --octa-brand-glow: rgba(74, 124, 89, 0.2);
+
+  /* Font stacks */
+  --octa-font-mono:
+    'Source Code Pro', 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+  --octa-font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* Dark backgrounds */
+  --octa-bg-deep: #060810;
+  --octa-bg: #0a0d14;
+  --octa-bg-elevated: #111520;
+  --octa-bg-surface: #191e2c;
+}
+
+/* Override primary color to brand green */
+body {
+  --gs-info: #4a7c59;
+  --gs-info-bg: color-mix(in srgb, #4a7c59 8%, white);
+}
+
+body.dark {
+  --gs-info: #5a9468;
+  --gs-info-bg: color-mix(in srgb, #5a9468 14%, transparent);
+}

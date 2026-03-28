@@ -1,0 +1,181 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Member {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  firstName String
+  lastName  String
+  phone     String?
+
+  stripeCustomerId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  membership Membership?
+  notes      AdminNote[]
+  bookings   Booking[]
+
+  @@map("members")
+}
+
+model MembershipPlan {
+  id              String  @id @default(cuid())
+  name            String
+  stripePriceId   String  @unique
+  stripeProductId String
+  amountCents     Int
+  interval        String // "month" | "year"
+  active          Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+
+  @@map("membership_plans")
+}
+
+model Membership {
+  id                   String   @id @default(cuid())
+  memberId             String   @unique
+  planId               String
+  stripeSubscriptionId String   @unique
+  status               String // "active" | "past_due" | "canceled" | "unpaid" | "incomplete"
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  member Member         @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  plan   MembershipPlan @relation(fields: [planId], references: [id])
+
+  @@map("memberships")
+}
+
+model AdminNote {
+  id       String @id @default(cuid())
+  memberId String
+  authorId String // Clerk user ID
+  content  String
+
+  createdAt DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@map("admin_notes")
+}
+
+model Event {
+  id         String   @id @default(cuid())
+  seq        Int      @default(autoincrement())
+  streamType String
+  streamId   String
+  eventType  String
+  data       Json
+  occurredAt DateTime
+  recordedAt DateTime @default(now())
+  source     String   @default("app")
+  actorId    String?
+
+  @@unique([seq])
+  @@index([streamType, streamId, seq])
+  @@index([streamType, seq])
+  @@map("events")
+}
+
+model StreamCheckpoint {
+  id           String @id @default(cuid())
+  streamType   String
+  eventSeqHigh Int
+  state        Json
+
+  @@unique([streamType])
+  @@map("stream_checkpoints")
+}
+
+model Session {
+  id           String   @id
+  userId       String
+  email        String
+  expiresAt    DateTime
+  lastActiveAt DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([email])
+  @@index([userId])
+  @@map("sessions")
+}
+
+model MagicLinkToken {
+  id        String    @id @default(cuid())
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([email])
+  @@map("magic_link_tokens")
+}
+
+// ── Bookings BC ──
+
+model Court {
+  id                          String   @id @default(cuid())
+  name                        String
+  slotDurationMinutes         Int      @default(60)
+  operatingHoursStart         String   @default("07:00")
+  operatingHoursEnd           String   @default("22:00")
+  maxAdvanceDays              Int      @default(7)
+  maxBookingsPerMemberPerDay  Int      @default(2)
+  cancellationDeadlineMinutes Int      @default(60)
+  active                      Boolean  @default(true)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  @@map("courts")
+}
+
+model Shower {
+  id                          String   @id @default(cuid())
+  name                        String
+  slotDurationMinutes         Int      @default(30)
+  operatingHoursStart         String   @default("07:00")
+  operatingHoursEnd           String   @default("22:00")
+  maxAdvanceDays              Int      @default(3)
+  maxBookingsPerMemberPerDay  Int      @default(1)
+  cancellationDeadlineMinutes Int      @default(30)
+  active                      Boolean  @default(true)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  @@map("showers")
+}
+
+model Booking {
+  id           String   @id @default(cuid())
+  facilityType String
+  facilityId   String
+  memberId     String
+  date         DateTime @db.Date
+  startTime    String
+  endTime      String
+  status       String   @default("confirmed")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@index([facilityType, facilityId, date, status])
+  @@index([memberId, date])
+  @@map("bookings")
+}

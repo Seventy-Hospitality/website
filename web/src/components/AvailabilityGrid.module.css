@@ -1,0 +1,84 @@
+.grid {
+  display: grid;
+  /* columns set inline: [label] 88px [slots] repeat(N, 1fr) */
+}
+
+/* Time ruler — spans the grid, same columns as slot rows */
+.rulerLabel {
+  /* empty cell above facility names */
+}
+
+.rulerHour {
+  font-size: var(--gs-font-size-body);
+  font-weight: var(--gs-font-weight-medium);
+  color: var(--gs-muted);
+  padding-bottom: var(--gs-space-2);
+  padding-left: var(--gs-space-1);
+  border-left: 1px solid var(--gs-border);
+  user-select: none;
+}
+
+/* Facility name — first column of each row */
+.facilityName {
+  display: flex;
+  align-items: center;
+  font-size: var(--gs-font-size-body);
+  font-weight: var(--gs-font-weight-medium);
+  color: var(--gs-text);
+  padding-right: var(--gs-space-3);
+  border-top: 1px solid var(--gs-border);
+}
+
+/* Slot cells */
+.slotAvailable {
+  border: none;
+  border-top: 1px solid var(--gs-border);
+  border-left: 1px solid var(--gs-border);
+  cursor: pointer;
+  background: transparent;
+  padding: 0;
+  min-height: 36px;
+  transition: background var(--gs-duration-fast) var(--gs-ease-default);
+}
+
+.slotAvailable:hover {
+  background: var(--gs-accent-bg);
+}
+
+.slotBooked {
+  border: none;
+  border-top: 1px solid var(--gs-border);
+  border-left: 1px solid var(--gs-border);
+  cursor: pointer;
+  background: var(--gs-surface);
+  min-height: 36px;
+  padding: 0;
+  transition: background var(--gs-duration-fast) var(--gs-ease-default);
+}
+
+.slotBooked:hover {
+  background: var(--gs-hover-bg);
+}
+
+/* Bottom border on the last facility row */
+.lastRow {
+  border-bottom: 1px solid var(--gs-border);
+}
+
+/* Loading */
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gs-space-3);
+}
+
+.loadingRow {
+  display: flex;
+  align-items: center;
+  gap: var(--gs-space-3);
+}
+
+.loadingLabel {
+  width: 88px;
+  flex-shrink: 0;
+}

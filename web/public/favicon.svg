@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 90 108" fill="none">
+  <defs>
+    <clipPath id="seventy-clip">
+      <rect x="0" y="0" width="90" height="105"/>
+    </clipPath>
+  </defs>
+  <circle cx="56" cy="36" r="30" stroke="rgb(61,83,65)" stroke-width="9" fill="none"/>
+  <path d="M 8,36 L 56,36 L 20,105" stroke="rgb(61,83,65)" stroke-width="9" stroke-linejoin="miter" stroke-linecap="square" fill="none" clip-path="url(#seventy-clip)"/>
+</svg>
