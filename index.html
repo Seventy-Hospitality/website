@@ -28,11 +28,8 @@
     }
 
     .logo {
-      font-size: 7rem;
-      font-weight: 600;
-      line-height: 1;
-      letter-spacing: -0.04em;
-      color: #1E1E1E;
+      width: 120px;
+      height: auto;
     }
 
     .tagline {
@@ -65,7 +62,15 @@
 </head>
 <body>
   <div class="page">
-    <div class="logo">70</div>
+    <svg class="logo" viewBox="0 0 90 108" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="seventy-clip">
+          <rect x="0" y="0" width="90" height="105"/>
+        </clipPath>
+      </defs>
+      <circle cx="56" cy="36" r="30" stroke="#1E1E1E" stroke-width="9" fill="none"/>
+      <path d="M 8,36 L 56,36 L 20,105" stroke="#1E1E1E" stroke-width="9" stroke-linejoin="miter" stroke-linecap="square" fill="none" clip-path="url(#seventy-clip)"/>
+    </svg>
     <div class="tagline">Coming Soon</div>
     <div class="email"><a href="mailto:contact@seventyhospitality.com">contact@seventyhospitality.com</a></div>
   </div>
