@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import {
   Card,
   Button,
+  OptionCard,
   Tag,
   Text,
 } from 'octahedron';
 import { api } from '../lib/api';
+import { formatCurrency } from '../lib/format';
 import { MembershipStatus } from './MembershipStatus';
 import { NotesList } from './NotesList';
 import styles from './MemberDetailView.module.css';
@@ -39,10 +41,6 @@ interface Member {
   }>;
 }
 
-function formatCurrency(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
 export function MemberDetailView({ member, plans, onRefresh }: { member: Member; plans: Plan[]; onRefresh?: () => void }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState('');
@@ -71,7 +69,7 @@ export function MemberDetailView({ member, plans, onRefresh }: { member: Member;
     : [];
 
   async function startCheckout(planId: string) {
-    setLoading('checkout');
+    setLoading(planId);
     try {
       const data = await api.createCheckoutSession(member.id, planId);
       if (data?.url) {
@@ -89,16 +87,6 @@ export function MemberDetailView({ member, plans, onRefresh }: { member: Member;
       if (data?.url) {
         window.open(data.url, '_blank');
       }
-    } finally {
-      setLoading('');
-    }
-  }
-
-  async function syncFromStripe() {
-    setLoading('sync');
-    try {
-      await api.syncMember(member.id);
-      onRefresh?.();
     } finally {
       setLoading('');
     }
@@ -148,13 +136,6 @@ export function MemberDetailView({ member, plans, onRefresh }: { member: Member;
                 >
                   Manage Billing
                 </Button>
-                <Button
-                  variant="ghost"
-                  onClick={syncFromStripe}
-                  loading={loading === 'sync'}
-                >
-                  Sync from Stripe
-                </Button>
               </div>
             </div>
           ) : (
@@ -162,14 +143,13 @@ export function MemberDetailView({ member, plans, onRefresh }: { member: Member;
               <p className={styles.muted}>No active membership</p>
               <div className={styles.planButtons}>
                 {plans.map((plan) => (
-                  <Button
+                  <OptionCard
                     key={plan.id}
-                    color="primary"
+                    variant="primary"
+                    label={plan.name}
+                    description={`${formatCurrency(plan.amountCents)}/${plan.interval}`}
                     onClick={() => startCheckout(plan.id)}
-                    loading={loading === 'checkout'}
-                  >
-                    Start {plan.name} — {formatCurrency(plan.amountCents)}/{plan.interval}
-                  </Button>
+                  />
                 ))}
               </div>
             </div>

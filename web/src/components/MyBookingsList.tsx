@@ -58,7 +58,7 @@ export function MyBookingsList({ onBookingCancelled }: Props) {
             </Tag>
             <div className={styles.itemInfo}>
               <Text variant="label">
-                {new Date(b.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                {new Date(b.date).toLocaleDateString('en-GB', { weekday: 'short', month: 'short', day: 'numeric' })}
               </Text>
               <Text variant="caption" intent="muted">{b.startTime}–{b.endTime}</Text>
             </div>

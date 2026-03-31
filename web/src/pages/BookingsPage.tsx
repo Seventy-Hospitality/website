@@ -14,7 +14,7 @@ function formatDate(d: Date): string {
 
 function formatDisplayDate(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00');
-  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-GB', { weekday: 'long', month: 'short', day: 'numeric' });
 }
 
 type Tab = 'courts' | 'showers' | 'bookings';

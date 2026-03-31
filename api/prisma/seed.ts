@@ -1,11 +1,16 @@
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
+import Stripe from 'stripe';
 import { createId } from '@paralleldrive/cuid2';
 import dotenv from 'dotenv';
 import path from 'path';
 
 dotenv.config({ path: path.resolve(import.meta.dirname, '../.env') });
+
+const stripeKey = process.env.STRIPE_SECRET_KEY;
+const useStripe = stripeKey && !stripeKey.includes('REPLACE_ME') && !stripeKey.includes('placeholder');
+const stripe = useStripe ? new Stripe(stripeKey) : null;
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
@@ -36,7 +41,7 @@ async function main() {
       name: 'Annual Membership',
       stripePriceId: process.env.SEED_ANNUAL_PRICE_ID ?? 'price_annual_placeholder',
       stripeProductId: process.env.SEED_ANNUAL_PRODUCT_ID ?? 'prod_annual_placeholder',
-      amountCents: 50000,
+      amountCents: 48000,
       interval: 'year',
       active: true,
     },
@@ -60,15 +65,31 @@ async function main() {
 
   const created = [];
   for (const m of members) {
+    let stripeCustomerId: string | null = null;
+
+    if (stripe) {
+      const existing = await stripe.customers.list({ email: m.email, limit: 1 });
+      if (existing.data.length > 0) {
+        stripeCustomerId = existing.data[0].id;
+      } else {
+        const customer = await stripe.customers.create({
+          email: m.email,
+          name: `${m.firstName} ${m.lastName}`,
+          metadata: { source: 'seventy-seed' },
+        });
+        stripeCustomerId = customer.id;
+      }
+    }
+
     const member = await prisma.member.upsert({
       where: { email: m.email },
-      update: {},
-      create: m,
+      update: { stripeCustomerId: stripeCustomerId ?? undefined },
+      create: { ...m, stripeCustomerId },
     });
     created.push(member);
   }
 
-  console.log(`  Members: ${created.length}`);
+  console.log(`  Members: ${created.length}${stripe ? ' (with Stripe customers)' : ''}`);
 
   // ── Memberships (local projection — no Stripe in seed) ──
   const now = new Date();
@@ -87,13 +108,35 @@ async function main() {
   ];
 
   for (const s of subs) {
+    let stripeSubId = `sub_dev_${createId()}`;
+
+    if (stripe && s.member.stripeCustomerId && s.status === 'active') {
+      // Check for existing subscription before creating
+      const existingSubs = await stripe.subscriptions.list({
+        customer: s.member.stripeCustomerId,
+        limit: 1,
+      });
+
+      if (existingSubs.data.length > 0) {
+        stripeSubId = existingSubs.data[0].id;
+      } else {
+        const sub = await stripe.subscriptions.create({
+          customer: s.member.stripeCustomerId,
+          items: [{ price: s.plan.stripePriceId }],
+          payment_behavior: 'default_incomplete',
+          metadata: { memberId: s.member.id, source: 'seventy-seed' },
+        });
+        stripeSubId = sub.id;
+      }
+    }
+
     await prisma.membership.upsert({
       where: { memberId: s.member.id },
       update: {},
       create: {
         memberId: s.member.id,
         planId: s.plan.id,
-        stripeSubscriptionId: `sub_dev_${createId()}`,
+        stripeSubscriptionId: stripeSubId,
         status: s.status,
         currentPeriodEnd: s.periodEnd,
         cancelAtPeriodEnd: s.cancel,
@@ -101,7 +144,7 @@ async function main() {
     });
   }
 
-  console.log(`  Memberships: 3 active, 1 annual, 1 past_due, 1 canceling, 1 canceled, 3 none`);
+  console.log(`  Memberships: 3 active, 1 annual, 1 past_due, 1 canceling, 1 canceled, 3 none${stripe ? ' (active ones synced to Stripe)' : ''}`);
 
   // ── Admin Notes ──
   const notes = [

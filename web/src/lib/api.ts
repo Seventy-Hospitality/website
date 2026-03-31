@@ -65,9 +65,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ memberId }),
     }),
-  syncMember: (memberId: string) =>
-    request<any>(`/api/stripe/sync-member/${memberId}`, { method: 'POST' }),
-
   // Plans
   listPlans: () => request<any[]>('/api/plans'),
 

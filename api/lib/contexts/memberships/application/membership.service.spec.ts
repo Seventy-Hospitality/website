@@ -167,4 +167,183 @@ describe('MembershipService', () => {
       expect(membershipRepo.updateManyBySubscriptionId).toHaveBeenCalledWith('sub_1', { status: 'past_due' });
     });
   });
+
+  describe('syncFromStripe', () => {
+    it('returns null when no Stripe customer', async () => {
+      const service = new MembershipService(mockMembershipRepo(), mockPlanRepo(), mockStripeGateway());
+      const result = await service.syncFromStripe('mbr_1', null);
+
+      expect(result).toBeNull();
+    });
+
+    it('cancels existing membership when Stripe has no active subscription', async () => {
+      const membershipRepo = mockMembershipRepo();
+      const stripe = mockStripeGateway();
+
+      (stripe.getActiveSubscription as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      (membershipRepo.getByMemberId as ReturnType<typeof vi.fn>).mockResolvedValue({
+        stripeSubscriptionId: 'sub_old',
+        status: 'active',
+      });
+
+      const service = new MembershipService(membershipRepo, mockPlanRepo(), stripe);
+      const result = await service.syncFromStripe('mbr_1', 'cus_123');
+
+      expect(membershipRepo.updateBySubscriptionId).toHaveBeenCalledWith('sub_old', { status: 'canceled' });
+      expect(result).toBeNull();
+    });
+
+    it('returns null when Stripe has no subscription and no local membership exists', async () => {
+      const membershipRepo = mockMembershipRepo();
+      const stripe = mockStripeGateway();
+
+      (stripe.getActiveSubscription as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      (membershipRepo.getByMemberId as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+      const service = new MembershipService(membershipRepo, mockPlanRepo(), stripe);
+      const result = await service.syncFromStripe('mbr_1', 'cus_123');
+
+      expect(membershipRepo.updateBySubscriptionId).not.toHaveBeenCalled();
+      expect(result).toBeNull();
+    });
+
+    it('upserts membership when Stripe has active subscription with known plan', async () => {
+      const membershipRepo = mockMembershipRepo();
+      const planRepo = mockPlanRepo();
+      const stripe = mockStripeGateway();
+      const periodEnd = new Date('2025-12-31');
+
+      (stripe.getActiveSubscription as ReturnType<typeof vi.fn>).mockResolvedValue({
+        subscriptionId: 'sub_1',
+        priceId: 'price_123',
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: false,
+      });
+      (planRepo.getByStripePriceId as ReturnType<typeof vi.fn>).mockResolvedValue(PLAN);
+      (membershipRepo.upsertBySubscriptionId as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'mem_1' });
+
+      const service = new MembershipService(membershipRepo, planRepo, stripe);
+      const result = await service.syncFromStripe('mbr_1', 'cus_123');
+
+      expect(membershipRepo.upsertBySubscriptionId).toHaveBeenCalledWith('sub_1', {
+        memberId: 'mbr_1',
+        planId: 'plan_1',
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: false,
+      });
+      expect(result).toEqual({ id: 'mem_1' });
+    });
+
+    it('returns null when Stripe subscription has unknown price', async () => {
+      const membershipRepo = mockMembershipRepo();
+      const planRepo = mockPlanRepo();
+      const stripe = mockStripeGateway();
+
+      (stripe.getActiveSubscription as ReturnType<typeof vi.fn>).mockResolvedValue({
+        subscriptionId: 'sub_1',
+        priceId: 'price_unknown',
+        status: 'active',
+        currentPeriodEnd: new Date(),
+        cancelAtPeriodEnd: false,
+      });
+      (planRepo.getByStripePriceId as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+      const service = new MembershipService(membershipRepo, planRepo, stripe);
+      const result = await service.syncFromStripe('mbr_1', 'cus_123');
+
+      expect(membershipRepo.upsertBySubscriptionId).not.toHaveBeenCalled();
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('handleSubscriptionUpdated', () => {
+    it('updates status and period fields', async () => {
+      const membershipRepo = mockMembershipRepo();
+      const periodEnd = new Date('2025-12-31');
+
+      const service = new MembershipService(membershipRepo, mockPlanRepo(), mockStripeGateway());
+      await service.handleSubscriptionUpdated({
+        subscriptionId: 'sub_1',
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: true,
+        priceId: null,
+      });
+
+      expect(membershipRepo.updateBySubscriptionId).toHaveBeenCalledWith('sub_1', {
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: true,
+      });
+    });
+
+    it('resolves plan and includes planId when priceId is present', async () => {
+      const membershipRepo = mockMembershipRepo();
+      const planRepo = mockPlanRepo();
+      const periodEnd = new Date('2025-12-31');
+
+      (planRepo.getByStripePriceId as ReturnType<typeof vi.fn>).mockResolvedValue(PLAN);
+
+      const service = new MembershipService(membershipRepo, planRepo, mockStripeGateway());
+      await service.handleSubscriptionUpdated({
+        subscriptionId: 'sub_1',
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: false,
+        priceId: 'price_123',
+      });
+
+      expect(planRepo.getByStripePriceId).toHaveBeenCalledWith('price_123');
+      expect(membershipRepo.updateBySubscriptionId).toHaveBeenCalledWith('sub_1', {
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: false,
+        planId: 'plan_1',
+      });
+    });
+
+    it('omits planId when priceId resolves to unknown plan', async () => {
+      const membershipRepo = mockMembershipRepo();
+      const planRepo = mockPlanRepo();
+      const periodEnd = new Date('2025-12-31');
+
+      (planRepo.getByStripePriceId as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+
+      const service = new MembershipService(membershipRepo, planRepo, mockStripeGateway());
+      await service.handleSubscriptionUpdated({
+        subscriptionId: 'sub_1',
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: false,
+        priceId: 'price_unknown',
+      });
+
+      expect(membershipRepo.updateBySubscriptionId).toHaveBeenCalledWith('sub_1', {
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: false,
+      });
+    });
+  });
+
+  describe('handleInvoicePaid', () => {
+    it('updates status and period end for the subscription', async () => {
+      const membershipRepo = mockMembershipRepo();
+      const periodEnd = new Date('2026-01-31');
+
+      const service = new MembershipService(membershipRepo, mockPlanRepo(), mockStripeGateway());
+      await service.handleInvoicePaid({
+        subscriptionId: 'sub_1',
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+      });
+
+      expect(membershipRepo.updateManyBySubscriptionId).toHaveBeenCalledWith('sub_1', {
+        status: 'active',
+        currentPeriodEnd: periodEnd,
+      });
+    });
+  });
 });

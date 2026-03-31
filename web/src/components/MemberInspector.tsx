@@ -1,10 +1,12 @@
 import { Fragment, useEffect, useState } from 'react';
 import {
   Button,
+  OptionCard,
   Tag,
   Text,
 } from 'octahedron';
 import { api } from '../lib/api';
+import { formatCurrency } from '../lib/format';
 import { MembershipStatus } from './MembershipStatus';
 import { NotesList } from './NotesList';
 
@@ -34,10 +36,6 @@ interface Member {
     authorId: string;
     createdAt: string;
   }>;
-}
-
-function formatCurrency(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
 }
 
 interface Props {
@@ -84,7 +82,7 @@ export function MemberInspector({ memberId }: Props) {
     : [];
 
   async function startCheckout(planId: string) {
-    setLoading('checkout');
+    setLoading(planId);
     try {
       const data = await api.createCheckoutSession(member!.id, planId);
       if (data?.url) window.open(data.url, '_blank');
@@ -98,16 +96,6 @@ export function MemberInspector({ memberId }: Props) {
     try {
       const data = await api.createPortalSession(member!.id);
       if (data?.url) window.open(data.url, '_blank');
-    } finally {
-      setLoading('');
-    }
-  }
-
-  async function syncFromStripe() {
-    setLoading('sync');
-    try {
-      await api.syncMember(member!.id);
-      reload();
     } finally {
       setLoading('');
     }
@@ -144,23 +132,19 @@ export function MemberInspector({ memberId }: Props) {
             <Button variant="soft" onClick={openPortal} loading={loading === 'portal'}>
               Manage Billing
             </Button>
-            <Button variant="ghost" onClick={syncFromStripe} loading={loading === 'sync'}>
-              Sync
-            </Button>
           </div>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--octa-space-3)' }}>
           <Text intent="muted">No active membership</Text>
           {plans.map((plan) => (
-            <Button
+            <OptionCard
               key={plan.id}
-              color="primary"
+              variant="primary"
+              label={plan.name}
+              description={`${formatCurrency(plan.amountCents)}/${plan.interval}`}
               onClick={() => startCheckout(plan.id)}
-              loading={loading === 'checkout'}
-            >
-              Start {plan.name} — {formatCurrency(plan.amountCents)}/{plan.interval}
-            </Button>
+            />
           ))}
         </div>
       )}

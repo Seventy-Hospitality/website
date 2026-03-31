@@ -44,16 +44,4 @@ export async function stripeRoutes(app: FastifyInstance) {
       throw e;
     }
   });
-
-  // Sync member from Stripe
-  app.post<{ Params: { id: string } }>('/sync-member/:id', async (req, reply) => {
-    try {
-      const member = await memberService.getById(req.params.id);
-      const membership = await membershipService.syncFromStripe(member.id, member.stripeCustomerId);
-      return success(reply, membership);
-    } catch (e) {
-      if (e instanceof MemberNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
-      throw e;
-    }
-  });
 }
