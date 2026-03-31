@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Text, SkeletonBar, EmptyState, Tooltip } from 'octahedron';
+import { EmptyState, Tooltip } from 'octahedron';
 import { api } from '../lib/api';
 import styles from './AvailabilityGrid.module.css';
 
@@ -115,18 +115,7 @@ export function AvailabilityGrid({ type, facilities, date, onSlotClick, onBookin
     return <EmptyState title={`No ${type}s configured`} />;
   }
 
-  if (loading) {
-    return (
-      <div className={styles.loading}>
-        {facilities.map((f) => (
-          <div key={f.id} className={styles.loadingRow}>
-            <Text variant="label" className={styles.loadingLabel}>{f.name}</Text>
-            <SkeletonBar width="100%" />
-          </div>
-        ))}
-      </div>
-    );
-  }
+  if (loading) return null;
 
   const ref = facilities[0];
   const allSlots = generateAllSlots(ref.operatingHoursStart, ref.operatingHoursEnd, ref.slotDurationMinutes);

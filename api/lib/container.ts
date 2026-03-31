@@ -7,7 +7,7 @@ import { EventReplay } from './infrastructure/event-replay';
 import { MemberRepository } from '@/lib/contexts/members/infrastructure';
 import { MembershipRepository, PlanRepository, StripeGateway } from '@/lib/contexts/memberships/infrastructure';
 import { SessionRepository, MagicLinkRepository, JwtService } from '@/lib/contexts/auth/infrastructure';
-import { EmailAdapter } from '@/lib/contexts/communications/infrastructure';
+import { ResendAdapter } from '@/lib/contexts/communications/infrastructure';
 import { CourtRepository, ShowerRepository, BookingRepository, PrismaMembershipChecker } from '@/lib/contexts/bookings/infrastructure';
 
 // Application services
@@ -42,8 +42,8 @@ export const membershipChecker = new PrismaMembershipChecker(db);
 
 // ── Communications ──
 
-const emailAdapter = new EmailAdapter(process.env.RESEND_API_KEY ?? '');
-export const notificationService = new NotificationService(emailAdapter);
+const resendAdapter = new ResendAdapter(process.env.RESEND_API_KEY ?? '');
+export const notificationService = new NotificationService(resendAdapter);
 
 // ── Application Services ──
 

@@ -75,6 +75,15 @@ export class BookingRepository {
     }) as unknown as Booking[];
   }
 
+  /** Count upcoming confirmed bookings for a facility */
+  async countUpcomingForFacility(facilityType: FacilityType, facilityId: string): Promise<number> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return this.prisma.booking.count({
+      where: { facilityType, facilityId, status: 'confirmed', date: { gte: today } },
+    });
+  }
+
   /** Get a booking by ID */
   async getById(id: string): Promise<Booking | null> {
     return this.prisma.booking.findUnique({ where: { id } }) as unknown as Booking | null;

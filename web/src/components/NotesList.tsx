@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ControlButton, TextArea } from 'octahedron';
+import { Button, TextArea } from 'octahedron';
 import { api } from '../lib/api';
 import styles from './NotesList.module.css';
 
@@ -36,7 +36,7 @@ export function NotesList({ memberId, initialNotes, onNoteAdded }: { memberId: s
           onValueChange={setContent}
           placeholder="Add a note..."
         />
-        <ControlButton
+        <Button
           color="primary"
           variant="soft"
           onClick={handleSubmit}
@@ -44,7 +44,7 @@ export function NotesList({ memberId, initialNotes, onNoteAdded }: { memberId: s
           disabled={!content.trim()}
         >
           Add Note
-        </ControlButton>
+        </Button>
       </div>
 
       {initialNotes.length === 0 ? (

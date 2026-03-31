@@ -1,7 +1,7 @@
-export {
-  type EmailMessage,
-  magicLinkEmail,
-  welcomeEmail,
-  paymentFailedEmail,
-  membershipCanceledEmail,
-} from './templates';
+export type {
+  Notification,
+  MagicLinkNotification,
+  WelcomeNotification,
+  PaymentFailedNotification,
+  MembershipCanceledNotification,
+} from './notifications';

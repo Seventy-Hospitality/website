@@ -1,15 +1,15 @@
 .container {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-4);
+  gap: var(--octa-space-4);
   max-width: 600px;
 }
 
 .back {
   background: none;
   border: none;
-  color: var(--gs-link);
-  font-size: var(--gs-font-size-body);
+  color: var(--octa-link);
+  font-size: var(--octa-font-size-body);
   cursor: pointer;
   padding: 0;
   text-align: left;
@@ -20,29 +20,29 @@
 }
 
 .title {
-  font-size: var(--gs-font-size-title);
-  font-weight: var(--gs-font-weight-semibold);
+  font-size: var(--octa-font-size-title);
+  font-weight: var(--octa-font-weight-semibold);
 }
 
 .form {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-4);
+  gap: var(--octa-space-4);
 }
 
 .row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--gs-space-3);
+  gap: var(--octa-space-3);
 }
 
 .error {
-  color: var(--gs-danger);
-  font-size: var(--gs-font-size-body);
+  color: var(--octa-danger);
+  font-size: var(--octa-font-size-body);
 }
 
 .actions {
   display: flex;
-  gap: var(--gs-space-2);
+  gap: var(--octa-space-2);
   justify-content: flex-end;
 }

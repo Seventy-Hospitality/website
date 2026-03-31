@@ -1,20 +1,20 @@
 .container {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-4);
+  gap: var(--octa-space-4);
 }
 
 .headerGroup {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-2);
+  gap: var(--octa-space-2);
 }
 
 .back {
   background: none;
   border: none;
-  color: var(--gs-link);
-  font-size: var(--gs-font-size-body);
+  color: var(--octa-link);
+  font-size: var(--octa-font-size-body);
   cursor: pointer;
   padding: 0;
   text-align: left;
@@ -25,41 +25,41 @@
 }
 
 .title {
-  font-size: var(--gs-font-size-title);
-  font-weight: var(--gs-font-weight-semibold);
+  font-size: var(--octa-font-size-title);
+  font-weight: var(--octa-font-weight-semibold);
 }
 
 .grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--gs-space-4);
+  gap: var(--octa-space-4);
 }
 
 .membershipCard {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-3);
+  gap: var(--octa-space-3);
 }
 
 .actions {
   display: flex;
-  gap: var(--gs-space-2);
+  gap: var(--octa-space-2);
 }
 
 .noMembership {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-3);
-  padding: var(--gs-space-4);
+  gap: var(--octa-space-3);
+  padding: var(--octa-space-4);
 }
 
 .muted {
-  color: var(--gs-muted);
-  font-size: var(--gs-font-size-body);
+  color: var(--octa-muted);
+  font-size: var(--octa-font-size-body);
 }
 
 .planButtons {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-2);
+  gap: var(--octa-space-2);
 }

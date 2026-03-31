@@ -72,8 +72,8 @@ export function BookingConfirmDialog({
       cancelText="Cancel"
       loading={loading}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gs-space-3)' }}>
-        <div style={{ fontSize: 'var(--gs-font-size-body)', color: 'var(--gs-text)' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--octa-space-3)' }}>
+        <div style={{ fontSize: 'var(--octa-font-size-body)', color: 'var(--octa-text)' }}>
           <strong>{facilityName}</strong> &middot; {date} &middot; {startTime}–{endTime}
         </div>
 

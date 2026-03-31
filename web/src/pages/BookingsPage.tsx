@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { DatePicker, Text, TabButton, Tag } from 'octahedron';
-import pageStyles from 'octahedron/components/PageLayout.module.css';
 import { api } from '../lib/api';
 import { AppShell } from '../components/AppShell';
 import { AvailabilityGrid } from '../components/AvailabilityGrid';
 import { BookingConfirmDialog } from '../components/BookingConfirmDialog';
 import { BookingDetailDialog } from '../components/BookingDetailDialog';
-import { BookingsList } from '../components/BookingsList';
 import styles from './BookingsPage.module.css';
 
 function formatDate(d: Date): string {
@@ -30,7 +29,13 @@ interface BookingInfo {
   member?: { firstName: string; lastName: string };
 }
 
+const VALID_TABS: Tab[] = ['courts', 'showers'];
+
 export function BookingsPage() {
+  const { tab: tabParam } = useParams<{ tab: string }>();
+  const navigate = useNavigate();
+  const tab: Tab = VALID_TABS.includes(tabParam as Tab) ? (tabParam as Tab) : 'courts';
+
   const today = useMemo(() => formatDate(new Date()), []);
   const maxDate = useMemo(() => {
     const d = new Date();
@@ -39,7 +44,6 @@ export function BookingsPage() {
   }, []);
 
   const [selectedDate, setSelectedDate] = useState(today);
-  const [tab, setTab] = useState<Tab>('courts');
   const [courts, setCourts] = useState<any[]>([]);
   const [showers, setShowers] = useState<any[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -93,7 +97,7 @@ export function BookingsPage() {
       <div className={styles.page}>
         <div className={styles.header}>
           <div className={styles.headerLeft}>
-            <Text variant="label" style={{ fontWeight: 'var(--gs-font-weight-semibold)' }}>
+            <Text variant="label" style={{ fontWeight: 'var(--octa-font-weight-semibold)' }}>
               {formatDisplayDate(selectedDate)}
             </Text>
             {selectedDate === today && <Tag variant="accent">Today</Tag>}
@@ -107,18 +111,15 @@ export function BookingsPage() {
         </div>
 
         <div
-          className={`${pageStyles.tabsRow} ${pageStyles.tabsRowCutout}`}
+          style={{ display: 'flex', gap: 'var(--octa-space-1)' }}
           role="tablist"
           aria-label="Booking sections"
         >
-          <TabButton variant="cutout" role="tab" aria-selected={tab === 'courts'} active={tab === 'courts'} onClick={() => setTab('courts')}>
+          <TabButton variant="cutout" role="tab" aria-selected={tab === 'courts'} active={tab === 'courts'} onClick={() => navigate('/bookings/courts')}>
             Courts
           </TabButton>
-          <TabButton variant="cutout" role="tab" aria-selected={tab === 'showers'} active={tab === 'showers'} onClick={() => setTab('showers')}>
+          <TabButton variant="cutout" role="tab" aria-selected={tab === 'showers'} active={tab === 'showers'} onClick={() => navigate('/bookings/showers')}>
             Showers
-          </TabButton>
-          <TabButton variant="cutout" role="tab" aria-selected={tab === 'bookings'} active={tab === 'bookings'} onClick={() => setTab('bookings')}>
-            Bookings
           </TabButton>
         </div>
 
@@ -149,15 +150,6 @@ export function BookingsPage() {
             </div>
           )}
 
-          {tab === 'bookings' && (
-            <div className={styles.bookingsArea}>
-              <BookingsList
-                date={selectedDate}
-                refreshKey={refreshKey}
-                onBookingCancelled={refresh}
-              />
-            </div>
-          )}
         </div>
 
         {confirm && (

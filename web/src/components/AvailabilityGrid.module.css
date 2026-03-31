@@ -1,85 +1,63 @@
 .grid {
   display: grid;
-  /* columns set inline: [label] 88px [slots] repeat(N, 1fr) */
+  padding-top: var(--octa-space-2);
 }
 
-/* Time ruler — spans the grid, same columns as slot rows */
 .rulerLabel {
-  padding-left: var(--gs-space-4);
+  /* empty top-left corner */
 }
 
 .rulerHour {
-  font-size: var(--gs-font-size-body);
-  font-weight: var(--gs-font-weight-medium);
-  color: var(--gs-muted);
-  padding-bottom: var(--gs-space-2);
-  padding-left: var(--gs-space-1);
-  border-left: 1px solid var(--gs-border);
+  font-size: var(--octa-font-size-body);
+  font-weight: var(--octa-font-weight-medium);
+  color: var(--octa-muted);
+  padding-bottom: var(--octa-space-2);
+  text-align: center;
   user-select: none;
 }
 
-/* Facility name — first column of each row */
 .facilityName {
   display: flex;
   align-items: center;
-  font-size: var(--gs-font-size-body);
-  font-weight: var(--gs-font-weight-medium);
-  color: var(--gs-text);
-  padding-left: var(--gs-space-4);
-  padding-right: var(--gs-space-3);
-  border-top: 1px solid var(--gs-border);
+  font-size: var(--octa-font-size-body);
+  font-weight: var(--octa-font-weight-medium);
+  color: var(--octa-text);
+  padding-left: var(--octa-space-4);
+  padding-right: var(--octa-space-3);
+  border-top: 1px solid var(--octa-border);
 }
 
-/* Slot cells */
 .slotAvailable {
   border: none;
-  border-top: 1px solid var(--gs-border);
-  border-left: 1px solid var(--gs-border);
+  border-top: 1px solid var(--octa-border);
+  border-left: 1px solid var(--octa-border);
   cursor: pointer;
   background: transparent;
   padding: 0;
   min-height: 36px;
-  transition: background var(--gs-duration-fast) var(--gs-ease-default);
+  transition: background var(--octa-duration-fast) var(--octa-ease-default);
 }
 
 .slotAvailable:hover {
-  background: var(--gs-accent-bg);
+  background: var(--octa-accent-bg);
 }
 
 .slotBooked {
   border: none;
-  border-top: 1px solid var(--gs-border);
-  border-left: 1px solid var(--gs-border);
+  border-top: 1px solid var(--octa-border);
+  border-left: 1px solid var(--octa-border);
   cursor: pointer;
-  background: var(--gs-surface);
+  background: var(--octa-surface);
   min-height: 36px;
   padding: 0;
-  transition: background var(--gs-duration-fast) var(--gs-ease-default);
+  transition: background var(--octa-duration-fast) var(--octa-ease-default);
 }
 
 .slotBooked:hover {
-  background: var(--gs-hover-bg);
+  background: var(--octa-hover-bg);
 }
 
-/* Bottom border on the last facility row */
 .lastRow {
-  border-bottom: 1px solid var(--gs-border);
+  border-bottom: 1px solid var(--octa-border);
 }
 
-/* Loading */
-.loading {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gs-space-3);
-}
-
-.loadingRow {
-  display: flex;
-  align-items: center;
-  gap: var(--gs-space-3);
-}
-
-.loadingLabel {
-  width: 88px;
-  flex-shrink: 0;
-}

@@ -7,10 +7,10 @@ body,
 }
 
 body {
-  color: var(--gs-text);
-  background: var(--gs-bg);
+  color: var(--octa-text);
+  background: var(--octa-bg-app);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  font-size: var(--gs-font-size-body);
+  font-size: var(--octa-font-size-body);
   line-height: 1.2;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Input, ControlButton, TextLink } from 'octahedron';
+import { Input, Button, TextLink } from 'octahedron';
 import { FormField } from '../components/FormField';
 import { SeventyLogo } from '../components/SeventyLogo';
 import { api } from '../lib/api';
@@ -61,9 +61,9 @@ export function SignInPage() {
               />
             )}
           </FormField>
-          <ControlButton type="submit" color="accent" loading={loading}>
+          <Button type="submit" color="accent" loading={loading}>
             Send sign-in link
-          </ControlButton>
+          </Button>
           {error && <p className={styles.error}>{error}</p>}
         </form>
       </div>

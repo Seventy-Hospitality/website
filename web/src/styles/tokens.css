@@ -3,100 +3,100 @@
 /* ── Design tokens ────────────────────────────────────────────────── */
 
 :root {
-  --gs-space-0: 0px;
-  --gs-space-1: 4px;
-  --gs-space-2: 8px;
-  --gs-space-3: 12px;
-  --gs-space-4: 16px;
-  --gs-space-5: 24px;
-  --gs-space-6: 32px;
+  --octa-space-0: 0px;
+  --octa-space-1: 4px;
+  --octa-space-2: 8px;
+  --octa-space-3: 12px;
+  --octa-space-4: 16px;
+  --octa-space-5: 24px;
+  --octa-space-6: 32px;
 
-  --gs-font-mono:
+  --octa-font-mono:
     'Source Code Pro', 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     'Liberation Mono', 'Courier New', monospace;
 
-  --gs-font-size-sm: 11px;
-  --gs-font-size-body: 13px;
-  --gs-font-size-title: 18px;
+  --octa-font-size-sm: 11px;
+  --octa-font-size-body: 13px;
+  --octa-font-size-title: 18px;
 
-  --gs-font-weight-regular: 400;
-  --gs-font-weight-medium: 500;
-  --gs-font-weight-semibold: 600;
+  --octa-font-weight-regular: 400;
+  --octa-font-weight-medium: 500;
+  --octa-font-weight-semibold: 600;
 
-  --gs-control-height: 28px;
-  --gs-control-height-compact: 18px;
-  --gs-control-radius: 6px;
-  --gs-radius-sm: 3px;
-  --gs-control-padding: 4px;
-  --gs-control-gap: 8px;
+  --octa-control-height: 28px;
+  --octa-control-height-compact: 18px;
+  --octa-control-radius: 6px;
+  --octa-radius-sm: 3px;
+  --octa-control-padding: 4px;
+  --octa-control-gap: 8px;
 
-  --gs-table-row-height: 38px;
+  --octa-table-row-height: 38px;
 
-  --gs-duration-instant: 0ms;
-  --gs-duration-fast: 75ms;
-  --gs-duration-moderate: 100ms;
-  --gs-duration-slow: 150ms;
+  --octa-duration-instant: 0ms;
+  --octa-duration-fast: 75ms;
+  --octa-duration-moderate: 100ms;
+  --octa-duration-slow: 150ms;
 
-  --gs-duration-spinner: 800ms;
-  --gs-duration-shimmer: 1500ms;
+  --octa-duration-spinner: 800ms;
+  --octa-duration-shimmer: 1500ms;
 
-  --gs-ease-default: ease;
-  --gs-ease-out: ease-out;
-  --gs-ease-in: ease-in;
+  --octa-ease-default: ease;
+  --octa-ease-out: ease-out;
+  --octa-ease-in: ease-in;
 
-  --gs-hover-transition: var(--gs-duration-fast) var(--gs-ease-default);
+  --octa-hover-transition: var(--octa-duration-fast) var(--octa-ease-default);
 
-  --gs-z-base: 1;
-  --gs-z-sticky: 10;
-  --gs-z-header: 20;
-  --gs-z-dropdown: 30;
-  --gs-z-overlay: 100;
-  --gs-z-modal: 101;
+  --octa-z-base: 1;
+  --octa-z-sticky: 10;
+  --octa-z-header: 20;
+  --octa-z-dropdown: 30;
+  --octa-z-overlay: 100;
+  --octa-z-modal: 101;
 
-  --gs-icon-size: 14px;
-  --gs-icon-slot-size: 18px;
+  --octa-icon-size: 14px;
+  --octa-icon-slot-size: 18px;
 }
 
 /* ── Light theme (default) ───────────────────────────────────────── */
 
 body {
-  --gs-surface: #f3f4f6;
-  --gs-border: #d1d5db;
-  --gs-border-hover: #6b7280;
-  --gs-text: #111827;
-  --gs-text-opaque: #111827;
-  --gs-muted: #4b5563;
-  --gs-link: #2563eb;
-  --gs-link-bg: #dbeafe;
-  --gs-bg: #ffffff;
-  --gs-bg-opaque: var(--gs-bg);
-  --gs-hover-bg: #e5e7eb;
+  --octa-surface: #f3f4f6;
+  --octa-border: #d1d5db;
+  --octa-border-hover: #6b7280;
+  --octa-text: #111827;
+  --octa-text-opaque: #111827;
+  --octa-muted: #4b5563;
+  --octa-link: #2563eb;
+  --octa-link-bg: #dbeafe;
+  --octa-bg-app: #ffffff;
+  --octa-bg-solid: var(--octa-bg-app);
+  --octa-hover-bg: #e5e7eb;
 
-  --filter-pill-bg: var(--gs-bg);
-  --filter-pill-border: var(--gs-border);
+  --filter-pill-bg: var(--octa-bg-app);
+  --filter-pill-border: var(--octa-border);
 
-  --gs-checkbox-border: #4b5563;
-  --gs-checkbox-fill: #008cff;
-  --gs-checkbox-icon: #ffffff;
+  --octa-checkbox-border: #4b5563;
+  --octa-checkbox-fill: #008cff;
+  --octa-checkbox-icon: #ffffff;
 
-  --gs-focus-ring: rgba(16, 132, 255, 0.65);
-  --gs-disabled: rgba(0, 0, 0, 0.25);
-  --gs-overlay: rgba(0, 0, 0, 0.5);
+  --octa-focus-ring: rgba(16, 132, 255, 0.65);
+  --octa-disabled: rgba(0, 0, 0, 0.25);
+  --octa-overlay: rgba(0, 0, 0, 0.5);
 
-  --gs-success: #238551;
-  --gs-success-bg: color-mix(in srgb, var(--gs-success) 8%, white);
-  --gs-warning: #d97706;
-  --gs-warning-bg: color-mix(in srgb, var(--gs-warning) 8%, white);
-  --gs-danger: #cd4246;
-  --gs-danger-bg: color-mix(in srgb, var(--gs-danger) 8%, white);
-  --gs-info: #1084ff;
-  --gs-info-bg: color-mix(in srgb, var(--gs-info) 8%, white);
-  --gs-accent: #0d8070;
-  --gs-accent-bg: color-mix(in srgb, var(--gs-accent) 8%, white);
+  --octa-success: #238551;
+  --octa-success-bg: color-mix(in srgb, var(--octa-success) 8%, white);
+  --octa-warning: #d97706;
+  --octa-warning-bg: color-mix(in srgb, var(--octa-warning) 8%, white);
+  --octa-danger: #cd4246;
+  --octa-danger-bg: color-mix(in srgb, var(--octa-danger) 8%, white);
+  --octa-info: #1084ff;
+  --octa-info-bg: color-mix(in srgb, var(--octa-info) 8%, white);
+  --octa-accent: #0d8070;
+  --octa-accent-bg: color-mix(in srgb, var(--octa-accent) 8%, white);
 
-  --gs-text-on-colored: #ffffff;
-  --gs-success-muted: color-mix(in srgb, var(--gs-success) 15%, transparent);
-  --gs-danger-muted: color-mix(in srgb, var(--gs-danger) 15%, transparent);
+  --octa-text-on-colored: #ffffff;
+  --octa-success-muted: color-mix(in srgb, var(--octa-success) 15%, transparent);
+  --octa-danger-muted: color-mix(in srgb, var(--octa-danger) 15%, transparent);
 
   --cm-keyword: #af00db;
   --cm-function: #795e26;
@@ -111,43 +111,43 @@ body {
 /* ── Dark theme ──────────────────────────────────────────────────── */
 
 body.dark {
-  --gs-surface: var(--octa-bg-surface);
-  --gs-border: #3c4458;
-  --gs-border-hover: #5c6478;
-  --gs-text: rgba(255, 255, 255, 0.95);
-  --gs-text-opaque: #ffffff;
-  --gs-muted: rgba(255, 255, 255, 0.55);
-  --gs-link: #4ea4ff;
-  --gs-link-bg: rgba(78, 164, 255, 0.18);
-  --gs-bg: var(--octa-bg);
-  --gs-bg-opaque: var(--octa-bg);
-  --gs-hover-bg: var(--octa-bg-elevated);
+  --octa-surface: var(--octa-bg-surface);
+  --octa-border: #3c4458;
+  --octa-border-hover: #5c6478;
+  --octa-text: rgba(255, 255, 255, 0.95);
+  --octa-text-opaque: #ffffff;
+  --octa-muted: rgba(255, 255, 255, 0.55);
+  --octa-link: #4ea4ff;
+  --octa-link-bg: rgba(78, 164, 255, 0.18);
+  --octa-bg-app: var(--octa-bg);
+  --octa-bg-solid: var(--octa-bg);
+  --octa-hover-bg: var(--octa-bg-elevated);
 
-  --filter-pill-bg: var(--gs-bg);
-  --filter-pill-border: var(--gs-border);
+  --filter-pill-bg: var(--octa-bg-app);
+  --filter-pill-border: var(--octa-border);
 
-  --gs-checkbox-border: rgba(255, 255, 255, 0.55);
-  --gs-checkbox-fill: #008cff;
-  --gs-checkbox-icon: #ffffff;
+  --octa-checkbox-border: rgba(255, 255, 255, 0.55);
+  --octa-checkbox-fill: #008cff;
+  --octa-checkbox-icon: #ffffff;
 
-  --gs-focus-ring: rgba(78, 164, 255, 0.65);
-  --gs-disabled: rgba(255, 255, 255, 0.25);
-  --gs-overlay: rgba(0, 0, 0, 0.6);
+  --octa-focus-ring: rgba(78, 164, 255, 0.65);
+  --octa-disabled: rgba(255, 255, 255, 0.25);
+  --octa-overlay: rgba(0, 0, 0, 0.6);
 
-  --gs-success: #32a852;
-  --gs-success-bg: color-mix(in srgb, var(--gs-success) 14%, transparent);
-  --gs-warning: #e89531;
-  --gs-warning-bg: color-mix(in srgb, var(--gs-warning) 14%, transparent);
-  --gs-danger: #f55656;
-  --gs-danger-bg: color-mix(in srgb, var(--gs-danger) 14%, transparent);
-  --gs-info: #4ea4ff;
-  --gs-info-bg: color-mix(in srgb, var(--gs-info) 14%, transparent);
-  --gs-accent: #34d8ad;
-  --gs-accent-bg: color-mix(in srgb, var(--gs-accent) 14%, transparent);
+  --octa-success: #32a852;
+  --octa-success-bg: color-mix(in srgb, var(--octa-success) 14%, transparent);
+  --octa-warning: #e89531;
+  --octa-warning-bg: color-mix(in srgb, var(--octa-warning) 14%, transparent);
+  --octa-danger: #f55656;
+  --octa-danger-bg: color-mix(in srgb, var(--octa-danger) 14%, transparent);
+  --octa-info: #4ea4ff;
+  --octa-info-bg: color-mix(in srgb, var(--octa-info) 14%, transparent);
+  --octa-accent: #34d8ad;
+  --octa-accent-bg: color-mix(in srgb, var(--octa-accent) 14%, transparent);
 
-  --gs-text-on-colored: #ffffff;
-  --gs-success-muted: color-mix(in srgb, var(--gs-success) 15%, transparent);
-  --gs-danger-muted: color-mix(in srgb, var(--gs-danger) 15%, transparent);
+  --octa-text-on-colored: #ffffff;
+  --octa-success-muted: color-mix(in srgb, var(--octa-success) 15%, transparent);
+  --octa-danger-muted: color-mix(in srgb, var(--octa-danger) 15%, transparent);
 
   --cm-keyword: #c586c0;
   --cm-function: #dcdcaa;

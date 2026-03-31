@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Input, ControlButton } from 'octahedron';
+import { Input, Button } from 'octahedron';
 import { api } from '../lib/api';
 import { FormField } from './FormField';
 import styles from './CreateMemberForm.module.css';
@@ -98,12 +98,12 @@ export function CreateMemberForm() {
         {error && <p className={styles.error}>{error}</p>}
 
         <div className={styles.actions}>
-          <ControlButton type="button" onClick={() => navigate('/members')}>
+          <Button type="button" onClick={() => navigate('/members')}>
             Cancel
-          </ControlButton>
-          <ControlButton type="submit" color="primary" loading={saving}>
+          </Button>
+          <Button type="submit" color="primary" loading={saving}>
             Create Member
-          </ControlButton>
+          </Button>
         </div>
       </form>
     </div>

@@ -24,11 +24,11 @@
 
 /* Override primary color to brand green */
 body {
-  --gs-info: #4a7c59;
-  --gs-info-bg: color-mix(in srgb, #4a7c59 8%, white);
+  --octa-info: #4a7c59;
+  --octa-info-bg: color-mix(in srgb, #4a7c59 8%, white);
 }
 
 body.dark {
-  --gs-info: #5a9468;
-  --gs-info-bg: color-mix(in srgb, #5a9468 14%, transparent);
+  --octa-info: #5a9468;
+  --octa-info-bg: color-mix(in srgb, #5a9468 14%, transparent);
 }

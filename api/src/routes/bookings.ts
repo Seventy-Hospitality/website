@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { bookingService } from '@/lib/container';
-import { createBookingSchema, availabilityQuerySchema } from '@/src/lib/validation';
+import { createBookingSchema, availabilityQuerySchema, createFacilitySchema, updateFacilitySchema } from '@/src/lib/validation';
 import { success, error } from '@/src/lib/responses';
 import {
   SlotUnavailableError,
@@ -120,6 +120,71 @@ export async function bookingRoutes(app: FastifyInstance) {
     const date = query.date;
     const bookings = await bookingService.listBookings(date);
     return success(reply, bookings);
+  });
+
+  // ── Booking counts ──
+
+  app.get<{ Params: { type: string; id: string } }>('/facilities/:type/:id/booking-count', async (req, reply) => {
+    const { type, id } = req.params;
+    if (type !== 'court' && type !== 'shower') return error(reply, 'VALIDATION_ERROR', 'Invalid facility type');
+    const count = await bookingService.countUpcomingBookings(type, id);
+    return success(reply, { count });
+  });
+
+  // ── Court Admin ──
+
+  app.get('/courts/all', async (_req, reply) => {
+    const courts = await bookingService.listAllCourts();
+    return success(reply, courts);
+  });
+
+  app.post('/courts', async (req, reply) => {
+    const parsed = createFacilitySchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    const court = await bookingService.createCourt(parsed.data);
+    return success(reply, court, 201);
+  });
+
+  app.patch<{ Params: { id: string } }>('/courts/:id', async (req, reply) => {
+    const parsed = updateFacilitySchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    try {
+      const court = await bookingService.updateCourt(req.params.id, parsed.data);
+      return success(reply, court);
+    } catch (e) {
+      if (e instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
+      throw e;
+    }
+  });
+
+  // ── Shower Admin ──
+
+  app.get('/showers/all', async (_req, reply) => {
+    const showers = await bookingService.listAllShowers();
+    return success(reply, showers);
+  });
+
+  app.post('/showers', async (req, reply) => {
+    const parsed = createFacilitySchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    const shower = await bookingService.createShower(parsed.data);
+    return success(reply, shower, 201);
+  });
+
+  app.patch<{ Params: { id: string } }>('/showers/:id', async (req, reply) => {
+    const parsed = updateFacilitySchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    try {
+      const shower = await bookingService.updateShower(req.params.id, parsed.data);
+      return success(reply, shower);
+    } catch (e) {
+      if (e instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
+      throw e;
+    }
   });
 }
 

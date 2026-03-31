@@ -1,1 +1,1 @@
-export { EmailAdapter } from './email.adapter';
+export { ResendAdapter } from './resend.adapter';

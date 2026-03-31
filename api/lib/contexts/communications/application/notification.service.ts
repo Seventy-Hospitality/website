@@ -1,31 +1,26 @@
-import {
-  magicLinkEmail,
-  welcomeEmail,
-  paymentFailedEmail,
-  membershipCanceledEmail,
-} from '../domain';
-import type { EmailAdapter } from '../infrastructure/email.adapter';
+import type { Notification } from '../domain/notifications';
+import type { NotificationSender } from './ports';
 
 /**
  * Orchestrates all outbound notifications.
- * Other BCs call this service — they never touch email infrastructure directly.
+ * Other BCs call this service — they never touch infrastructure directly.
  */
 export class NotificationService {
-  constructor(private readonly email: EmailAdapter) {}
+  constructor(private readonly sender: NotificationSender) {}
 
   async sendMagicLink(to: string, verifyUrl: string): Promise<void> {
-    await this.email.send(magicLinkEmail(to, verifyUrl));
+    await this.sender.send({ type: 'magic-link', to, verifyUrl });
   }
 
   async sendWelcome(to: string, memberName: string, planName: string): Promise<void> {
-    await this.email.send(welcomeEmail(to, memberName, planName));
+    await this.sender.send({ type: 'welcome', to, memberName, planName });
   }
 
   async sendPaymentFailed(to: string, memberName: string): Promise<void> {
-    await this.email.send(paymentFailedEmail(to, memberName));
+    await this.sender.send({ type: 'payment-failed', to, memberName });
   }
 
   async sendMembershipCanceled(to: string, memberName: string, endsAt: string): Promise<void> {
-    await this.email.send(membershipCanceledEmail(to, memberName, endsAt));
+    await this.sender.send({ type: 'membership-canceled', to, memberName, endsAt });
   }
 }

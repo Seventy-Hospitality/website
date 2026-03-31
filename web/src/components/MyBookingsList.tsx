@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ControlButton, Tag, Text, EmptyState } from 'octahedron';
+import { Button, Tag, Text, EmptyState } from 'octahedron';
 import { api } from '../lib/api';
 import styles from './MyBookingsList.module.css';
 
@@ -63,7 +63,7 @@ export function MyBookingsList({ onBookingCancelled }: Props) {
               <Text variant="caption" intent="muted">{b.startTime}–{b.endTime}</Text>
             </div>
           </div>
-          <ControlButton
+          <Button
             variant="ghost"
             color="danger"
             compact
@@ -71,7 +71,7 @@ export function MyBookingsList({ onBookingCancelled }: Props) {
             loading={cancelling === b.id}
           >
             Cancel
-          </ControlButton>
+          </Button>
         </div>
       ))}
     </div>

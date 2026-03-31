@@ -11,8 +11,8 @@ import {
   BookingInPastError,
   InactiveMembershipError,
 } from '../domain';
-import type { CourtRepository } from '../infrastructure/court.repository';
-import type { ShowerRepository } from '../infrastructure/shower.repository';
+import type { CourtRepository, CreateCourtInput, UpdateCourtInput } from '../infrastructure/court.repository';
+import type { ShowerRepository, CreateShowerInput, UpdateShowerInput } from '../infrastructure/shower.repository';
 import type { BookingRepository } from '../infrastructure/booking.repository';
 import type { UnitOfWork } from '@/lib/kernel/unit-of-work';
 
@@ -144,8 +144,40 @@ export class BookingService {
     return this.courtRepo.listActive();
   }
 
+  async listAllCourts() {
+    return this.courtRepo.listAll();
+  }
+
+  async createCourt(data: CreateCourtInput) {
+    return this.courtRepo.create(data);
+  }
+
+  async updateCourt(id: string, data: UpdateCourtInput) {
+    const court = await this.courtRepo.getById(id);
+    if (!court) throw new FacilityNotFoundError('Court', id);
+    return this.courtRepo.update(id, data);
+  }
+
+  async countUpcomingBookings(facilityType: 'court' | 'shower', facilityId: string) {
+    return this.bookingRepo.countUpcomingForFacility(facilityType, facilityId);
+  }
+
   async listShowers() {
     return this.showerRepo.listActive();
+  }
+
+  async listAllShowers() {
+    return this.showerRepo.listAll();
+  }
+
+  async createShower(data: CreateShowerInput) {
+    return this.showerRepo.create(data);
+  }
+
+  async updateShower(id: string, data: UpdateShowerInput) {
+    const shower = await this.showerRepo.getById(id);
+    if (!shower) throw new FacilityNotFoundError('Shower', id);
+    return this.showerRepo.update(id, data);
   }
 
   private async validatePreconditions(date: Date, maxAdvanceDays: number, memberId: string) {

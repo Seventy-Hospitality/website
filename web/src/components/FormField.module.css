@@ -1,13 +1,13 @@
 .field {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-1);
+  gap: var(--octa-space-1);
 }
 
 .label {
-  font-size: var(--gs-font-size-body);
-  font-weight: var(--gs-font-weight-medium);
-  color: var(--gs-muted);
+  font-size: var(--octa-font-size-body);
+  font-weight: var(--octa-font-weight-medium);
+  color: var(--octa-muted);
 }
 
 .control {
@@ -16,11 +16,11 @@
 }
 
 .helper {
-  font-size: var(--gs-font-size-body);
-  color: var(--gs-muted);
+  font-size: var(--octa-font-size-body);
+  color: var(--octa-muted);
 }
 
 .error {
-  font-size: var(--gs-font-size-body);
-  color: var(--gs-danger);
+  font-size: var(--octa-font-size-body);
+  color: var(--octa-danger);
 }

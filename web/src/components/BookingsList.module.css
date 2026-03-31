@@ -1,23 +1,23 @@
 .list {
   display: flex;
   flex-direction: column;
-  gap: var(--gs-space-1);
+  gap: var(--octa-space-1);
 }
 
 .item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--gs-space-2);
-  border-radius: var(--gs-control-radius);
-  background: var(--gs-bg);
-  border: 1px solid var(--gs-border);
+  padding: var(--octa-space-2);
+  border-radius: var(--octa-control-radius);
+  background: var(--octa-bg-app);
+  border: 1px solid var(--octa-border);
 }
 
 .itemLeft {
   display: flex;
   align-items: center;
-  gap: var(--gs-space-3);
+  gap: var(--octa-space-3);
 }
 
 .itemInfo {

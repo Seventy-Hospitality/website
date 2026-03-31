@@ -45,3 +45,24 @@ export const createBookingSchema = z.object({
 export const availabilityQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
+
+export const createFacilitySchema = z.object({
+  name: z.string().min(1).max(100),
+  slotDurationMinutes: z.number().int().positive().optional(),
+  operatingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  operatingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  maxAdvanceDays: z.number().int().positive().optional(),
+  maxBookingsPerMemberPerDay: z.number().int().positive().optional(),
+  cancellationDeadlineMinutes: z.number().int().min(0).optional(),
+});
+
+export const updateFacilitySchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  slotDurationMinutes: z.number().int().positive().optional(),
+  operatingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  operatingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  maxAdvanceDays: z.number().int().positive().optional(),
+  maxBookingsPerMemberPerDay: z.number().int().positive().optional(),
+  cancellationDeadlineMinutes: z.number().int().min(0).optional(),
+  active: z.boolean().optional(),
+});

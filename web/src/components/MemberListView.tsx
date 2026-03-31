@@ -4,13 +4,11 @@ import {
   DataTable,
   type DataTableColumn,
   SearchInput,
-  ControlButton,
-  ControlIconButton,
+  Button,
   Select,
   type SelectOption,
   Tag,
   AppIcon,
-  RefreshCw,
   FilterPill,
   defineFilterColumns,
   rowMatchesFilters,
@@ -40,13 +38,13 @@ const { columns: filterColumns, columnsById: filterColumnsById } = defineFilterC
     id: 'status',
     label: 'Status',
     valueInput: 'select',
-    getValues: (row) => row.membership?.status ?? 'none',
+    getValues: (row) => [row.membership?.status ?? 'none'],
   },
   {
     id: 'plan',
     label: 'Plan',
     valueInput: 'select',
-    getValues: (row) => row.membership?.plan.name ?? 'None',
+    getValues: (row) => [row.membership?.plan.name ?? 'None'],
   },
 ] as const);
 
@@ -70,7 +68,6 @@ const columns: DataTableColumn<MemberRow>[] = [
   },
   {
     name: 'Status',
-    align: 'center',
     cell: (row) => <MembershipStatus status={row.membership?.status ?? null} />,
     maxWidth: 120,
   },
@@ -80,9 +77,11 @@ interface Props {
   members: MemberRow[];
   loading?: boolean;
   onRefresh?: () => void;
+  onRowClick?: (row: MemberRow) => void;
+  onAddMember?: () => void;
 }
 
-export function MemberListView({ members, loading, onRefresh }: Props) {
+export function MemberListView({ members, loading, onRefresh, onRowClick, onAddMember }: Props) {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<TableFilter<FilterColumnId>[]>([]);
@@ -137,7 +136,7 @@ export function MemberListView({ members, loading, onRefresh }: Props) {
     }
 
     if (filters.length) {
-      rows = rows.filter((r) => rowMatchesFilters(r, filters, filterColumns));
+      rows = rows.filter((r) => rowMatchesFilters(r, filters, filterColumnsById));
     }
 
     return rows;
@@ -153,9 +152,9 @@ export function MemberListView({ members, loading, onRefresh }: Props) {
             open={addFilterOpen}
             onOpenChange={setAddFilterOpen}
             trigger={
-              <ControlButton icon={<AppIcon name="filter" />}>
+              <Button icon={<AppIcon name="filter" />}>
                 Filter
-              </ControlButton>
+              </Button>
             }
           />
 
@@ -166,17 +165,9 @@ export function MemberListView({ members, loading, onRefresh }: Props) {
             placeholder="Search members..."
           />
 
-          {onRefresh && (
-            <ControlIconButton
-              ariaLabel="Refresh"
-              icon={<RefreshCw size={12} />}
-              onClick={onRefresh}
-            />
-          )}
-
-          <ControlButton color="primary" onClick={() => navigate('/members/new')}>
+<Button color="primary" onClick={onAddMember ?? (() => navigate('/members/new'))}>
             Add Member
-          </ControlButton>
+          </Button>
         </div>
 
         {filters.length > 0 && (
@@ -237,11 +228,12 @@ export function MemberListView({ members, loading, onRefresh }: Props) {
           rows={filtered}
           columns={columns}
           rowKey={(row) => row.id}
-          onRowClick={(row) => navigate(`/members/${row.id}`)}
+          onRowClick={onRowClick ?? ((row) => navigate(`/members/${row.id}`))}
           emptyMessage="No members found"
           loading={loading}
           pagination={{
-            defaultPageSize: 50,
+            defaultPageSize: 25,
+            pageSizeOptions: [10, 25, 50, 100],
             showSizeChanger: true,
             showControls: true,
           }}

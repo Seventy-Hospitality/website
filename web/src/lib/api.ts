@@ -100,4 +100,22 @@ export const api = {
     const qs = date ? `?date=${date}` : '';
     return request<any[]>(`/api/bookings${qs}`);
   },
+
+  // Facility booking count
+  getFacilityBookingCount: (type: 'court' | 'shower', id: string) =>
+    request<{ count: number }>(`/api/facilities/${type}/${id}/booking-count`),
+
+  // Court admin
+  listAllCourts: () => request<any[]>('/api/courts/all'),
+  createCourt: (data: { name: string }) =>
+    request<any>('/api/courts', { method: 'POST', body: JSON.stringify(data) }),
+  updateCourt: (id: string, data: Record<string, unknown>) =>
+    request<any>(`/api/courts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+  // Shower admin
+  listAllShowers: () => request<any[]>('/api/showers/all'),
+  createShower: (data: { name: string }) =>
+    request<any>('/api/showers', { method: 'POST', body: JSON.stringify(data) }),
+  updateShower: (id: string, data: Record<string, unknown>) =>
+    request<any>(`/api/showers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 };

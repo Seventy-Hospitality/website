@@ -1,3 +1,4 @@
 export { NotificationService } from './application';
-export { EmailAdapter } from './infrastructure';
-export type { EmailMessage } from './domain';
+export type { NotificationSender } from './application';
+export type { Notification } from './domain';
+export { ResendAdapter } from './infrastructure';

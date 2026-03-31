@@ -1,11 +1,10 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  SurfaceCard,
-  KeyValueList,
-  ControlButton,
+  Card,
+  Button,
   Tag,
-  type KeyValueListItem,
+  Text,
 } from 'octahedron';
 import { api } from '../lib/api';
 import { MembershipStatus } from './MembershipStatus';
@@ -48,12 +47,12 @@ export function MemberDetailView({ member, plans, onRefresh }: { member: Member;
   const navigate = useNavigate();
   const [loading, setLoading] = useState('');
 
-  const memberRows: KeyValueListItem[] = [
+  const memberRows = [
     { label: 'Email', value: member.email },
     { label: 'Phone', value: member.phone ?? '—' },
   ];
 
-  const membershipRows: KeyValueListItem[] = member.membership
+  const membershipRows = member.membership
     ? [
         { label: 'Plan', value: member.membership.plan.name },
         {
@@ -117,29 +116,45 @@ export function MemberDetailView({ member, plans, onRefresh }: { member: Member;
       </div>
 
       <div className={styles.grid}>
-        <SurfaceCard>
-          <KeyValueList title="Member Info" items={memberRows} labelWidthPx={100} />
-        </SurfaceCard>
+        <Card>
+          <Text variant="label">Member Info</Text>
+          <dl style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: 'var(--octa-space-2)', margin: 'var(--octa-space-2) 0 0' }}>
+            {memberRows.map((r) => (
+              <Fragment key={r.label}>
+                <dt style={{ color: 'var(--octa-muted)', fontSize: 'var(--octa-font-size-sm)' }}>{r.label}</dt>
+                <dd style={{ margin: 0 }}>{r.value}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </Card>
 
-        <SurfaceCard>
+        <Card>
           {member.membership ? (
             <div className={styles.membershipCard}>
-              <KeyValueList title="Membership" items={membershipRows} labelWidthPx={100} />
+              <Text variant="label">Membership</Text>
+              <dl style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: 'var(--octa-space-2)', margin: 'var(--octa-space-2) 0 0' }}>
+                {membershipRows.map((r) => (
+                  <Fragment key={r.label}>
+                    <dt style={{ color: 'var(--octa-muted)', fontSize: 'var(--octa-font-size-sm)' }}>{r.label}</dt>
+                    <dd style={{ margin: 0 }}>{r.value}</dd>
+                  </Fragment>
+                ))}
+              </dl>
               <div className={styles.actions}>
-                <ControlButton
+                <Button
                   variant="soft"
                   onClick={openPortal}
                   loading={loading === 'portal'}
                 >
                   Manage Billing
-                </ControlButton>
-                <ControlButton
+                </Button>
+                <Button
                   variant="ghost"
                   onClick={syncFromStripe}
                   loading={loading === 'sync'}
                 >
                   Sync from Stripe
-                </ControlButton>
+                </Button>
               </div>
             </div>
           ) : (
@@ -147,24 +162,24 @@ export function MemberDetailView({ member, plans, onRefresh }: { member: Member;
               <p className={styles.muted}>No active membership</p>
               <div className={styles.planButtons}>
                 {plans.map((plan) => (
-                  <ControlButton
+                  <Button
                     key={plan.id}
                     color="primary"
                     onClick={() => startCheckout(plan.id)}
                     loading={loading === 'checkout'}
                   >
                     Start {plan.name} — {formatCurrency(plan.amountCents)}/{plan.interval}
-                  </ControlButton>
+                  </Button>
                 ))}
               </div>
             </div>
           )}
-        </SurfaceCard>
+        </Card>
       </div>
 
-      <SurfaceCard>
+      <Card>
         <NotesList memberId={member.id} initialNotes={member.notes} onNoteAdded={onRefresh} />
-      </SurfaceCard>
+      </Card>
     </div>
   );
 }

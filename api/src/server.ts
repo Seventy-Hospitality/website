@@ -15,6 +15,7 @@ const app = Fastify({ logger: true });
 await app.register(cors, {
   origin: process.env.WEB_URL ?? 'http://localhost:5173',
   credentials: true,
+  methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'],
 });
 
 await app.register(cookie);
@@ -28,6 +29,13 @@ await app.register(stripeRoutes, { prefix: '/api/stripe' });
 await app.register(webhookRoutes, { prefix: '/api/webhooks' });
 await app.register(cronRoutes, { prefix: '/api/cron' });
 await app.register(bookingRoutes, { prefix: '/api' });
+
+// Plans
+import { planRepo } from '@/lib/container';
+app.get('/api/plans', async (_req, reply) => {
+  const plans = await planRepo.list();
+  return reply.send({ data: plans });
+});
 
 // Health check
 app.get('/api/health', async () => ({ status: 'ok' }));

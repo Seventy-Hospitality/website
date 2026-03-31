@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Modal, ModalActions, ControlButton, KeyValueList, type KeyValueListItem } from 'octahedron';
+import { Fragment, useState } from 'react';
+import { Modal, ModalActions, Button } from 'octahedron';
 import { api, ApiError } from '../lib/api';
 
 interface BookingInfo {
@@ -28,7 +28,7 @@ export function BookingDetailDialog({ booking, facilityName, date, onCancelled, 
     ? `${booking.member.firstName} ${booking.member.lastName}`
     : booking.memberId;
 
-  const rows: KeyValueListItem[] = [
+  const rows = [
     { label: 'Facility', value: facilityName },
     { label: 'Date', value: date },
     { label: 'Time', value: `${booking.startTime}–${booking.endTime}` },
@@ -61,15 +61,22 @@ export function BookingDetailDialog({ booking, facilityName, date, onCancelled, 
       error={error}
       footer={
         <ModalActions>
-          <ControlButton onClick={onClose}>Close</ControlButton>
-          <ControlButton color="danger" onClick={handleCancel} loading={cancelling}>
+          <Button onClick={onClose}>Close</Button>
+          <Button color="danger" onClick={handleCancel} loading={cancelling}>
             Cancel Booking
-          </ControlButton>
+          </Button>
         </ModalActions>
       }
     >
-      <div style={{ padding: 'var(--gs-space-4)' }}>
-        <KeyValueList items={rows} labelWidthPx={72} />
+      <div style={{ padding: 'var(--octa-space-4)' }}>
+        <dl style={{ display: 'grid', gridTemplateColumns: '72px 1fr', gap: 'var(--octa-space-2)', margin: 0 }}>
+          {rows.map((r) => (
+            <Fragment key={r.label}>
+              <dt style={{ color: 'var(--octa-muted)', fontSize: 'var(--octa-font-size-sm)' }}>{r.label}</dt>
+              <dd style={{ margin: 0, fontSize: 'var(--octa-font-size-body)' }}>{r.value}</dd>
+            </Fragment>
+          ))}
+        </dl>
       </div>
     </Modal>
   );
