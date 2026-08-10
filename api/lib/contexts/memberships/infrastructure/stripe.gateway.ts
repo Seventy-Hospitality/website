@@ -10,7 +10,8 @@ export class StripeGateway {
   private readonly stripe: Stripe;
 
   constructor(stripeSecretKey: string, private readonly appUrl: string) {
-    this.stripe = new Stripe(stripeSecretKey || 'sk_test_placeholder');
+    // Pin the API version: an SDK bump must never silently reshape webhook/response payloads.
+    this.stripe = new Stripe(stripeSecretKey || 'sk_test_placeholder', { apiVersion: '2026-03-25.dahlia' });
   }
 
   get client(): Stripe {

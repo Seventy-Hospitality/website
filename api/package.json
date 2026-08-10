@@ -26,6 +26,7 @@
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
     "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^11.2.0",
     "@fastify/static": "^9.0.0",
     "@paralleldrive/cuid2": "^3.3.0",
     "@prisma/adapter-pg": "^7.6.0",

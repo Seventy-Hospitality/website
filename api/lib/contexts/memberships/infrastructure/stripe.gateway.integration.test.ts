@@ -9,7 +9,7 @@ const APP_URL = 'http://localhost:5173';
 
 const gateway = new StripeGateway(SK, APP_URL);
 
-describe('StripeGateway (sandbox integration)', () => {
+describe.skipIf(!SK)('StripeGateway (sandbox integration)', () => {
   let customerId: string;
   let priceId: string;
   let productId: string;

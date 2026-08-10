@@ -16,6 +16,10 @@ function isPublic(url: string): boolean {
   return PUBLIC_PREFIXES.some((p) => url.startsWith(p));
 }
 
+if (process.env.AUTH_DISABLED === 'true' && process.env.NODE_ENV === 'production') {
+  throw new Error('AUTH_DISABLED must not be enabled in production');
+}
+
 const DEV_USER: AuthenticatedUser = {
   userId: 'dev_admin',
   sessionId: 'dev_session',

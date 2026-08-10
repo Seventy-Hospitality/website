@@ -91,6 +91,9 @@ export const clubEventService = new ClubEventService(clubEventRepo, bookingRepo,
 const sessionRepo = new SessionRepository(db);
 const magicLinkRepo = new MagicLinkRepository(db);
 export const userRepo = new UserRepository(db);
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET must be set in production');
+}
 const jwtService = new JwtService(process.env.JWT_SECRET ?? 'dev-fallback-secret-not-for-production');
 
 export const authService = new AuthService(

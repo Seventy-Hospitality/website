@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+// Emails are stored and looked up lowercased; normalize at every entry point.
+export const emailSchema = z.string().trim().toLowerCase().email();
+
 const nullableTrimmedString = (maxLength: number) =>
   z.preprocess(
     (value) => {
@@ -16,14 +19,14 @@ const booleanQueryParam = z
   .transform((value) => value === 'true');
 
 export const createMemberSchema = z.object({
-  email: z.string().email(),
+  email: emailSchema,
   firstName: z.string().min(1).max(100),
   lastName: z.string().min(1).max(100),
   phone: z.string().max(30).optional(),
 });
 
 export const updateMemberSchema = z.object({
-  email: z.string().email().optional(),
+  email: emailSchema.optional(),
   firstName: z.string().min(1).max(100).optional(),
   lastName: z.string().min(1).max(100).optional(),
   phone: z.string().max(30).nullable().optional(),
@@ -34,7 +37,7 @@ export const createNoteSchema = z.object({
 });
 
 export const sendMagicLinkSchema = z.object({
-  email: z.string().email(),
+  email: emailSchema,
   redirectTo: z.string().trim().min(1).max(2048).optional(),
 });
 

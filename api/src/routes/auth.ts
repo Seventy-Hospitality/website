@@ -39,7 +39,9 @@ function buildRedirectUrl(redirectTo: string, params: Record<string, string>) {
 
 export async function authRoutes(app: FastifyInstance) {
   // Send magic link
-  app.post('/magic-link', async (req, reply) => {
+  app.post('/magic-link', {
+    config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
+  }, async (req, reply) => {
     const body = sendMagicLinkSchema.safeParse(req.body);
     if (!body.success) {
       return error(reply, 'VALIDATION_ERROR', 'Invalid sign-in request');

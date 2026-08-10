@@ -6,6 +6,7 @@ import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
 import { authHook } from './middleware/auth';
 import { memberRoutes } from './routes/members';
 import { authRoutes } from './routes/auth';
@@ -45,6 +46,11 @@ await app.register(cors, {
   origin: webOrigins,
   credentials: true,
   methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'],
+});
+
+await app.register(rateLimit, {
+  max: 300,
+  timeWindow: '1 minute',
 });
 
 await app.register(cookie);
