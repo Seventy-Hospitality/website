@@ -18,6 +18,10 @@ export class CredentialRepository {
     });
   }
 
+  async hasPassword(userId: string, tx?: TransactionContext): Promise<boolean> {
+    return (await this.findPassword(userId, tx)) !== null;
+  }
+
   async upsertPassword(userId: string, secretHash: string, tx?: TransactionContext): Promise<void> {
     await this.client(tx).userCredential.upsert({
       where: { userId_type: { userId, type: PASSWORD } },

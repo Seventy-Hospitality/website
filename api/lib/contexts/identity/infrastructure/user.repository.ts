@@ -11,6 +11,12 @@ export interface IdentityUser {
   emailVerifiedAt: Date | null;
   termsAcceptedAt: Date | null;
   termsVersion: string | null;
+  /**
+   * The club profile linked to this user, if any. Only the FK is read here so
+   * the principal costs one query; everything else about a Member belongs to
+   * the members context.
+   */
+  memberId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -23,7 +29,7 @@ export interface AppUser {
   role: string;
 }
 
-const USER_SELECT = {
+export const USER_SELECT = {
   id: true,
   email: true,
   name: true,
@@ -34,7 +40,15 @@ const USER_SELECT = {
   termsVersion: true,
   createdAt: true,
   updatedAt: true,
+  member: { select: { id: true } },
 } satisfies Prisma.UserSelect;
+
+type UserRow = Prisma.UserGetPayload<{ select: typeof USER_SELECT }>;
+
+export function toIdentityUser(row: UserRow): IdentityUser {
+  const { member, ...user } = row;
+  return { ...user, memberId: member?.id ?? null };
+}
 
 function toAppUser(user: { id: string; email: string; name: string; staffRole: string | null }): AppUser {
   return { id: user.id, email: user.email, name: user.name, role: user.staffRole ?? 'member' };
@@ -48,18 +62,20 @@ export class UserRepository {
   }
 
   async findByEmail(email: string, tx?: TransactionContext): Promise<IdentityUser | null> {
-    return this.client(tx).user.findUnique({ where: { email }, select: USER_SELECT });
+    const row = await this.client(tx).user.findUnique({ where: { email }, select: USER_SELECT });
+    return row && toIdentityUser(row);
   }
 
   async findById(id: string, tx?: TransactionContext): Promise<IdentityUser | null> {
-    return this.client(tx).user.findUnique({ where: { id }, select: USER_SELECT });
+    const row = await this.client(tx).user.findUnique({ where: { id }, select: USER_SELECT });
+    return row && toIdentityUser(row);
   }
 
   async createUser(
     input: { email: string; name: string; staffRole?: string | null; emailVerifiedAt?: Date | null },
     tx?: TransactionContext,
   ): Promise<IdentityUser> {
-    return this.client(tx).user.create({
+    const row = await this.client(tx).user.create({
       data: {
         email: input.email,
         name: input.name,
@@ -68,6 +84,7 @@ export class UserRepository {
       },
       select: USER_SELECT,
     });
+    return toIdentityUser(row);
   }
 
   async markEmailVerified(id: string, when: Date, tx?: TransactionContext): Promise<void> {
@@ -75,11 +92,6 @@ export class UserRepository {
       where: { id, emailVerifiedAt: null },
       data: { emailVerifiedAt: when },
     });
-  }
-
-  async isAdmin(email: string): Promise<boolean> {
-    const user = await this.prisma.user.findUnique({ where: { email }, select: { staffRole: true } });
-    return user?.staffRole === 'admin';
   }
 
   // ── Admin surface (src/routes/admin.ts) ──

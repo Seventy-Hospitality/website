@@ -6,7 +6,7 @@ import { MemberNotFoundError, DuplicateEmailError } from '@/lib/contexts/members
 
 export async function memberRoutes(app: FastifyInstance) {
   // List members
-  app.get('/', async (req, reply) => {
+  app.get('/', { config: { policy: 'admin' } }, async (req, reply) => {
     const query = req.query as Record<string, string>;
     const parsed = membersQuerySchema.safeParse(query);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
@@ -16,7 +16,7 @@ export async function memberRoutes(app: FastifyInstance) {
   });
 
   // Get member by ID
-  app.get<{ Params: { id: string } }>('/:id', async (req, reply) => {
+  app.get<{ Params: { id: string } }>('/:id', { config: { policy: 'admin' } }, async (req, reply) => {
     try {
       const member = await memberService.getById(req.params.id);
       return success(reply, member);
@@ -27,7 +27,7 @@ export async function memberRoutes(app: FastifyInstance) {
   });
 
   // Create member
-  app.post('/', async (req, reply) => {
+  app.post('/', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createMemberSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -41,7 +41,7 @@ export async function memberRoutes(app: FastifyInstance) {
   });
 
   // Update member
-  app.patch<{ Params: { id: string } }>('/:id', async (req, reply) => {
+  app.patch<{ Params: { id: string } }>('/:id', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = updateMemberSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -56,12 +56,12 @@ export async function memberRoutes(app: FastifyInstance) {
   });
 
   // Add note
-  app.post<{ Params: { id: string } }>('/:id/notes', async (req, reply) => {
+  app.post<{ Params: { id: string } }>('/:id/notes', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createNoteSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
     try {
-      const note = await memberService.addNote(req.params.id, req.user!.userId, parsed.data.content);
+      const note = await memberService.addNote(req.params.id, req.principal!.userId, parsed.data.content);
       return success(reply, note, 201);
     } catch (e) {
       if (e instanceof MemberNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);

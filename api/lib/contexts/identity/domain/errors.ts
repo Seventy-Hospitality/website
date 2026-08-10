@@ -49,15 +49,19 @@ export class AccountUnavailableError extends AuthenticationError {
   }
 }
 
+const LINK_REJECTION_MESSAGES: Record<LinkRejectionReason, string> = {
+  account_unavailable: 'This account is not available',
+  email_required: 'The identity provider did not share an email address',
+  provider_email_unverified:
+    'The identity provider could not verify this email; sign in with your password and link the provider from settings',
+  linked_to_other_account: 'That provider account is already linked to another Club70 account',
+  not_linked: 'That provider is not linked to this account',
+  last_credential: 'Removing this would leave the account with no way to sign in',
+};
+
 export class LinkRejectedError extends AuthenticationError {
   constructor(readonly reason: LinkRejectionReason) {
-    super(
-      reason === 'email_required'
-        ? 'The identity provider did not share an email address'
-        : reason === 'provider_email_unverified'
-          ? 'The identity provider could not verify this email; sign in with your password and link the provider from settings'
-          : 'This account is not available',
-    );
+    super(LINK_REJECTION_MESSAGES[reason]);
     this.name = 'LinkRejectedError';
   }
 }

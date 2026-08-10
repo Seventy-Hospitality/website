@@ -188,12 +188,74 @@ The `TransactionContext` type is opaque — application code cannot access Prism
 
 ## Auth Pattern
 
-Magic-link + JWT sessions, same as arciops but without NestJS guards. Next.js middleware handles the guard role:
+The `identity` context owns users, credentials, federated identities, rotating
+sessions and one-time tokens. Authentication mints a session; authorization is
+a per-route policy enforced by two Fastify hooks in `src/middleware/auth.ts`.
 
-1. `POST /api/auth/magic-link` → generate token, send email
-2. `GET /api/auth/verify?token=...` → validate, create session, return JWT
-3. All subsequent requests: JWT in cookie or Authorization header
-4. `middleware.ts` validates JWT, attaches user to request context
+### Sessions
+
+- Access token: 10-minute JWT carrying `sub`, `sid`, `typ` only. No role claim
+  ever: roles and the member link are read from the database per request, so
+  revocation and staff changes take effect immediately.
+- Refresh token: 32 random bytes, stored sha256-hashed, rotated on every use
+  with a 60s grace window; presenting a rotated-away token outside the grace
+  revokes the whole session (theft signal).
+- Mobile carries both tokens itself; the admin web rides httpOnly cookies and
+  the auth hook rotates them transparently, so the browser never sees the
+  10-minute access TTL.
+
+### Policy ladder
+
+Every route declares exactly one policy in its `config`:
+
+| Policy | Passes when |
+|---|---|
+| `public` | always |
+| `authenticated` | any valid session |
+| `member` | session + `principal.memberId != null` |
+| `active-member` | member + membership status `active` |
+| `staff` | `staffRole` is `staff` or `admin` |
+| `admin` | `staffRole` is `admin` |
+| `cron` | `Authorization: Bearer $CRON_SECRET` |
+| `webhook` | always; the route verifies the provider signature |
+
+```typescript
+app.get('/profile', { config: { policy: 'member' } }, async (req, reply) => {
+  const member = await memberService.getById(req.principal!.memberId!);
+  return success(reply, member);
+});
+```
+
+Entitlements finer than "membership is active" (PRO tier, per-type limits) are
+data, not policies: they are read in the domain that enforces them. Resource
+ownership ("this booking is mine") also stays in the services.
+
+### Boot assertion
+
+`assertRoutePolicy` is registered as an `onRoute` hook before the first route,
+and throws if a route declares no policy. Forgetting to annotate a new route
+crashes startup instead of quietly serving it: there is no default policy and
+no URL allowlist (`PUBLIC_PREFIXES` is gone). The one exemption is
+`@fastify/static`, which generates a route per file of the bundled web app and
+cannot declare config; those routes are stamped `public`.
+
+### Principal
+
+`authHook` (a `preHandler`) enforces the declared policy and attaches
+`req.principal`:
+
+```typescript
+interface Principal {
+  userId: string; sessionId: string; email: string; emailVerified: boolean;
+  staffRole: 'staff' | 'admin' | null;   // from the DB, never from the token
+  memberId: string | null;               // the club profile, if any
+  client: 'admin_web' | 'member_mobile';
+}
+```
+
+`AUTH_DISABLED=true` (non-production only, asserted at import) injects a
+complete development principal so any policy can be exercised locally; cron
+still requires its secret.
 
 ## Webhook Processing
 

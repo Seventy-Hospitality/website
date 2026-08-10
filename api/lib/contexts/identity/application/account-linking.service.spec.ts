@@ -32,6 +32,7 @@ function user(overrides: Partial<IdentityUser> = {}): IdentityUser {
     emailVerifiedAt: new Date('2026-08-01T00:00:00Z'),
     termsAcceptedAt: null,
     termsVersion: null,
+    memberId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -85,12 +86,14 @@ function mockIdentities(found: AuthIdentityRecord | null = null): AuthIdentityRe
     touchUsed: vi.fn().mockResolvedValue(undefined),
     setRefreshToken: vi.fn().mockResolvedValue(undefined),
     listByUser: vi.fn().mockResolvedValue([]),
+    deleteForUser: vi.fn().mockResolvedValue(undefined),
   } as unknown as AuthIdentityRepository;
 }
 
-function mockCredentials(): CredentialRepository {
+function mockCredentials(hasPassword = false): CredentialRepository {
   return {
-    findPassword: vi.fn().mockResolvedValue(null),
+    findPassword: vi.fn().mockResolvedValue(hasPassword ? { secretHash: '$argon2id$mock' } : null),
+    hasPassword: vi.fn().mockResolvedValue(hasPassword),
     upsertPassword: vi.fn().mockResolvedValue(undefined),
     deletePassword: vi.fn().mockResolvedValue(undefined),
   } as unknown as CredentialRepository;
@@ -414,6 +417,102 @@ describe('AccountLinkingService', () => {
       );
       expect(issued.accessToken).toBe('access_jwt');
       warn.mockRestore();
+    });
+  });
+  describe('managing links from a signed-in account', () => {
+    it('lists identities and password presence', async () => {
+      const identities = mockIdentities();
+      (identities.listByUser as ReturnType<typeof vi.fn>).mockResolvedValue([identityRecord()]);
+      const { service } = createService({ identities, credentials: mockCredentials(true) });
+
+      const credentials = await service.listCredentials('usr_1');
+
+      expect(credentials.hasPassword).toBe(true);
+      expect(credentials.identities).toEqual([
+        expect.objectContaining({ provider: 'google', email: 'alice@example.com' }),
+      ]);
+    });
+
+    it('links a provider to the caller account after burning the nonce', async () => {
+      const identities = mockIdentities();
+      const { service, google, tokens, audit } = createService({ identities });
+
+      const result = await service.linkProvider('usr_1', 'google', {
+        idToken: 'id_token',
+        nonce: 'raw_nonce',
+      });
+
+      expect(result).toEqual({ linked: true });
+      expect(tokens.consume).toHaveBeenCalledWith('oauth_nonce', hashToken('raw_nonce'));
+      expect(google.verify).toHaveBeenCalledWith('id_token', hashToken('raw_nonce'));
+      expect(identities.create).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'usr_1', provider: 'google', subject: 'google_sub_1' }),
+        TX,
+      );
+      expect(audit.append).toHaveBeenCalledWith(TX, expect.objectContaining({ eventType: 'IdentityLinked' }));
+    });
+
+    it('is a no-op when the identity is already this account', async () => {
+      const identities = mockIdentities(identityRecord({ userId: 'usr_1' }));
+      const { service } = createService({ identities });
+
+      expect(await service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' })).toEqual({
+        linked: false,
+      });
+      expect(identities.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses to move a provider account away from another user', async () => {
+      const identities = mockIdentities(identityRecord({ userId: 'usr_other' }));
+      const { service } = createService({ identities });
+
+      await expect(service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' }))
+        .rejects.toThrow(LinkRejectedError);
+      expect(identities.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a link whose nonce was never issued', async () => {
+      const { service, google } = createService({ tokens: mockTokens(false) });
+
+      await expect(service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' }))
+        .rejects.toThrow(InvalidTokenError);
+      expect(google.verify).not.toHaveBeenCalled();
+    });
+
+    it('stores the Apple refresh token when linking with an authorization code', async () => {
+      const identities = mockIdentities();
+      const gateway = mockGateway(true);
+      const { service, cipher } = createService({ identities, gateway });
+
+      await service.linkProvider('usr_1', 'apple', {
+        idToken: 't',
+        nonce: 'n',
+        authorizationCode: 'auth_code',
+      });
+
+      expect(gateway.exchangeCode).toHaveBeenCalledWith('auth_code');
+      expect(cipher.encrypt).toHaveBeenCalledWith('apple_refresh');
+      expect(identities.setRefreshToken).toHaveBeenCalledWith('ident_new', 'enc(apple_refresh)');
+    });
+
+    it('unlinks a provider when a password remains', async () => {
+      const identities = mockIdentities();
+      (identities.listByUser as ReturnType<typeof vi.fn>).mockResolvedValue([identityRecord()]);
+      const { service, audit } = createService({ identities, credentials: mockCredentials(true) });
+
+      await service.unlinkProvider('usr_1', 'google');
+
+      expect(identities.deleteForUser).toHaveBeenCalledWith('usr_1', 'google', TX);
+      expect(audit.append).toHaveBeenCalledWith(TX, expect.objectContaining({ eventType: 'IdentityUnlinked' }));
+    });
+
+    it('refuses to remove the last remaining credential', async () => {
+      const identities = mockIdentities();
+      (identities.listByUser as ReturnType<typeof vi.fn>).mockResolvedValue([identityRecord()]);
+      const { service } = createService({ identities, credentials: mockCredentials(false) });
+
+      await expect(service.unlinkProvider('usr_1', 'google')).rejects.toThrow(LinkRejectedError);
+      expect(identities.deleteForUser).not.toHaveBeenCalled();
     });
   });
 });

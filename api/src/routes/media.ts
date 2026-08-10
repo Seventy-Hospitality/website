@@ -8,7 +8,7 @@ import { error, success } from '@/src/lib/responses';
 import { deleteManagedImageSchema } from '@/src/lib/validation';
 
 export async function mediaRoutes(app: FastifyInstance) {
-  app.post('/event-images', async (req, reply) => {
+  app.post('/event-images', { config: { policy: 'admin' } }, async (req, reply) => {
     if (!req.isMultipart()) {
       return error(reply, 'INVALID_CONTENT_TYPE', 'Expected multipart form upload', 415);
     }
@@ -45,7 +45,7 @@ export async function mediaRoutes(app: FastifyInstance) {
     }
   });
 
-  app.delete('/event-images', async (req, reply) => {
+  app.delete('/event-images', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = deleteManagedImageSchema.safeParse(req.body);
     if (!parsed.success) {
       return error(reply, 'VALIDATION_ERROR', parsed.error.message);

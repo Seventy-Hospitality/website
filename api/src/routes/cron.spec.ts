@@ -1,7 +1,6 @@
-import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 
-const { mockMembershipService, mockMediaService, mockDb } = vi.hoisted(() => ({
+const { mockMembershipService, mockMediaService, mockDb, mockMembershipChecker } = vi.hoisted(() => ({
   mockMembershipService: {
     syncFromStripe: vi.fn(),
   },
@@ -17,17 +16,22 @@ const { mockMembershipService, mockMediaService, mockDb } = vi.hoisted(() => ({
       findMany: vi.fn().mockResolvedValue([]),
     },
   },
+  mockMembershipChecker: {
+    hasActiveMembership: vi.fn().mockResolvedValue(true),
+  },
 }));
 
 vi.mock('@/lib/container', () => ({
   membershipService: mockMembershipService,
   mediaService: mockMediaService,
+  membershipChecker: mockMembershipChecker,
 }));
 
 vi.mock('@/lib/db', () => ({
   db: mockDb,
 }));
 
+import { buildTestApp } from '@/src/test/app';
 import { cronRoutes } from './cron';
 
 describe('cron routes', () => {
@@ -35,9 +39,7 @@ describe('cron routes', () => {
 
   beforeAll(async () => {
     process.env.CRON_SECRET = 'test-secret';
-    app = Fastify();
-    await app.register(cronRoutes, { prefix: '/' });
-    await app.ready();
+    app = await buildTestApp({ routes: cronRoutes });
   });
 
   afterAll(() => app.close());
@@ -56,6 +58,17 @@ describe('cron routes', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/cleanup-event-images',
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(mockMediaService.cleanupStaleEventImages).not.toHaveBeenCalled();
+  });
+
+  it('rejects a wrong cron secret', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/cleanup-event-images',
+      headers: { authorization: 'Bearer wrong-secret' },
     });
 
     expect(response.statusCode).toBe(401);

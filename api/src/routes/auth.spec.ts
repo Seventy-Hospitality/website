@@ -1,6 +1,4 @@
-import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
-import cookie from '@fastify/cookie';
 import {
   EmailInUseError,
   InvalidCredentialsError,
@@ -39,7 +37,12 @@ function fixtureIssued(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const { mockAuthenticationService, mockAccountLinkingService, mockSessionService } = vi.hoisted(() => ({
+const {
+  mockAuthenticationService,
+  mockAccountLinkingService,
+  mockSessionService,
+  mockMembershipChecker,
+} = vi.hoisted(() => ({
   mockAuthenticationService: {
     signUp: vi.fn(),
     signIn: vi.fn(),
@@ -62,23 +65,29 @@ const { mockAuthenticationService, mockAccountLinkingService, mockSessionService
     revoke: vi.fn().mockResolvedValue(undefined),
     revokeAllForUser: vi.fn().mockResolvedValue(2),
   },
+  mockMembershipChecker: {
+    hasActiveMembership: vi.fn().mockResolvedValue(true),
+  },
 }));
 
 vi.mock('@/lib/container', () => ({
   authenticationService: mockAuthenticationService,
   accountLinkingService: mockAccountLinkingService,
   sessionService: mockSessionService,
+  membershipChecker: mockMembershipChecker,
 }));
 
+import { buildTestApp } from '@/src/test/app';
 import { authRoutes } from './auth';
 
-function authenticatedUser(overrides: Record<string, unknown> = {}) {
+function principal(overrides: Record<string, unknown> = {}) {
   return {
     userId: 'usr_1',
     sessionId: 'ses_1',
     email: 'alice@example.com',
-    emailVerifiedAt: null,
+    emailVerified: false,
     staffRole: null,
+    memberId: null,
     client: 'member_mobile',
     ...overrides,
   };
@@ -92,10 +101,7 @@ describe('auth routes', () => {
     mockAuthenticationService.getWebUrl.mockReturnValue('https://app.test');
     mockSessionService.validateAccessToken.mockRejectedValue(new SessionExpiredError());
     mockSessionService.refresh.mockRejectedValue(new InvalidTokenError());
-    app = Fastify({ logger: false });
-    await app.register(cookie);
-    await app.register(authRoutes, { prefix: '/api/auth' });
-    await app.ready();
+    app = await buildTestApp({ routes: authRoutes, prefix: '/api/auth' });
   });
 
   afterEach(() => app.close());
@@ -322,7 +328,7 @@ describe('auth routes', () => {
 
   describe('POST /api/auth/signout', () => {
     it('revokes the current session and clears cookies', async () => {
-      mockSessionService.validateAccessToken.mockResolvedValue(authenticatedUser());
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
 
       const res = await app.inject({
         method: 'POST',
@@ -335,16 +341,22 @@ describe('auth routes', () => {
       expect(mockSessionService.revoke).toHaveBeenCalledWith('ses_1', 'signout');
     });
 
-    it('succeeds even without a valid session', async () => {
+    it('rejects a caller without a session', async () => {
       const res = await app.inject({ method: 'POST', url: '/api/auth/signout' });
-      expect(res.statusCode).toBe(200);
+      expect(res.statusCode).toBe(401);
       expect(mockSessionService.revoke).not.toHaveBeenCalled();
     });
   });
 
   describe('POST /api/auth/logout (legacy admin web)', () => {
     it('clears the session cookies', async () => {
-      const res = await app.inject({ method: 'POST', url: '/api/auth/logout' });
+      mockSessionService.validateAccessToken.mockResolvedValue(principal({ client: 'admin_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/logout',
+        cookies: { seventy_access: 'valid_jwt' },
+      });
 
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ data: { loggedOut: true } });
@@ -360,7 +372,7 @@ describe('auth routes', () => {
     });
 
     it('revokes every session for the user', async () => {
-      mockSessionService.validateAccessToken.mockResolvedValue(authenticatedUser());
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
 
       const res = await app.inject({
         method: 'POST',
@@ -436,7 +448,7 @@ describe('auth routes', () => {
     });
 
     it('resends for the authenticated user', async () => {
-      mockSessionService.validateAccessToken.mockResolvedValue(authenticatedUser());
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
 
       const res = await app.inject({
         method: 'POST',
@@ -580,7 +592,7 @@ describe('auth routes', () => {
   describe('GET /api/auth/me', () => {
     it('returns user data for a valid access cookie', async () => {
       mockSessionService.validateAccessToken.mockResolvedValue(
-        authenticatedUser({ staffRole: 'admin', client: 'admin_web' }),
+        principal({ staffRole: 'admin', client: 'admin_web' }),
       );
 
       const res = await app.inject({
@@ -594,14 +606,16 @@ describe('auth routes', () => {
         data: {
           userId: 'usr_1',
           email: 'alice@example.com',
+          emailVerified: false,
           staffRole: 'admin',
-          emailVerifiedAt: null,
+          memberId: null,
+          client: 'admin_web',
         },
       });
     });
 
     it('supports bearer authentication', async () => {
-      mockSessionService.validateAccessToken.mockResolvedValue(authenticatedUser());
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
 
       const res = await app.inject({
         method: 'GET',

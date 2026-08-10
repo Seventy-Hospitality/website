@@ -1,6 +1,8 @@
 import {
   decideLink,
+  decideLinkToAccount,
   decideMemberClaim,
+  decideUnlink,
   type LinkContext,
   type ProviderAssertion,
 } from './linking-policy';
@@ -198,5 +200,59 @@ describe('decideMemberClaim', () => {
       emailVerified: true,
     });
     expect(decision).toEqual({ action: 'none' });
+  });
+});
+
+describe('decideLinkToAccount', () => {
+  it('links a provider account nobody owns yet', () => {
+    expect(
+      decideLinkToAccount({ userId: 'usr_1', existingIdentityUserId: null, alreadyLinkedProvider: false }),
+    ).toEqual({ action: 'link' });
+  });
+
+  it('is idempotent when the identity is already this account', () => {
+    expect(
+      decideLinkToAccount({ userId: 'usr_1', existingIdentityUserId: 'usr_1', alreadyLinkedProvider: true }),
+    ).toEqual({ action: 'already_linked' });
+  });
+
+  it('never steals a provider account from another user', () => {
+    expect(
+      decideLinkToAccount({ userId: 'usr_1', existingIdentityUserId: 'usr_2', alreadyLinkedProvider: false }),
+    ).toEqual({ action: 'reject', reason: 'linked_to_other_account' });
+  });
+
+  it('refuses a second account for a provider already linked here', () => {
+    expect(
+      decideLinkToAccount({ userId: 'usr_1', existingIdentityUserId: null, alreadyLinkedProvider: true }),
+    ).toEqual({ action: 'reject', reason: 'linked_to_other_account' });
+  });
+});
+
+describe('decideUnlink', () => {
+  it('unlinks when a password remains', () => {
+    expect(decideUnlink('google', { linkedProviders: ['google'], hasPassword: true })).toEqual({
+      action: 'unlink',
+    });
+  });
+
+  it('unlinks when another provider remains', () => {
+    expect(decideUnlink('google', { linkedProviders: ['google', 'apple'], hasPassword: false })).toEqual({
+      action: 'unlink',
+    });
+  });
+
+  it('refuses to remove the last remaining credential', () => {
+    expect(decideUnlink('apple', { linkedProviders: ['apple'], hasPassword: false })).toEqual({
+      action: 'reject',
+      reason: 'last_credential',
+    });
+  });
+
+  it('rejects a provider that is not linked', () => {
+    expect(decideUnlink('apple', { linkedProviders: ['google'], hasPassword: true })).toEqual({
+      action: 'reject',
+      reason: 'not_linked',
+    });
   });
 });

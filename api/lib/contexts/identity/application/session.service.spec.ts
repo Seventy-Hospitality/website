@@ -1,4 +1,4 @@
-import { SessionService, toAuthenticatedUser } from './session.service';
+import { SessionService, toPrincipal } from './session.service';
 import { hashToken, REFRESH_ROTATION_GRACE_MS, SessionExpiredError, InvalidTokenError, NotAuthorizedError } from '../domain';
 import type { AuthSessionRepository, AuthSessionRecord } from '../infrastructure/auth-session.repository';
 import type { UserRepository, IdentityUser } from '../infrastructure/user.repository';
@@ -22,6 +22,7 @@ function user(overrides: Partial<IdentityUser> = {}): IdentityUser {
     emailVerifiedAt: new Date('2026-08-01T00:00:00Z'),
     termsAcceptedAt: null,
     termsVersion: null,
+    memberId: null,
     createdAt: new Date('2026-07-01T00:00:00Z'),
     updatedAt: new Date('2026-07-01T00:00:00Z'),
     ...overrides,
@@ -52,6 +53,7 @@ function mockSessionRepo(): AuthSessionRepository {
   return {
     create: vi.fn().mockImplementation(async (input: Record<string, unknown>) => sessionRecord(input as Partial<AuthSessionRecord>)),
     findById: vi.fn(),
+    findByIdWithUser: vi.fn(),
     findByRefreshTokenHash: vi.fn().mockResolvedValue(null),
     findByPreviousTokenHash: vi.fn().mockResolvedValue(null),
     rotate: vi.fn().mockResolvedValue(true),
@@ -265,24 +267,26 @@ describe('SessionService', () => {
         sid: 'ses_1',
         typ: 'access',
       });
+      const session = overrides.session === undefined ? sessionRecord() : overrides.session;
+      const owner = overrides.user === undefined ? user({ staffRole: 'admin', memberId: 'mem_1' }) : overrides.user;
       const sessionRepo = mockSessionRepo();
-      (sessionRepo.findById as ReturnType<typeof vi.fn>).mockResolvedValue(
-        overrides.session === undefined ? sessionRecord() : overrides.session,
+      (sessionRepo.findByIdWithUser as ReturnType<typeof vi.fn>).mockResolvedValue(
+        session && owner ? { session, user: owner } : null,
       );
-      const userRepo = mockUserRepo(overrides.user === undefined ? user({ staffRole: 'admin' }) : overrides.user);
-      return createService({ jwt, sessionRepo, userRepo });
+      return createService({ jwt, sessionRepo });
     }
 
-    it('returns the authenticated user from a fresh DB read', async () => {
+    it('builds the principal from one joined read of session and owner', async () => {
       const { service, sessionRepo } = withValidToken();
-      const authenticated = await service.validateAccessToken('access_jwt');
+      const principal = await service.validateAccessToken('access_jwt');
 
-      expect(authenticated).toEqual({
+      expect(principal).toEqual({
         userId: 'usr_1',
         sessionId: 'ses_1',
         email: 'person@example.com',
-        emailVerifiedAt: new Date('2026-08-01T00:00:00Z'),
+        emailVerified: true,
         staffRole: 'admin',
+        memberId: 'mem_1',
         client: 'member_mobile',
       });
       expect(sessionRepo.touch).toHaveBeenCalledWith('ses_1');
@@ -310,12 +314,12 @@ describe('SessionService', () => {
       await expect(service.validateAccessToken('access_jwt')).rejects.toThrow(SessionExpiredError);
     });
 
-    it('rejects when the user is missing or inactive', async () => {
-      const { service } = withValidToken({ user: null });
+    it('rejects a suspended or deleted account', async () => {
+      const { service } = withValidToken({ user: user({ status: 'suspended' }) });
       await expect(service.validateAccessToken('access_jwt')).rejects.toThrow(NotAuthorizedError);
 
-      const { service: suspended } = withValidToken({ user: user({ status: 'suspended' }) });
-      await expect(suspended.validateAccessToken('access_jwt')).rejects.toThrow(NotAuthorizedError);
+      const { service: deleted } = withValidToken({ user: user({ status: 'deleted' }) });
+      await expect(deleted.validateAccessToken('access_jwt')).rejects.toThrow(NotAuthorizedError);
     });
   });
 
@@ -334,10 +338,10 @@ describe('SessionService', () => {
   });
 });
 
-describe('toAuthenticatedUser', () => {
+describe('toPrincipal', () => {
   it('maps an issued session onto the request principal shape', () => {
     const issued = {
-      user: user({ staffRole: 'admin' }),
+      user: user({ staffRole: 'admin', memberId: 'mem_1' }),
       sessionId: 'ses_9',
       client: 'admin_web' as const,
       accessToken: 'a',
@@ -345,13 +349,27 @@ describe('toAuthenticatedUser', () => {
       refreshToken: 'r',
       refreshTokenExpiresAt: new Date(),
     };
-    expect(toAuthenticatedUser(issued)).toEqual({
+    expect(toPrincipal(issued)).toEqual({
       userId: 'usr_1',
       sessionId: 'ses_9',
       email: 'person@example.com',
-      emailVerifiedAt: issued.user.emailVerifiedAt,
+      emailVerified: true,
       staffRole: 'admin',
+      memberId: 'mem_1',
       client: 'admin_web',
     });
+  });
+
+  it('reports an unverified email and no club profile', () => {
+    const issued = {
+      user: user({ emailVerifiedAt: null }),
+      sessionId: 'ses_9',
+      client: 'member_mobile' as const,
+      accessToken: 'a',
+      accessTokenExpiresAt: new Date(),
+      refreshToken: 'r',
+      refreshTokenExpiresAt: new Date(),
+    };
+    expect(toPrincipal(issued)).toMatchObject({ emailVerified: false, memberId: null });
   });
 });

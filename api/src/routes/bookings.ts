@@ -17,12 +17,12 @@ import {
 export async function bookingRoutes(app: FastifyInstance) {
   // ── Courts ──
 
-  app.get('/courts', async (_req, reply) => {
+  app.get('/courts', { config: { policy: 'admin' } }, async (_req, reply) => {
     const courts = await bookingService.listCourts();
     return success(reply, courts);
   });
 
-  app.get<{ Params: { id: string } }>('/courts/:id/availability', async (req, reply) => {
+  app.get<{ Params: { id: string } }>('/courts/:id/availability', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = availabilityQuerySchema.safeParse(req.query);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -35,7 +35,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post<{ Params: { id: string } }>('/courts/:id/bookings', async (req, reply) => {
+  app.post<{ Params: { id: string } }>('/courts/:id/bookings', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createBookingSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -54,6 +54,7 @@ export async function bookingRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string; bookingId: string } }>(
     '/courts/:id/bookings/:bookingId',
+    { config: { policy: 'admin' } },
     async (req, reply) => {
       try {
         await bookingService.adminCancel(req.params.bookingId);
@@ -66,12 +67,12 @@ export async function bookingRoutes(app: FastifyInstance) {
 
   // ── Showers ──
 
-  app.get('/showers', async (_req, reply) => {
+  app.get('/showers', { config: { policy: 'admin' } }, async (_req, reply) => {
     const showers = await bookingService.listShowers();
     return success(reply, showers);
   });
 
-  app.get<{ Params: { id: string } }>('/showers/:id/availability', async (req, reply) => {
+  app.get<{ Params: { id: string } }>('/showers/:id/availability', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = availabilityQuerySchema.safeParse(req.query);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -84,7 +85,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post<{ Params: { id: string } }>('/showers/:id/bookings', async (req, reply) => {
+  app.post<{ Params: { id: string } }>('/showers/:id/bookings', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createBookingSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -103,6 +104,7 @@ export async function bookingRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string; bookingId: string } }>(
     '/showers/:id/bookings/:bookingId',
+    { config: { policy: 'admin' } },
     async (req, reply) => {
       try {
         await bookingService.adminCancel(req.params.bookingId);
@@ -115,7 +117,7 @@ export async function bookingRoutes(app: FastifyInstance) {
 
   // ── All Bookings (admin view) ──
 
-  app.get('/bookings', async (req, reply) => {
+  app.get('/bookings', { config: { policy: 'admin' } }, async (req, reply) => {
     const query = req.query as Record<string, string>;
     const date = query.date;
     const bookings = await bookingService.listBookings(date);
@@ -124,7 +126,7 @@ export async function bookingRoutes(app: FastifyInstance) {
 
   // ── Booking counts ──
 
-  app.get<{ Params: { type: string; id: string } }>('/facilities/:type/:id/booking-count', async (req, reply) => {
+  app.get<{ Params: { type: string; id: string } }>('/facilities/:type/:id/booking-count', { config: { policy: 'admin' } }, async (req, reply) => {
     const { type, id } = req.params;
     if (type !== 'court' && type !== 'shower') return error(reply, 'VALIDATION_ERROR', 'Invalid facility type');
     const count = await bookingService.countUpcomingBookings(type, id);
@@ -133,12 +135,12 @@ export async function bookingRoutes(app: FastifyInstance) {
 
   // ── Court Admin ──
 
-  app.get('/courts/all', async (_req, reply) => {
+  app.get('/courts/all', { config: { policy: 'admin' } }, async (_req, reply) => {
     const courts = await bookingService.listAllCourts();
     return success(reply, courts);
   });
 
-  app.post('/courts', async (req, reply) => {
+  app.post('/courts', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createFacilitySchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -146,7 +148,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     return success(reply, court, 201);
   });
 
-  app.patch<{ Params: { id: string } }>('/courts/:id', async (req, reply) => {
+  app.patch<{ Params: { id: string } }>('/courts/:id', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = updateFacilitySchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -161,12 +163,12 @@ export async function bookingRoutes(app: FastifyInstance) {
 
   // ── Shower Admin ──
 
-  app.get('/showers/all', async (_req, reply) => {
+  app.get('/showers/all', { config: { policy: 'admin' } }, async (_req, reply) => {
     const showers = await bookingService.listAllShowers();
     return success(reply, showers);
   });
 
-  app.post('/showers', async (req, reply) => {
+  app.post('/showers', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createFacilitySchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -174,7 +176,7 @@ export async function bookingRoutes(app: FastifyInstance) {
     return success(reply, shower, 201);
   });
 
-  app.patch<{ Params: { id: string } }>('/showers/:id', async (req, reply) => {
+  app.patch<{ Params: { id: string } }>('/showers/:id', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = updateFacilitySchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 

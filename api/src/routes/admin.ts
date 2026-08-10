@@ -4,12 +4,12 @@ import { userRepo } from '@/lib/container';
 import { error, success } from '@/src/lib/responses';
 
 export async function adminRoutes(app: FastifyInstance) {
-  app.get('/users', async (_req, reply) => {
+  app.get('/users', { config: { policy: 'admin' } }, async (_req, reply) => {
     const users = await userRepo.listAdmins();
     return success(reply, users);
   });
 
-  app.post('/users', async (req, reply) => {
+  app.post('/users', { config: { policy: 'admin' } }, async (req, reply) => {
     const body = z.object({
       email: z.string().email(),
       name: z.string().min(1),
@@ -28,10 +28,10 @@ export async function adminRoutes(app: FastifyInstance) {
     return success(reply, user);
   });
 
-  app.delete('/users/:id', async (req, reply) => {
+  app.delete('/users/:id', { config: { policy: 'admin' } }, async (req, reply) => {
     const { id } = req.params as { id: string };
 
-    if (req.user?.userId === id) {
+    if (req.principal?.userId === id) {
       return error(reply, 'FORBIDDEN', 'Cannot remove yourself');
     }
 

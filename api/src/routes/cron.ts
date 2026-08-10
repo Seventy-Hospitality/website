@@ -3,13 +3,9 @@ import { mediaService, membershipService } from '@/lib/container';
 import { db } from '@/lib/db';
 import { cleanupManagedImagesQuerySchema } from '@/src/lib/validation';
 
+// The shared-secret check lives in the `cron` policy (src/middleware/auth.ts).
 export async function cronRoutes(app: FastifyInstance) {
-  app.get('/sync-memberships', async (req, reply) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return reply.status(401).send({ error: 'Unauthorized' });
-    }
-
+  app.get('/sync-memberships', { config: { policy: 'cron' } }, async (_req, reply) => {
     const members = await db.member.findMany({
       where: { stripeCustomerId: { not: null } },
       select: { id: true, stripeCustomerId: true },
@@ -31,12 +27,7 @@ export async function cronRoutes(app: FastifyInstance) {
     return reply.send({ synced, errors, total: members.length });
   });
 
-  app.post('/cleanup-event-images', async (req, reply) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return reply.status(401).send({ error: 'Unauthorized' });
-    }
-
+  app.post('/cleanup-event-images', { config: { policy: 'cron' } }, async (req, reply) => {
     const parsed = cleanupManagedImagesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       return reply.status(400).send({ error: parsed.error.message });

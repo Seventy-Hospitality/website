@@ -3,12 +3,14 @@ export {
   SessionService,
   AccountLinkingService,
   MemberClaimService,
-  toAuthenticatedUser,
+  toPrincipal,
   type IssuedSession,
   type SessionMeta,
   type SignUpInput,
   type GoogleSignInInput,
   type AppleSignInInput,
+  type LinkProviderInput,
+  type LinkedCredentials,
 } from './application';
 export {
   UserRepository,
@@ -27,8 +29,9 @@ export {
   type IdentityUser,
 } from './infrastructure';
 export {
-  type AuthenticatedUser,
+  type Principal,
   type Client,
+  type Provider,
   type StaffRole,
   ACCESS_COOKIE_NAME,
   REFRESH_COOKIE_NAME,

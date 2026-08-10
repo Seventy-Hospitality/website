@@ -35,10 +35,6 @@ export class MemberService {
     return member;
   }
 
-  async findByEmail(email: string) {
-    return this.repo.getByEmail(email);
-  }
-
   async create(input: CreateMemberInput) {
     memberInvariants.validateEmail(input.email);
     memberInvariants.validateName(input.firstName, input.lastName);

@@ -1,8 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
+  accountLinkingService,
   bookingService,
   clubEventService,
+  memberRepo,
   memberService,
+  membershipService,
   planRepo,
 } from '@/lib/container';
 import {
@@ -16,14 +19,18 @@ import {
   OutsideOperatingHoursError,
   SlotUnavailableError,
 } from '@/lib/contexts/bookings';
+import { MemberNotFoundError } from '@/lib/contexts/members';
+import { MembershipError, PlanNotFoundError } from '@/lib/contexts/memberships';
+import type { LinkedCredentials, Provider } from '@/lib/contexts/identity';
+import { handleIdentityError } from '@/src/lib/identity-errors';
 import { error, success } from '@/src/lib/responses';
-import { createSelfBookingSchema } from '@/src/lib/validation';
+import { createSelfBookingSchema, linkProviderSchema, meCheckoutSchema } from '@/src/lib/validation';
 
-type MemberProfile = Awaited<ReturnType<typeof memberService.findByEmail>>;
+type MemberProfile = Awaited<ReturnType<typeof memberService.getById>>;
 type UpcomingBooking = Awaited<ReturnType<typeof bookingService.getMyBookings>>[number];
 type ClubEvent = Awaited<ReturnType<typeof clubEventService.list>>[number];
 
-function serializeMember(member: NonNullable<MemberProfile>) {
+function serializeMember(member: MemberProfile) {
   return {
     id: member.id,
     email: member.email,
@@ -77,8 +84,29 @@ function serializeEvent(event: ClubEvent) {
   };
 }
 
-async function getCurrentMember(req: FastifyRequest) {
-  return memberService.findByEmail(req.user!.email);
+function serializeCredentials(credentials: LinkedCredentials) {
+  return {
+    hasPassword: credentials.hasPassword,
+    identities: credentials.identities.map((identity) => ({
+      provider: identity.provider,
+      email: identity.email,
+      isPrivateRelay: identity.isPrivateRelay,
+      linkedAt: identity.linkedAt.toISOString(),
+      lastUsedAt: identity.lastUsedAt?.toISOString() ?? null,
+    })),
+  };
+}
+
+/**
+ * The `member` policy already established that the caller has a club profile,
+ * so the id comes from the principal and never from the email.
+ */
+function memberId(req: FastifyRequest): string {
+  return req.principal!.memberId!;
+}
+
+function currentMember(req: FastifyRequest): Promise<MemberProfile> {
+  return memberService.getById(memberId(req));
 }
 
 async function getFacilityNames() {
@@ -93,7 +121,10 @@ async function getFacilityNames() {
   ]);
 }
 
-function handleBookingError(reply: FastifyReply, err: unknown) {
+function handleMemberError(reply: FastifyReply, err: unknown) {
+  // Only reachable if the profile was deleted between the principal read and
+  // the request being served.
+  if (err instanceof MemberNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof BookingNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof SlotUnavailableError) return error(reply, 'SLOT_UNAVAILABLE', err.message, 409);
@@ -103,31 +134,48 @@ function handleBookingError(reply: FastifyReply, err: unknown) {
   if (err instanceof BookingInPastError) return error(reply, 'BOOKING_IN_PAST', err.message, 422);
   if (err instanceof CancellationDeadlinePassedError) return error(reply, 'DEADLINE_PASSED', err.message, 422);
   if (err instanceof InactiveMembershipError) return error(reply, 'INACTIVE_MEMBERSHIP', err.message, 403);
+  if (err instanceof PlanNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
+  if (err instanceof MembershipError) return error(reply, 'MEMBERSHIP_ERROR', err.message, 400);
   throw err;
 }
 
 export async function meRoutes(app: FastifyInstance) {
-  app.get('/profile', async (req, reply) => {
-    const [member, plans] = await Promise.all([
-      getCurrentMember(req),
-      planRepo.list(),
-    ]);
+  // ── Profile ──
 
-    return success(reply, {
-      member: member ? serializeMember(member) : null,
-      plans,
-    });
+  app.get('/profile', { config: { policy: 'member' } }, async (req, reply) => {
+    try {
+      const [member, plans] = await Promise.all([currentMember(req), planRepo.list()]);
+      return success(reply, { member: serializeMember(member), plans });
+    } catch (err) {
+      return handleMemberError(reply, err);
+    }
   });
 
-  app.get('/bookings', async (req, reply) => {
-    const member = await getCurrentMember(req);
-    if (!member) {
-      return success(reply, []);
-    }
+  app.get('/home', { config: { policy: 'member' } }, async (req, reply) => {
+    try {
+      const [member, events, facilityNames, bookings] = await Promise.all([
+        currentMember(req),
+        clubEventService.list({ includeInactive: false, includePast: false }),
+        getFacilityNames(),
+        bookingService.getMyBookings(memberId(req)),
+      ]);
 
+      return success(reply, {
+        member: serializeMember(member),
+        spotlightEvents: events.slice(0, 6).map(serializeEvent),
+        upcomingBookings: bookings.slice(0, 8).map((booking) => serializeBooking(booking, facilityNames)),
+      });
+    } catch (err) {
+      return handleMemberError(reply, err);
+    }
+  });
+
+  // ── Bookings ──
+
+  app.get('/bookings', { config: { policy: 'member' } }, async (req, reply) => {
     const [facilityNames, bookings] = await Promise.all([
       getFacilityNames(),
-      bookingService.getMyBookings(member.id),
+      bookingService.getMyBookings(memberId(req)),
     ]);
 
     return success(
@@ -136,15 +184,10 @@ export async function meRoutes(app: FastifyInstance) {
     );
   });
 
-  app.post('/bookings', async (req, reply) => {
+  app.post('/bookings', { config: { policy: 'active-member' } }, async (req, reply) => {
     const parsed = createSelfBookingSchema.safeParse(req.body);
     if (!parsed.success) {
       return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-    }
-
-    const member = await getCurrentMember(req);
-    if (!member) {
-      return error(reply, 'PROFILE_REQUIRED', 'No member profile found for this account', 403);
     }
 
     try {
@@ -153,49 +196,123 @@ export async function meRoutes(app: FastifyInstance) {
             parsed.data.facilityId,
             parsed.data.date,
             parsed.data.startTime,
-            member.id,
+            memberId(req),
           )
         : await bookingService.bookShower(
             parsed.data.facilityId,
             parsed.data.date,
             parsed.data.startTime,
-            member.id,
+            memberId(req),
           );
 
       const facilityNames = await getFacilityNames();
       return success(reply, serializeBooking(booking, facilityNames), 201);
     } catch (err) {
-      return handleBookingError(reply, err);
+      return handleMemberError(reply, err);
     }
   });
 
-  app.delete<{ Params: { bookingId: string } }>('/bookings/:bookingId', async (req, reply) => {
-    const member = await getCurrentMember(req);
-    if (!member) {
-      return error(reply, 'PROFILE_REQUIRED', 'No member profile found for this account', 403);
-    }
+  // Cancelling is deliberately `member`, not `active-member`: a lapsed member
+  // must still be able to release a slot they are holding, and ownership is
+  // checked by the booking service.
+  app.delete<{ Params: { bookingId: string } }>(
+    '/bookings/:bookingId',
+    { config: { policy: 'member' } },
+    async (req, reply) => {
+      try {
+        await bookingService.cancel(req.params.bookingId, memberId(req));
+        return success(reply, { cancelled: true });
+      } catch (err) {
+        return handleMemberError(reply, err);
+      }
+    },
+  );
+
+  // ── Billing ──
+  // Member-facing variants of /api/stripe/*: the member comes from the
+  // principal, never from the body (the body-driven routes stay admin-only).
+
+  app.post('/checkout', { config: { policy: 'member' } }, async (req, reply) => {
+    const parsed = meCheckoutSchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
     try {
-      await bookingService.cancel(req.params.bookingId, member.id);
-      return success(reply, { cancelled: true });
+      const member = await currentMember(req);
+      const { url, newStripeCustomerId } = await membershipService.createCheckoutSession(
+        member.id,
+        parsed.data.planId,
+        member.email,
+        `${member.firstName} ${member.lastName}`,
+        member.stripeCustomerId,
+      );
+      if (newStripeCustomerId) {
+        await memberRepo.setStripeCustomerId(member.id, newStripeCustomerId);
+      }
+      return success(reply, { url });
     } catch (err) {
-      return handleBookingError(reply, err);
+      return handleMemberError(reply, err);
     }
   });
 
-  app.get('/home', async (req, reply) => {
-    const member = await getCurrentMember(req);
-
-    const [events, facilityNames, bookings] = await Promise.all([
-      clubEventService.list({ includeInactive: false, includePast: false }),
-      getFacilityNames(),
-      member ? bookingService.getMyBookings(member.id) : Promise.resolve([]),
-    ]);
-
-    return success(reply, {
-      member: member ? serializeMember(member) : null,
-      spotlightEvents: events.slice(0, 6).map(serializeEvent),
-      upcomingBookings: bookings.slice(0, 8).map((booking) => serializeBooking(booking, facilityNames)),
-    });
+  app.post('/billing-portal', { config: { policy: 'member' } }, async (req, reply) => {
+    try {
+      const member = await currentMember(req);
+      const url = await membershipService.createPortalSession(member.id, member.stripeCustomerId);
+      return success(reply, { url });
+    } catch (err) {
+      return handleMemberError(reply, err);
+    }
   });
+
+  // ── Sign-in methods ──
+  // Policy `authenticated`, not `member`: credentials belong to the user
+  // account, which exists before (and independently of) a club profile.
+
+  app.get('/auth-identities', { config: { policy: 'authenticated' } }, async (req, reply) => {
+    const credentials = await accountLinkingService.listCredentials(req.principal!.userId);
+    return success(reply, serializeCredentials(credentials));
+  });
+
+  app.post<{ Params: { provider: string } }>(
+    '/auth-identities/:provider',
+    { config: { policy: 'authenticated' } },
+    async (req, reply) => {
+      const provider = parseProvider(req.params.provider);
+      if (!provider) return error(reply, 'VALIDATION_ERROR', 'Unsupported provider', 404);
+
+      const parsed = linkProviderSchema.safeParse(req.body);
+      if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+      try {
+        const { linked } = await accountLinkingService.linkProvider(
+          req.principal!.userId,
+          provider,
+          parsed.data,
+        );
+        return success(reply, { provider, linked });
+      } catch (err) {
+        return handleIdentityError(reply, err);
+      }
+    },
+  );
+
+  app.delete<{ Params: { provider: string } }>(
+    '/auth-identities/:provider',
+    { config: { policy: 'authenticated' } },
+    async (req, reply) => {
+      const provider = parseProvider(req.params.provider);
+      if (!provider) return error(reply, 'VALIDATION_ERROR', 'Unsupported provider', 404);
+
+      try {
+        await accountLinkingService.unlinkProvider(req.principal!.userId, provider);
+        return success(reply, { provider, unlinked: true });
+      } catch (err) {
+        return handleIdentityError(reply, err);
+      }
+    },
+  );
+}
+
+function parseProvider(value: string): Provider | null {
+  return value === 'google' || value === 'apple' ? value : null;
 }

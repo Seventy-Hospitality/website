@@ -65,7 +65,11 @@ export class AuthIdentityRepository {
     await this.client(tx).authIdentity.update({ where: { id }, data: { refreshTokenEnc } });
   }
 
-  async listByUser(userId: string): Promise<AuthIdentityRecord[]> {
-    return this.prisma.authIdentity.findMany({ where: { userId }, orderBy: { linkedAt: 'asc' } });
+  async listByUser(userId: string, tx?: TransactionContext): Promise<AuthIdentityRecord[]> {
+    return this.client(tx).authIdentity.findMany({ where: { userId }, orderBy: { linkedAt: 'asc' } });
+  }
+
+  async deleteForUser(userId: string, provider: Provider, tx?: TransactionContext): Promise<void> {
+    await this.client(tx).authIdentity.deleteMany({ where: { userId, provider } });
   }
 }

@@ -5,9 +5,9 @@ import {
   REFRESH_COOKIE_NAME,
   LEGACY_SESSION_COOKIE_NAME,
   NotAuthorizedError,
-  toAuthenticatedUser,
-  type AuthenticatedUser,
+  toPrincipal,
   type IssuedSession,
+  type Principal,
 } from '@/lib/contexts/identity';
 
 function cookieOptions() {
@@ -48,7 +48,7 @@ export function clearSessionCookies(reply: FastifyReply): void {
 export async function authenticateFromCookies(
   req: FastifyRequest,
   reply: FastifyReply,
-): Promise<AuthenticatedUser | null> {
+): Promise<Principal | null> {
   const accessToken = req.cookies?.[ACCESS_COOKIE_NAME];
   if (accessToken) {
     try {
@@ -65,7 +65,7 @@ export async function authenticateFromCookies(
   try {
     const issued = await sessionService.refresh(refreshToken);
     setSessionCookies(reply, issued);
-    return toAuthenticatedUser(issued);
+    return toPrincipal(issued);
   } catch (err) {
     if (err instanceof NotAuthorizedError) throw err;
     return null;
@@ -76,7 +76,7 @@ export async function authenticateFromCookies(
 export async function authenticateRequest(
   req: FastifyRequest,
   reply: FastifyReply,
-): Promise<AuthenticatedUser | null> {
+): Promise<Principal | null> {
   const authHeader = req.headers.authorization;
   const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
   if (bearer) {

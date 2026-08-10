@@ -36,7 +36,10 @@ export interface LinkContext {
 export type LinkRejectionReason =
   | 'account_unavailable'
   | 'email_required'
-  | 'provider_email_unverified';
+  | 'provider_email_unverified'
+  | 'linked_to_other_account'
+  | 'not_linked'
+  | 'last_credential';
 
 export type LinkDecision =
   | { action: 'sign_in'; userId: string }
@@ -71,6 +74,61 @@ export function decideLink(assertion: ProviderAssertion, ctx: LinkContext): Link
   }
 
   return { action: 'create_user', emailVerified: assertion.emailVerified };
+}
+
+// ── Managing links from a signed-in account ──
+
+/**
+ * What the signed-in account can currently authenticate with. Linking and
+ * unlinking are decided against this inventory, never against a single row.
+ */
+export interface CredentialInventory {
+  linkedProviders: Provider[];
+  hasPassword: boolean;
+}
+
+export type ManageLinkDecision =
+  | { action: 'link' }
+  /** The provider account is already this user's; re-linking is a no-op. */
+  | { action: 'already_linked' }
+  | { action: 'unlink' }
+  | { action: 'reject'; reason: LinkRejectionReason };
+
+/**
+ * Linking a provider from settings. The caller is already authenticated, so
+ * the only question is who owns the provider account: a (provider, subject)
+ * row belonging to somebody else must never be moved, because that would
+ * silently take an identity away from the other account.
+ */
+export function decideLinkToAccount(params: {
+  userId: string;
+  existingIdentityUserId: string | null;
+  alreadyLinkedProvider: boolean;
+}): ManageLinkDecision {
+  if (params.existingIdentityUserId && params.existingIdentityUserId !== params.userId) {
+    return { action: 'reject', reason: 'linked_to_other_account' };
+  }
+  if (params.existingIdentityUserId === params.userId) return { action: 'already_linked' };
+  // A second Google/Apple account for a provider this user already uses would
+  // be ambiguous to unlink and to display; one identity per provider.
+  if (params.alreadyLinkedProvider) return { action: 'reject', reason: 'linked_to_other_account' };
+  return { action: 'link' };
+}
+
+/**
+ * Unlinking may never leave an account with no way back in (edge case 17):
+ * the last remaining credential — provider identity or password — stays.
+ */
+export function decideUnlink(provider: Provider, inventory: CredentialInventory): ManageLinkDecision {
+  if (!inventory.linkedProviders.includes(provider)) {
+    return { action: 'reject', reason: 'not_linked' };
+  }
+
+  const remaining =
+    inventory.linkedProviders.filter((p) => p !== provider).length + (inventory.hasPassword ? 1 : 0);
+  if (remaining === 0) return { action: 'reject', reason: 'last_credential' };
+
+  return { action: 'unlink' };
 }
 
 // ── Member claiming ──

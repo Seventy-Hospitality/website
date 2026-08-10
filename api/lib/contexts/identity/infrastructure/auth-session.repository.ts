@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { asPrismaTx } from '@/lib/infrastructure/prisma-tx';
 import type { TransactionContext } from '@/lib/kernel/unit-of-work';
 import type { Client } from '../domain';
+import { USER_SELECT, toIdentityUser, type IdentityUser } from './user.repository';
 
 export interface AuthSessionRecord {
   id: string;
@@ -44,6 +45,22 @@ export class AuthSessionRepository {
 
   async findById(id: string): Promise<AuthSessionRecord | null> {
     return this.prisma.authSession.findUnique({ where: { id } });
+  }
+
+  /**
+   * Session plus its owner (including the linked member id) in one query:
+   * every authenticated request builds its principal from this read, so it
+   * must not cost three round trips.
+   */
+  async findByIdWithUser(id: string): Promise<{ session: AuthSessionRecord; user: IdentityUser } | null> {
+    const row = await this.prisma.authSession.findUnique({
+      where: { id },
+      include: { user: { select: USER_SELECT } },
+    });
+    if (!row) return null;
+
+    const { user, ...session } = row;
+    return { session, user: toIdentityUser(user) };
   }
 
   async findByRefreshTokenHash(hash: string): Promise<AuthSessionRecord | null> {

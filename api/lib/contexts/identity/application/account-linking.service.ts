@@ -1,12 +1,15 @@
 import type { UnitOfWork } from '@/lib/kernel/unit-of-work';
 import {
   decideLink,
+  decideLinkToAccount,
+  decideUnlink,
   generateToken,
   hashToken,
   tokenExpiry,
   InvalidTokenError,
   LinkRejectedError,
   type Client,
+  type Provider,
   type ProviderAssertion,
 } from '../domain';
 import type { UserRepository, IdentityUser } from '../infrastructure/user.repository';
@@ -34,6 +37,24 @@ export interface AppleSignInInput {
   authorizationCode?: string;
   /** Apple surfaces the name once, on first authorization, never in the token. */
   fullName?: { givenName?: string; familyName?: string };
+}
+
+/** Linking a provider to the account already signed in (settings screen). */
+export interface LinkProviderInput {
+  idToken: string;
+  nonce: string;
+  authorizationCode?: string;
+}
+
+export interface LinkedCredentials {
+  identities: Array<{
+    provider: Provider;
+    email: string | null;
+    isPrivateRelay: boolean;
+    linkedAt: Date;
+    lastUsedAt: Date | null;
+  }>;
+  hasPassword: boolean;
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -92,6 +113,101 @@ export class AccountLinkingService {
     }
 
     return this.sessions.issue(user, client, meta);
+  }
+
+  // ── Managing links from a signed-in account ──
+
+  /** What the account can sign in with today. */
+  async listCredentials(userId: string): Promise<LinkedCredentials> {
+    const [identities, hasPassword] = await Promise.all([
+      this.identities.listByUser(userId),
+      this.credentials.hasPassword(userId),
+    ]);
+
+    return {
+      identities: identities.map((identity) => ({
+        provider: identity.provider as Provider,
+        email: identity.email,
+        isPrivateRelay: identity.isPrivateRelay,
+        linkedAt: identity.linkedAt,
+        lastUsedAt: identity.lastUsedAt,
+      })),
+      hasPassword,
+    };
+  }
+
+  /**
+   * Link a provider to the signed-in account. Same verifier + nonce flow as
+   * sign-in; the account comes from the principal, so no email matching is
+   * involved and a provider account owned by somebody else is refused rather
+   * than moved.
+   */
+  async linkProvider(
+    userId: string,
+    provider: Provider,
+    input: LinkProviderInput,
+  ): Promise<{ linked: boolean }> {
+    const assertion = await this.verifyWithNonce(this.verifiers[provider], input.idToken, input.nonce);
+
+    const existing = await this.identities.findByProviderSubject(provider, assertion.subject);
+    const linked = await this.identities.listByUser(userId);
+    const decision = decideLinkToAccount({
+      userId,
+      existingIdentityUserId: existing?.userId ?? null,
+      alreadyLinkedProvider: linked.some((identity) => identity.provider === provider),
+    });
+
+    if (decision.action === 'reject') throw new LinkRejectedError(decision.reason);
+    if (decision.action === 'already_linked') return { linked: false };
+
+    const identityId = await this.uow.execute(async (tx) => {
+      const created = await this.identities.create(
+        {
+          userId,
+          provider,
+          subject: assertion.subject,
+          email: assertion.email,
+          emailVerified: assertion.emailVerified,
+          isPrivateRelay: assertion.isPrivateRelay,
+        },
+        tx,
+      );
+      await this.audit.append(tx, {
+        streamType: 'user',
+        streamId: userId,
+        eventType: 'IdentityLinked',
+        data: { provider, subject: assertion.subject, source: 'account_settings' },
+        actorId: userId,
+      });
+      return created.id;
+    });
+
+    if (provider === 'apple' && input.authorizationCode && this.appleGateway.isConfigured()) {
+      await this.storeAppleRefreshToken(identityId, input.authorizationCode);
+    }
+
+    return { linked: true };
+  }
+
+  /** Unlink a provider, never leaving the account without a credential. */
+  async unlinkProvider(userId: string, provider: Provider): Promise<void> {
+    const { identities, hasPassword } = await this.listCredentials(userId);
+    const decision = decideUnlink(provider, {
+      linkedProviders: identities.map((identity) => identity.provider),
+      hasPassword,
+    });
+    if (decision.action === 'reject') throw new LinkRejectedError(decision.reason);
+
+    await this.uow.execute(async (tx) => {
+      await this.identities.deleteForUser(userId, provider, tx);
+      await this.audit.append(tx, {
+        streamType: 'user',
+        streamId: userId,
+        eventType: 'IdentityUnlinked',
+        data: { provider },
+        actorId: userId,
+      });
+    });
   }
 
   private async verifyWithNonce(

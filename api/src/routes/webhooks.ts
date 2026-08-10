@@ -8,7 +8,7 @@ export async function webhookRoutes(app: FastifyInstance) {
     done(null, body);
   });
 
-  app.post('/stripe', async (req, reply) => {
+  app.post('/stripe', { config: { policy: 'webhook' } }, async (req, reply) => {
     const signature = req.headers['stripe-signature'] as string;
     if (!signature) {
       return reply.status(400).send({ error: 'Missing signature' });

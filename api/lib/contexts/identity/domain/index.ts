@@ -1,4 +1,4 @@
-export type { Client, StaffRole, AuthenticatedUser } from './principal';
+export type { Client, StaffRole, Principal } from './principal';
 export {
   type OneTimeTokenPurpose,
   type OneTimeToken,
@@ -27,9 +27,13 @@ export {
   type LinkContext,
   type LinkDecision,
   type LinkRejectionReason,
+  type CredentialInventory,
+  type ManageLinkDecision,
   type MemberClaimContext,
   type MemberClaimDecision,
   decideLink,
+  decideLinkToAccount,
+  decideUnlink,
   decideMemberClaim,
 } from './linking-policy';
 export {

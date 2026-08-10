@@ -7,7 +7,7 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
-import { authHook } from './middleware/auth';
+import { assertRoutePolicy, authHook } from './middleware/auth';
 import { memberRoutes } from './routes/members';
 import { authRoutes } from './routes/auth';
 import { stripeRoutes } from './routes/stripe';
@@ -56,11 +56,14 @@ await app.register(rateLimit, {
 await app.register(cookie);
 
 await app.register(multipart);
-await app.register(uploadAssetRoutes, { prefix: '/uploads' });
 
+// Authorization: the boot assertion must see every route that follows, so it
+// is installed before the first registration.
+app.addHook('onRoute', assertRoutePolicy);
 app.addHook('preHandler', authHook);
 
 // Routes
+await app.register(uploadAssetRoutes, { prefix: '/uploads' });
 await app.register(authRoutes, { prefix: '/api/auth' });
 await app.register(memberRoutes, { prefix: '/api/members' });
 await app.register(stripeRoutes, { prefix: '/api/stripe' });
@@ -73,15 +76,15 @@ await app.register(meRoutes, { prefix: '/api/me' });
 import { adminRoutes } from './routes/admin';
 await app.register(adminRoutes, { prefix: '/api/admin' });
 
-// Plans
+// Plans — the catalog is shown before signup, so it is public
 import { planRepo } from '@/lib/container';
-app.get('/api/plans', async (_req, reply) => {
+app.get('/api/plans', { config: { policy: 'public' } }, async (_req, reply) => {
   const plans = await planRepo.list();
   return reply.send({ data: plans });
 });
 
 // Health check
-app.get('/api/health', async () => ({ status: 'ok' }));
+app.get('/api/health', { config: { policy: 'public' } }, async () => ({ status: 'ok' }));
 
 // Serve bundled web app in production
 const __dirname = dirname(fileURLToPath(import.meta.url));

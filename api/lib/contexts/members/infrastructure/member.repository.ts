@@ -84,17 +84,6 @@ export class MemberRepository {
     return member as unknown as MemberWithRelations | null;
   }
 
-  async getByEmail(email: string): Promise<MemberWithRelations | null> {
-    const member = await this.prisma.member.findUnique({
-      where: { email },
-      include: {
-        membership: { include: { plan: true } },
-        notes: { orderBy: { createdAt: 'desc' } },
-      },
-    });
-    return member as unknown as MemberWithRelations | null;
-  }
-
   async create(data: {
     email: string;
     firstName: string;

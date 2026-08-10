@@ -10,8 +10,8 @@ import {
   InvalidTokenError,
   SessionExpiredError,
   NotAuthorizedError,
-  type AuthenticatedUser,
   type Client,
+  type Principal,
   type StaffRole,
 } from '../domain';
 import type { AuthSessionRepository, AuthSessionRecord } from '../infrastructure/auth-session.repository';
@@ -39,14 +39,20 @@ function toStaffRole(value: string | null): StaffRole | null {
   return value === 'staff' || value === 'admin' ? value : null;
 }
 
-export function toAuthenticatedUser(issued: IssuedSession): AuthenticatedUser {
+/** Builds the request principal from a freshly-read user row. */
+export function toPrincipal(source: {
+  user: IdentityUser;
+  sessionId: string;
+  client: Client;
+}): Principal {
   return {
-    userId: issued.user.id,
-    sessionId: issued.sessionId,
-    email: issued.user.email,
-    emailVerifiedAt: issued.user.emailVerifiedAt,
-    staffRole: toStaffRole(issued.user.staffRole),
-    client: issued.client,
+    userId: source.user.id,
+    sessionId: source.sessionId,
+    email: source.user.email,
+    emailVerified: source.user.emailVerifiedAt !== null,
+    staffRole: toStaffRole(source.user.staffRole),
+    memberId: source.user.memberId,
+    client: source.client,
   };
 }
 
@@ -181,28 +187,27 @@ export class SessionService {
     };
   }
 
-  /** Access JWT -> session row check -> fresh user read (instant revocation). */
-  async validateAccessToken(token: string): Promise<AuthenticatedUser> {
+  /**
+   * Access JWT -> session row + owner read (instant revocation, and staff role
+   * and member profile always read fresh rather than trusted from the token).
+   */
+  async validateAccessToken(token: string): Promise<Principal> {
     const payload = await this.jwt.verifyAccessToken(token);
     if (!payload) throw new SessionExpiredError();
 
-    const session = await this.sessionRepo.findById(payload.sid);
-    if (!session || session.userId !== payload.sub || !isSessionActive(session)) {
+    const found = await this.sessionRepo.findByIdWithUser(payload.sid);
+    if (!found || found.session.userId !== payload.sub || !isSessionActive(found.session)) {
       throw new SessionExpiredError();
     }
-    void this.sessionRepo.touch(session.id);
+    void this.sessionRepo.touch(found.session.id);
 
-    const user = await this.userRepo.findById(payload.sub);
-    if (!user || user.status !== 'active') throw new NotAuthorizedError();
+    if (found.user.status !== 'active') throw new NotAuthorizedError();
 
-    return {
-      userId: user.id,
-      sessionId: session.id,
-      email: user.email,
-      emailVerifiedAt: user.emailVerifiedAt,
-      staffRole: toStaffRole(user.staffRole),
-      client: session.client as Client,
-    };
+    return toPrincipal({
+      user: found.user,
+      sessionId: found.session.id,
+      client: found.session.client as Client,
+    });
   }
 
   async revoke(sessionId: string, reason = 'signout'): Promise<void> {

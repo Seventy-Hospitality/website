@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { mediaService } from '@/lib/container';
 
 export async function uploadAssetRoutes(app: FastifyInstance) {
-  app.get<{ Params: { objectName: string } }>('/event-images/:objectName', async (req, reply) => {
+  app.get<{ Params: { objectName: string } }>('/event-images/:objectName', { config: { policy: 'public' } }, async (req, reply) => {
     const publicPath = `/uploads/event-images/${req.params.objectName}`;
     const asset = await mediaService.readManagedAsset(publicPath);
 

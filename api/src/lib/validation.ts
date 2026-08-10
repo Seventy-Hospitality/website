@@ -91,8 +91,20 @@ export const verifyEmailSchema = z.object({
   token: z.string().min(1),
 });
 
+/** Linking a provider from account settings; the account is the principal's. */
+export const linkProviderSchema = z.object({
+  idToken: z.string().min(1),
+  nonce: z.string().min(1).max(512),
+  authorizationCode: z.string().min(1).optional(),
+});
+
 export const createCheckoutSchema = z.object({
   memberId: z.string().min(1),
+  planId: z.string().min(1),
+});
+
+/** Member-facing checkout: the member comes from the principal. */
+export const meCheckoutSchema = z.object({
   planId: z.string().min(1),
 });
 

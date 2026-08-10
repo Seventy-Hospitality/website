@@ -28,6 +28,7 @@ function user(overrides: Partial<IdentityUser> = {}): IdentityUser {
     emailVerifiedAt: null,
     termsAcceptedAt: null,
     termsVersion: null,
+    memberId: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -54,7 +55,6 @@ function mockUsers(overrides: Partial<Record<keyof UserRepository, unknown>> = {
       user({ email: input.email, name: input.name }),
     ),
     markEmailVerified: vi.fn().mockResolvedValue(undefined),
-    isAdmin: vi.fn().mockResolvedValue(false),
     ...overrides,
   } as unknown as UserRepository;
 }
@@ -400,7 +400,8 @@ describe('AuthenticationService', () => {
 
   describe('magic link', () => {
     it('creates token and sends notification for admin users', async () => {
-      const users = mockUsers({ isAdmin: vi.fn().mockResolvedValue(true) });
+      const admin = user({ email: 'admin@example.com', staffRole: 'admin' });
+      const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(admin) });
       const { service, tokens, notifications } = createService({ users });
 
       await service.sendMagicLink('admin@example.com');
@@ -409,9 +410,23 @@ describe('AuthenticationService', () => {
       expect(sendArgs[1]).toContain('https://api.test/api/auth/verify?token=');
     });
 
-    it('silently skips non-admin emails', async () => {
+    it('sends to plain member accounts too (recovery path)', async () => {
+      const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user()) });
+      const { service, tokens, notifications } = createService({ users });
+
+      await service.sendMagicLink('alice@example.com');
+      expect(tokens.create).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'magic_link' }));
+      expect(notifications.sendMagicLink).toHaveBeenCalled();
+    });
+
+    it('silently skips unknown and suspended accounts', async () => {
       const { service, tokens, notifications } = createService();
       await service.sendMagicLink('nobody@example.com');
+
+      const suspended = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user({ status: 'suspended' })) });
+      const { service: suspendedService } = createService({ users: suspended });
+      await suspendedService.sendMagicLink('alice@example.com');
+
       expect(tokens.create).not.toHaveBeenCalled();
       expect(notifications.sendMagicLink).not.toHaveBeenCalled();
     });
@@ -436,13 +451,33 @@ describe('AuthenticationService', () => {
       await expect(service.verifyMagicLink('unknown', 'admin_web')).rejects.toThrow(InvalidTokenError);
     });
 
-    it('rejects a non-admin account', async () => {
+    it('signs in a member and verifies their email, claiming a member profile', async () => {
       const tokens = mockTokens();
       (tokens.consume as ReturnType<typeof vi.fn>).mockResolvedValue({
         identifier: 'alice@example.com',
         bindingHash: null,
       });
       const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user()) });
+      const directory = mockDirectory({ id: 'mem_1', userId: null });
+      const { service, sessions } = createService({ tokens, users, directory });
+
+      await service.verifyMagicLink('raw_token', 'member_mobile');
+      expect(users.markEmailVerified).toHaveBeenCalled();
+      expect(directory.claim).toHaveBeenCalledWith(TX, 'mem_1', 'usr_1');
+      expect(sessions.issue).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'usr_1' }),
+        'member_mobile',
+        undefined,
+      );
+    });
+
+    it('rejects a suspended account', async () => {
+      const tokens = mockTokens();
+      (tokens.consume as ReturnType<typeof vi.fn>).mockResolvedValue({
+        identifier: 'alice@example.com',
+        bindingHash: null,
+      });
+      const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user({ status: 'suspended' })) });
       const { service } = createService({ tokens, users });
 
       await expect(service.verifyMagicLink('raw_token', 'admin_web')).rejects.toThrow(NotAuthorizedError);

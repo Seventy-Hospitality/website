@@ -220,16 +220,17 @@ export class AuthenticationService {
     await this.sessions.revokeAllForUser(userId, 'password_reset');
   }
 
-  // ── Magic link (stage 1: admin sign-in, unchanged behavior) ──
+  // ── Magic link (admin sign-in and member account recovery) ──
 
   /**
-   * Send a magic link email. Only sends if the email belongs to an admin user.
+   * Send a magic link email to any active account: it is the recovery path
+   * when a member has neither their password nor their provider to hand.
    * Does not reveal whether the email exists — always returns silently.
    */
   async sendMagicLink(email: string, options?: { redirectTo?: string | null }): Promise<void> {
     const normalized = normalizeEmail(email);
-    const isAdmin = await this.users.isAdmin(normalized);
-    if (!isAdmin) return; // Silent — don't reveal who is/isn't an admin
+    const user = await this.users.findByEmail(normalized);
+    if (!user || user.status !== 'active') return; // Silent — no enumeration
 
     const { token, hash } = generateToken();
     await this.tokens.create({
@@ -256,15 +257,23 @@ export class AuthenticationService {
       if (!consumed) throw new InvalidTokenError();
 
       const found = await this.users.findByEmail(consumed.identifier, tx);
-      if (!found || found.staffRole !== 'admin' || found.status !== 'active') {
-        throw new NotAuthorizedError();
-      }
+      if (!found || found.status !== 'active') throw new NotAuthorizedError();
 
       if (!found.emailVerifiedAt) {
-        // The link arrived in their inbox; that is verification.
+        // The link arrived in their inbox; that is verification, so it also
+        // makes the account eligible to claim a staff-created member profile.
         const now = new Date();
         await this.users.markEmailVerified(found.id, now, tx);
-        return { ...found, emailVerifiedAt: now };
+        const verified = { ...found, emailVerifiedAt: now };
+        await this.audit.append(tx, {
+          streamType: 'user',
+          streamId: verified.id,
+          eventType: 'EmailVerified',
+          data: { email: verified.email, method: 'magic_link' },
+          actorId: verified.id,
+        });
+        await this.memberClaims.claimIfEligible(tx, verified);
+        return verified;
       }
       return found;
     });
