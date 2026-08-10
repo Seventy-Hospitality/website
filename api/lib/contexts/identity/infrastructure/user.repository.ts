@@ -54,6 +54,12 @@ function toAppUser(user: { id: string; email: string; name: string; staffRole: s
   return { id: user.id, email: user.email, name: user.name, role: user.staffRole ?? 'member' };
 }
 
+/** Emails are stored and looked up lowercased; normalize defensively at the
+ *  repository so no call site can reintroduce a case-only duplicate. */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 export class UserRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -62,7 +68,10 @@ export class UserRepository {
   }
 
   async findByEmail(email: string, tx?: TransactionContext): Promise<IdentityUser | null> {
-    const row = await this.client(tx).user.findUnique({ where: { email }, select: USER_SELECT });
+    const row = await this.client(tx).user.findUnique({
+      where: { email: normalizeEmail(email) },
+      select: USER_SELECT,
+    });
     return row && toIdentityUser(row);
   }
 
@@ -112,7 +121,11 @@ export class UserRepository {
 
   async create(email: string, name: string, staffRole?: string): Promise<AppUser> {
     const user = await this.prisma.user.create({
-      data: { email, name, staffRole: staffRole === 'member' ? null : staffRole ?? null },
+      data: {
+        email: normalizeEmail(email),
+        name,
+        staffRole: staffRole === 'member' ? null : staffRole ?? null,
+      },
       select: USER_SELECT,
     });
     return toAppUser(user);

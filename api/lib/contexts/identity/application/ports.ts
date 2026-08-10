@@ -56,8 +56,12 @@ export interface MemberDirectory {
   findByEmail(
     tx: TransactionContext,
     email: string,
-  ): Promise<{ id: string; userId: string | null } | null>;
-  claim(tx: TransactionContext, memberId: string, userId: string): Promise<void>;
+  ): Promise<{ id: string; userId: string | null; hasBilling: boolean } | null>;
+  /**
+   * Guarded claim of an unlinked row. Returns false (never throws) when the
+   * row was claimed concurrently, so a benign race is a no-op, not a 500.
+   */
+  claim(tx: TransactionContext, memberId: string, userId: string): Promise<boolean>;
   createForUser(
     tx: TransactionContext,
     input: { userId: string; email: string; firstName: string; lastName: string; phone?: string },

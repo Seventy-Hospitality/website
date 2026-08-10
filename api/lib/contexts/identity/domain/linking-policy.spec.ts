@@ -163,32 +163,35 @@ describe('decideLink', () => {
 });
 
 describe('decideMemberClaim', () => {
-  it('claims an unlinked member on a verified email match', () => {
+  it('claims an unlinked no-billing member on a verified email match', () => {
     const decision = decideMemberClaim({
-      member: { id: 'mem_1', userId: null },
+      member: { id: 'mem_1', userId: null, hasBilling: false },
       emailVerified: true,
+      accountControlProven: false,
     });
     expect(decision).toEqual({ action: 'claim', memberId: 'mem_1' });
   });
 
   it('does nothing when no member row matches', () => {
-    expect(decideMemberClaim({ member: null, emailVerified: true })).toEqual({ action: 'none' });
+    expect(
+      decideMemberClaim({ member: null, emailVerified: true, accountControlProven: true }),
+    ).toEqual({ action: 'none' });
   });
 
   it('never claims from an unverified email', () => {
-    // Covers the critical case: staff-created member with an active
-    // membership must not be claimable by an unverified signup.
     const decision = decideMemberClaim({
-      member: { id: 'mem_1', userId: null },
+      member: { id: 'mem_1', userId: null, hasBilling: false },
       emailVerified: false,
+      accountControlProven: true,
     });
     expect(decision).toEqual({ action: 'none' });
   });
 
   it('never claims a member already linked to another user', () => {
     const decision = decideMemberClaim({
-      member: { id: 'mem_1', userId: 'usr_other' },
+      member: { id: 'mem_1', userId: 'usr_other', hasBilling: false },
       emailVerified: true,
+      accountControlProven: true,
     });
     expect(decision).toEqual({ action: 'none' });
   });
@@ -196,36 +199,74 @@ describe('decideMemberClaim', () => {
   it('does not re-claim a member already linked to the same user', () => {
     // Idempotence: the caller passes the row as-is; a linked row is linked.
     const decision = decideMemberClaim({
-      member: { id: 'mem_1', userId: 'usr_1' },
+      member: { id: 'mem_1', userId: 'usr_1', hasBilling: false },
       emailVerified: true,
+      accountControlProven: true,
     });
     expect(decision).toEqual({ action: 'none' });
+  });
+
+  it('withholds a billing-carrying row when account control is not proven', () => {
+    // A bare email-verification click must not hand over a paying member's
+    // profile + Stripe billing to whoever set the account password.
+    const decision = decideMemberClaim({
+      member: { id: 'mem_1', userId: null, hasBilling: true },
+      emailVerified: true,
+      accountControlProven: false,
+    });
+    expect(decision).toEqual({ action: 'none' });
+  });
+
+  it('claims a billing-carrying row when account control is proven', () => {
+    // Magic link / OAuth / completed reset prove the authenticating party holds
+    // the account, so the high-value row may transfer.
+    const decision = decideMemberClaim({
+      member: { id: 'mem_1', userId: null, hasBilling: true },
+      emailVerified: true,
+      accountControlProven: true,
+    });
+    expect(decision).toEqual({ action: 'claim', memberId: 'mem_1' });
   });
 });
 
 describe('decideLinkToAccount', () => {
+  const verified = { userId: 'usr_1', accountEmailVerified: true };
+
   it('links a provider account nobody owns yet', () => {
     expect(
-      decideLinkToAccount({ userId: 'usr_1', existingIdentityUserId: null, alreadyLinkedProvider: false }),
+      decideLinkToAccount({ ...verified, existingIdentityUserId: null, alreadyLinkedProvider: false }),
     ).toEqual({ action: 'link' });
   });
 
   it('is idempotent when the identity is already this account', () => {
     expect(
-      decideLinkToAccount({ userId: 'usr_1', existingIdentityUserId: 'usr_1', alreadyLinkedProvider: true }),
+      decideLinkToAccount({ ...verified, existingIdentityUserId: 'usr_1', alreadyLinkedProvider: true }),
     ).toEqual({ action: 'already_linked' });
   });
 
   it('never steals a provider account from another user', () => {
     expect(
-      decideLinkToAccount({ userId: 'usr_1', existingIdentityUserId: 'usr_2', alreadyLinkedProvider: false }),
+      decideLinkToAccount({ ...verified, existingIdentityUserId: 'usr_2', alreadyLinkedProvider: false }),
     ).toEqual({ action: 'reject', reason: 'linked_to_other_account' });
   });
 
-  it('refuses a second account for a provider already linked here', () => {
+  it('refuses linking to an account whose own email is unverified (pre-hijack)', () => {
+    // An unverified account is not yet proven to belong to the caller: a
+    // squatter must not pre-plant a provider identity ahead of the real owner.
     expect(
-      decideLinkToAccount({ userId: 'usr_1', existingIdentityUserId: null, alreadyLinkedProvider: true }),
-    ).toEqual({ action: 'reject', reason: 'linked_to_other_account' });
+      decideLinkToAccount({
+        userId: 'usr_1',
+        accountEmailVerified: false,
+        existingIdentityUserId: null,
+        alreadyLinkedProvider: false,
+      }),
+    ).toEqual({ action: 'reject', reason: 'account_email_unverified' });
+  });
+
+  it('refuses a second account for a provider already linked here with its own reason', () => {
+    expect(
+      decideLinkToAccount({ ...verified, existingIdentityUserId: null, alreadyLinkedProvider: true }),
+    ).toEqual({ action: 'reject', reason: 'provider_already_linked' });
   });
 });
 

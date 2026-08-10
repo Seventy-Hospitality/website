@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { userRepo } from '@/lib/container';
+import { emailSchema } from '@/src/lib/validation';
 import { error, success } from '@/src/lib/responses';
 
 export async function adminRoutes(app: FastifyInstance) {
@@ -11,7 +12,9 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.post('/users', { config: { policy: 'admin' } }, async (req, reply) => {
     const body = z.object({
-      email: z.string().email(),
+      // emailSchema trims + lowercases so the stored row and every identity
+      // lookup (magic link, sign-in, reset) agree on the same string.
+      email: emailSchema,
       name: z.string().min(1),
     }).safeParse(req.body);
 
@@ -21,7 +24,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
     const existing = await userRepo.findByEmail(body.data.email);
     if (existing) {
-      return error(reply, 'CONFLICT', 'User already exists');
+      return error(reply, 'CONFLICT', 'User already exists', 409);
     }
 
     const user = await userRepo.create(body.data.email, body.data.name, 'admin');

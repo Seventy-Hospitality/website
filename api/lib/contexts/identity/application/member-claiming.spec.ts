@@ -4,10 +4,14 @@ import type { TransactionContext } from '@/lib/kernel/unit-of-work';
 
 const TX = {} as TransactionContext;
 
-function mockDirectory(memberByEmail: { id: string; userId: string | null } | null = null): MemberDirectory {
+function mockDirectory(
+  memberByEmail: { id: string; userId: string | null; hasBilling?: boolean } | null = null,
+): MemberDirectory {
   return {
-    findByEmail: vi.fn().mockResolvedValue(memberByEmail),
-    claim: vi.fn().mockResolvedValue(undefined),
+    findByEmail: vi.fn().mockResolvedValue(
+      memberByEmail ? { hasBilling: false, ...memberByEmail } : null,
+    ),
+    claim: vi.fn().mockResolvedValue(true),
     createForUser: vi.fn().mockResolvedValue({ id: 'mem_new' }),
   };
 }
@@ -41,11 +45,11 @@ describe('MemberClaimService', () => {
       const audit = mockAudit();
       const service = new MemberClaimService(directory, audit);
 
-      const result = await service.claimIfEligible(TX, {
-        id: 'usr_1',
-        email: 'alice@example.com',
-        emailVerifiedAt: new Date(),
-      });
+      const result = await service.claimIfEligible(
+        TX,
+        { id: 'usr_1', email: 'alice@example.com', emailVerifiedAt: new Date() },
+        { accountControlProven: false },
+      );
 
       expect(result).toEqual({ claimedMemberId: 'mem_1' });
       expect(directory.claim).toHaveBeenCalledWith(TX, 'mem_1', 'usr_1');
@@ -61,11 +65,11 @@ describe('MemberClaimService', () => {
       const directory = mockDirectory({ id: 'mem_1', userId: null });
       const service = new MemberClaimService(directory, mockAudit());
 
-      const result = await service.claimIfEligible(TX, {
-        id: 'usr_1',
-        email: 'alice@example.com',
-        emailVerifiedAt: null,
-      });
+      const result = await service.claimIfEligible(
+        TX,
+        { id: 'usr_1', email: 'alice@example.com', emailVerifiedAt: null },
+        { accountControlProven: true },
+      );
 
       expect(result).toEqual({ claimedMemberId: null });
       expect(directory.claim).not.toHaveBeenCalled();
@@ -75,14 +79,60 @@ describe('MemberClaimService', () => {
       const directory = mockDirectory({ id: 'mem_1', userId: 'usr_other' });
       const service = new MemberClaimService(directory, mockAudit());
 
-      const result = await service.claimIfEligible(TX, {
-        id: 'usr_1',
-        email: 'alice@example.com',
-        emailVerifiedAt: new Date(),
-      });
+      const result = await service.claimIfEligible(
+        TX,
+        { id: 'usr_1', email: 'alice@example.com', emailVerifiedAt: new Date() },
+        { accountControlProven: true },
+      );
 
       expect(result).toEqual({ claimedMemberId: null });
       expect(directory.claim).not.toHaveBeenCalled();
+    });
+
+    it('withholds a billing-carrying row without proven account control', async () => {
+      const directory = mockDirectory({ id: 'mem_1', userId: null, hasBilling: true });
+      const service = new MemberClaimService(directory, mockAudit());
+
+      const result = await service.claimIfEligible(
+        TX,
+        { id: 'usr_1', email: 'alice@example.com', emailVerifiedAt: new Date() },
+        { accountControlProven: false },
+      );
+
+      expect(result).toEqual({ claimedMemberId: null });
+      expect(directory.claim).not.toHaveBeenCalled();
+    });
+
+    it('claims a billing-carrying row when account control is proven', async () => {
+      const directory = mockDirectory({ id: 'mem_1', userId: null, hasBilling: true });
+      const service = new MemberClaimService(directory, mockAudit());
+
+      const result = await service.claimIfEligible(
+        TX,
+        { id: 'usr_1', email: 'alice@example.com', emailVerifiedAt: new Date() },
+        { accountControlProven: true },
+      );
+
+      expect(result).toEqual({ claimedMemberId: 'mem_1' });
+      expect(directory.claim).toHaveBeenCalledWith(TX, 'mem_1', 'usr_1');
+    });
+
+    it('treats a lost claim race as a benign no-op, not a failure', async () => {
+      // Another verification claimed the row microseconds earlier: claim
+      // returns false, so no audit event and no thrown error abort the tx.
+      const directory = mockDirectory({ id: 'mem_1', userId: null });
+      (directory.claim as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+      const audit = mockAudit();
+      const service = new MemberClaimService(directory, audit);
+
+      const result = await service.claimIfEligible(
+        TX,
+        { id: 'usr_1', email: 'alice@example.com', emailVerifiedAt: new Date() },
+        { accountControlProven: true },
+      );
+
+      expect(result).toEqual({ claimedMemberId: null });
+      expect(audit.append).not.toHaveBeenCalled();
     });
   });
 

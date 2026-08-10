@@ -146,6 +146,7 @@ export class AccountLinkingService {
     userId: string,
     provider: Provider,
     input: LinkProviderInput,
+    accountEmailVerified: boolean,
   ): Promise<{ linked: boolean }> {
     const assertion = await this.verifyWithNonce(this.verifiers[provider], input.idToken, input.nonce);
 
@@ -153,6 +154,7 @@ export class AccountLinkingService {
     const linked = await this.identities.listByUser(userId);
     const decision = decideLinkToAccount({
       userId,
+      accountEmailVerified,
       existingIdentityUserId: existing?.userId ?? null,
       alreadyLinkedProvider: linked.some((identity) => identity.provider === provider),
     });
@@ -266,8 +268,9 @@ export class AccountLinkingService {
             tx,
           );
           // A staff-created member row may have appeared since last sign-in.
+          // Provider sign-in proves account control.
           if (identityUser!.emailVerifiedAt) {
-            await this.memberClaims.claimIfEligible(tx, identityUser!);
+            await this.memberClaims.claimIfEligible(tx, identityUser!, { accountControlProven: true });
           }
           return { user: identityUser!, identityId: identity!.id };
         });
@@ -301,7 +304,9 @@ export class AccountLinkingService {
             data: { email: user.email, method: assertion.provider },
             actorId: user.id,
           });
-          const { claimedMemberId } = await this.memberClaims.claimIfEligible(tx, user);
+          const { claimedMemberId } = await this.memberClaims.claimIfEligible(tx, user, {
+            accountControlProven: true,
+          });
           if (!claimedMemberId) {
             await this.memberClaims.createProfileIfAbsent(tx, user, splitFullName(name));
           }
@@ -311,6 +316,20 @@ export class AccountLinkingService {
 
       case 'link':
         return this.uow.execute(async (tx) => {
+          let user = emailUser!;
+          if (decision.revokePasswordCredential) {
+            // Pre-hijack defense: the account's email was never verified, so
+            // every credential attached to it — the password AND any provider
+            // identities — may have been planted by a squatter before the real
+            // owner arrived. Purge them all; the provider-verified identity
+            // created below becomes the only way back in. Sessions those
+            // credentials minted die with them.
+            await this.credentials.deletePassword(user.id, tx);
+            await this.identities.deleteAllForUser(user.id, tx);
+            await this.tokens.invalidateAll('password_reset', user.id, tx);
+            await this.sessions.revokeAllForUser(user.id, 'identity_link_password_revoked', { tx });
+          }
+
           const identityRow = await this.identities.create(
             {
               userId: decision.userId,
@@ -322,15 +341,6 @@ export class AccountLinkingService {
             },
             tx,
           );
-
-          let user = emailUser!;
-          if (decision.revokePasswordCredential) {
-            // Pre-hijack defense: the unverified password credential (and any
-            // sessions it minted) may belong to an attacker. Kill both.
-            await this.credentials.deletePassword(user.id, tx);
-            await this.tokens.invalidateAll('password_reset', user.id, tx);
-            await this.sessions.revokeAllForUser(user.id, 'identity_link_password_revoked', { tx });
-          }
 
           if (!user.emailVerifiedAt) {
             // Link decisions only happen on provider-verified emails.
@@ -358,7 +368,8 @@ export class AccountLinkingService {
             actorId: user.id,
           });
 
-          await this.memberClaims.claimIfEligible(tx, user);
+          // Provider-verified link proves account control.
+          await this.memberClaims.claimIfEligible(tx, user, { accountControlProven: true });
           return { user, identityId: identityRow.id };
         });
     }

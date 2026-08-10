@@ -72,4 +72,9 @@ export class AuthIdentityRepository {
   async deleteForUser(userId: string, provider: Provider, tx?: TransactionContext): Promise<void> {
     await this.client(tx).authIdentity.deleteMany({ where: { userId, provider } });
   }
+
+  /** Removes every provider identity for a user (pre-hijack credential purge). */
+  async deleteAllForUser(userId: string, tx?: TransactionContext): Promise<void> {
+    await this.client(tx).authIdentity.deleteMany({ where: { userId } });
+  }
 }

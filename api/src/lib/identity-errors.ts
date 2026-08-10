@@ -16,6 +16,8 @@ const LINK_REJECTION_STATUS: Record<LinkRejectedError['reason'], number> = {
   account_unavailable: 403,
   provider_email_unverified: 409,
   linked_to_other_account: 409,
+  provider_already_linked: 409,
+  account_email_unverified: 403,
   not_linked: 404,
   last_credential: 409,
 };

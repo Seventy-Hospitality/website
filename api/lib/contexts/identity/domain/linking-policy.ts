@@ -38,6 +38,8 @@ export type LinkRejectionReason =
   | 'email_required'
   | 'provider_email_unverified'
   | 'linked_to_other_account'
+  | 'provider_already_linked'
+  | 'account_email_unverified'
   | 'not_linked'
   | 'last_credential';
 
@@ -95,13 +97,17 @@ export type ManageLinkDecision =
   | { action: 'reject'; reason: LinkRejectionReason };
 
 /**
- * Linking a provider from settings. The caller is already authenticated, so
- * the only question is who owns the provider account: a (provider, subject)
- * row belonging to somebody else must never be moved, because that would
- * silently take an identity away from the other account.
+ * Linking a provider from settings. The caller is already authenticated, but
+ * being signed in is not proof the caller owns the account: an attacker who
+ * squats an unverified password account for victim@x can attach their own
+ * provider identity to it before the victim ever signs in, surviving the
+ * later pre-hijack password revoke (critique edge case 9). So linking requires
+ * the account's own email to be verified first, and a (provider, subject) row
+ * belonging to somebody else is never moved.
  */
 export function decideLinkToAccount(params: {
   userId: string;
+  accountEmailVerified: boolean;
   existingIdentityUserId: string | null;
   alreadyLinkedProvider: boolean;
 }): ManageLinkDecision {
@@ -109,9 +115,14 @@ export function decideLinkToAccount(params: {
     return { action: 'reject', reason: 'linked_to_other_account' };
   }
   if (params.existingIdentityUserId === params.userId) return { action: 'already_linked' };
+  // An account whose email was never verified is not yet proven to belong to
+  // the caller; attaching a credential to it would let a squatter pre-plant an
+  // identity ahead of the real owner. Verify first.
+  if (!params.accountEmailVerified) return { action: 'reject', reason: 'account_email_unverified' };
   // A second Google/Apple account for a provider this user already uses would
-  // be ambiguous to unlink and to display; one identity per provider.
-  if (params.alreadyLinkedProvider) return { action: 'reject', reason: 'linked_to_other_account' };
+  // be ambiguous to unlink and to display; one identity per provider. This is
+  // not "linked to another account" — the provider account is linked nowhere.
+  if (params.alreadyLinkedProvider) return { action: 'reject', reason: 'provider_already_linked' };
   return { action: 'link' };
 }
 
@@ -138,14 +149,25 @@ export function decideUnlink(provider: Provider, inventory: CredentialInventory)
  * possibly with an active membership and Stripe customer) only on a verified
  * email match, and only when the row is not already linked to a user.
  *
- * The verified-email requirement deliberately subsumes the narrower rule
- * "never auto-claim a member with an active membership from an unverified
- * email": no unverified email claims anything, membership or not.
+ * A row carrying billing (a Stripe customer or a membership) is a high-value
+ * hijack target: an email-verification click proves the inbox received a
+ * token, not that whoever now holds the account is its owner (the account may
+ * have been created with an attacker's password). Such a row is handed over
+ * only on a path that proves the authenticating party controls the account —
+ * a magic link, provider OAuth, or a completed password reset (critique edge
+ * case 22). A plain profile with no billing is low-harm and still auto-claims
+ * on verification so ordinary signup works.
  */
 export interface MemberClaimContext {
-  member: { id: string; userId: string | null } | null;
+  member: { id: string; userId: string | null; hasBilling: boolean } | null;
   /** Whether the claiming user's email is verified (locally or by provider). */
   emailVerified: boolean;
+  /**
+   * Whether the auth path proves the person now holds the account (magic link,
+   * provider OAuth, completed password reset), rather than merely that the
+   * email inbox received a verification token.
+   */
+  accountControlProven: boolean;
 }
 
 export type MemberClaimDecision = { action: 'claim'; memberId: string } | { action: 'none' };
@@ -154,5 +176,6 @@ export function decideMemberClaim(ctx: MemberClaimContext): MemberClaimDecision 
   if (!ctx.member) return { action: 'none' };
   if (ctx.member.userId !== null) return { action: 'none' };
   if (!ctx.emailVerified) return { action: 'none' };
+  if (ctx.member.hasBilling && !ctx.accountControlProven) return { action: 'none' };
   return { action: 'claim', memberId: ctx.member.id };
 }

@@ -55,6 +55,9 @@ const LINK_REJECTION_MESSAGES: Record<LinkRejectionReason, string> = {
   provider_email_unverified:
     'The identity provider could not verify this email; sign in with your password and link the provider from settings',
   linked_to_other_account: 'That provider account is already linked to another Club70 account',
+  provider_already_linked:
+    'This account already has a linked account for that provider; unlink the existing one first',
+  account_email_unverified: 'Verify your email address before linking a sign-in provider',
   not_linked: 'That provider is not linked to this account',
   last_credential: 'Removing this would leave the account with no way to sign in',
 };

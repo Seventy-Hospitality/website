@@ -254,6 +254,64 @@ describe('SessionService', () => {
       expect(issued.sessionId).toBe('ses_1');
       expect(sessionRepo.rotate).toHaveBeenCalledTimes(2);
     });
+
+    it('retries the grace rotation when a sibling wins the guard instead of 401-ing', async () => {
+      // 3+ parallel requests: a loser's grace rotate can also lose the guard.
+      // It must re-read and retry, not throw InvalidTokenError on a healthy
+      // session inside its grace window.
+      const sessionRepo = mockSessionRepo();
+      (sessionRepo.findByRefreshTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      (sessionRepo.findByPreviousTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(
+        sessionRecord({
+          refreshTokenHash: 'newer_hash',
+          previousTokenHash: hashToken('old_refresh'),
+          rotatedAt: new Date(),
+        }),
+      );
+      (sessionRepo.rotate as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+      const { service } = createService({ sessionRepo });
+      const issued = await service.refresh('old_refresh');
+
+      expect(issued.sessionId).toBe('ses_1');
+      expect(sessionRepo.rotate).toHaveBeenCalledTimes(2);
+      expect(sessionRepo.revoke).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('refresh — single-flight coalescing', () => {
+    it('coalesces concurrent refreshes of the same token onto one rotation', async () => {
+      // Parallel admin-web XHRs after the access token expires all present the
+      // same refresh token. Without coalescing each mints its own token and the
+      // browser can keep an orphaned one; here they must share one rotation and
+      // receive the identical result.
+      const sessionRepo = mockSessionRepo();
+      const record = sessionRecord({ refreshTokenHash: hashToken('raw_refresh') });
+      (sessionRepo.findByRefreshTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(record);
+
+      const { service } = createService({ sessionRepo });
+      const [a, b, c] = await Promise.all([
+        service.refresh('raw_refresh'),
+        service.refresh('raw_refresh'),
+        service.refresh('raw_refresh'),
+      ]);
+
+      expect(sessionRepo.rotate).toHaveBeenCalledTimes(1);
+      expect(a).toBe(b);
+      expect(b).toBe(c);
+    });
+
+    it('does not coalesce sequential refreshes (map is cleared on settle)', async () => {
+      const sessionRepo = mockSessionRepo();
+      const record = sessionRecord({ refreshTokenHash: hashToken('raw_refresh') });
+      (sessionRepo.findByRefreshTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(record);
+
+      const { service } = createService({ sessionRepo });
+      await service.refresh('raw_refresh');
+      await service.refresh('raw_refresh');
+
+      expect(sessionRepo.rotate).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('validateAccessToken', () => {

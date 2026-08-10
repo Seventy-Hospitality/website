@@ -276,10 +276,12 @@ describe('me routes', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.json().data).toEqual({ provider: 'google', linked: true });
-      expect(mockAccountLinkingService.linkProvider).toHaveBeenCalledWith('usr_1', 'google', {
-        idToken: 'id_token',
-        nonce: 'raw_nonce',
-      });
+      expect(mockAccountLinkingService.linkProvider).toHaveBeenCalledWith(
+        'usr_1',
+        'google',
+        { idToken: 'id_token', nonce: 'raw_nonce' },
+        true, // principal.emailVerified — gates the pre-hijack link defense
+      );
     });
 
     it('rejects an unknown provider', async () => {

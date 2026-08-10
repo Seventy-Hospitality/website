@@ -25,9 +25,17 @@ import {
   setSessionCookies,
 } from '@/src/lib/auth-cookies';
 
-const DEFAULT_ALLOWED_REDIRECT_PREFIXES = [
-  'seventy://',
-  'exp://',
+// Redirect targets for the native-app magic-link flow. Custom schemes
+// (`seventy:`, `exp:`) are matched by scheme alone — the OS routes them to the
+// app that registered the scheme, so any host/path under one is the app
+// itself. http(s) entries are matched by scheme + exact hostname (any port, so
+// dev servers on arbitrary localhost ports work). Matching is exact, NOT a
+// string prefix: a prefix check let `https://auth.expo.io.attacker.tld` and
+// `https://auth.expo.io@attacker.tld` through and exfiltrated the session to
+// the attacker's host.
+const DEFAULT_ALLOWED_REDIRECT_TARGETS = [
+  'seventy:',
+  'exp:',
   'http://localhost',
   'http://127.0.0.1',
   'https://localhost',
@@ -37,17 +45,39 @@ const DEFAULT_ALLOWED_REDIRECT_PREFIXES = [
 
 const CREDENTIAL_RATE_LIMIT = { max: 10, timeWindow: '15 minutes' } as const;
 
-function getAllowedRedirectPrefixes() {
-  const configured = process.env.MOBILE_AUTH_REDIRECT_PREFIXES
+function getAllowedRedirectTargets() {
+  const configured = process.env.MOBILE_AUTH_REDIRECT_TARGETS
     ?.split(',')
     .map((value) => value.trim())
     .filter(Boolean);
 
-  return configured?.length ? configured : DEFAULT_ALLOWED_REDIRECT_PREFIXES;
+  return configured?.length ? configured : DEFAULT_ALLOWED_REDIRECT_TARGETS;
 }
 
 function isAllowedRedirectTo(value: string): boolean {
-  return getAllowedRedirectPrefixes().some((prefix) => value.startsWith(prefix));
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  // Embedded credentials (`https://auth.expo.io@attacker.tld`) resolve the host
+  // to the attacker; reject them outright.
+  if (url.username || url.password) return false;
+
+  return getAllowedRedirectTargets().some((target) => {
+    if (target.endsWith(':')) {
+      // Custom scheme, e.g. `seventy:`.
+      return url.protocol === target;
+    }
+    let allowed: URL;
+    try {
+      allowed = new URL(target);
+    } catch {
+      return false;
+    }
+    return url.protocol === allowed.protocol && url.hostname === allowed.hostname;
+  });
 }
 
 function buildRedirectUrl(redirectTo: string, params: Record<string, string>) {

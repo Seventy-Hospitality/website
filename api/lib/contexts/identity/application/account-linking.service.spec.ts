@@ -87,6 +87,7 @@ function mockIdentities(found: AuthIdentityRecord | null = null): AuthIdentityRe
     setRefreshToken: vi.fn().mockResolvedValue(undefined),
     listByUser: vi.fn().mockResolvedValue([]),
     deleteForUser: vi.fn().mockResolvedValue(undefined),
+    deleteAllForUser: vi.fn().mockResolvedValue(undefined),
   } as unknown as AuthIdentityRepository;
 }
 
@@ -125,10 +126,14 @@ function mockCipher(): SecretCipher {
   };
 }
 
-function mockDirectory(memberByEmail: { id: string; userId: string | null } | null = null): MemberDirectory {
+function mockDirectory(
+  memberByEmail: { id: string; userId: string | null; hasBilling?: boolean } | null = null,
+): MemberDirectory {
   return {
-    findByEmail: vi.fn().mockResolvedValue(memberByEmail),
-    claim: vi.fn().mockResolvedValue(undefined),
+    findByEmail: vi.fn().mockResolvedValue(
+      memberByEmail ? { hasBilling: false, ...memberByEmail } : null,
+    ),
+    claim: vi.fn().mockResolvedValue(true),
     createForUser: vi.fn().mockResolvedValue({ id: 'mem_new' }),
   };
 }
@@ -324,16 +329,23 @@ describe('AccountLinkingService', () => {
       expect(issued.user.id).toBe('usr_1');
     });
 
-    it('pre-hijack defense: revokes password credential and sessions on an unverified local account', async () => {
+    it('pre-hijack defense: purges the password, ALL prior identities and sessions on an unverified account', async () => {
+      // A squatter can attach their own provider identity to an unverified
+      // account before the real owner signs in; when the owner's verified
+      // provider link fires, the whole pre-verification credential set — not
+      // just the password — is untrusted and must be purged.
       const localUser = user({ emailVerifiedAt: null });
       const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(localUser) });
-      const { service, credentials, sessions, tokens } = createService({ users });
+      const { service, credentials, identities, sessions, tokens } = createService({ users });
 
       await service.signInWithGoogle({ idToken: 't', nonce: 'n' }, 'member_mobile');
 
       expect(credentials.deletePassword).toHaveBeenCalledWith('usr_1', TX);
+      expect(identities.deleteAllForUser).toHaveBeenCalledWith('usr_1', TX);
       expect(sessions.revokeAllForUser).toHaveBeenCalledWith('usr_1', 'identity_link_password_revoked', { tx: TX });
       expect(tokens.invalidateAll).toHaveBeenCalledWith('password_reset', 'usr_1', TX);
+      // The purge runs before the new verified identity is created, so it survives.
+      expect(identities.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 'usr_1' }), TX);
     });
 
     it('marks the local email verified when the provider vouches for it', async () => {
@@ -437,10 +449,12 @@ describe('AccountLinkingService', () => {
       const identities = mockIdentities();
       const { service, google, tokens, audit } = createService({ identities });
 
-      const result = await service.linkProvider('usr_1', 'google', {
-        idToken: 'id_token',
-        nonce: 'raw_nonce',
-      });
+      const result = await service.linkProvider(
+        'usr_1',
+        'google',
+        { idToken: 'id_token', nonce: 'raw_nonce' },
+        true,
+      );
 
       expect(result).toEqual({ linked: true });
       expect(tokens.consume).toHaveBeenCalledWith('oauth_nonce', hashToken('raw_nonce'));
@@ -456,7 +470,7 @@ describe('AccountLinkingService', () => {
       const identities = mockIdentities(identityRecord({ userId: 'usr_1' }));
       const { service } = createService({ identities });
 
-      expect(await service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' })).toEqual({
+      expect(await service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' }, true)).toEqual({
         linked: false,
       });
       expect(identities.create).not.toHaveBeenCalled();
@@ -466,15 +480,26 @@ describe('AccountLinkingService', () => {
       const identities = mockIdentities(identityRecord({ userId: 'usr_other' }));
       const { service } = createService({ identities });
 
-      await expect(service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' }))
+      await expect(service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' }, true))
         .rejects.toThrow(LinkRejectedError);
+      expect(identities.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses to link a provider onto an account whose own email is unverified', async () => {
+      // Pre-hijack: a signed-in but unverified account cannot attach a
+      // credential — the caller has not yet proven they own the account.
+      const { service, identities, google } = createService();
+
+      await expect(service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' }, false))
+        .rejects.toThrow(LinkRejectedError);
+      expect(google.verify).toHaveBeenCalled(); // nonce still burned + token verified
       expect(identities.create).not.toHaveBeenCalled();
     });
 
     it('rejects a link whose nonce was never issued', async () => {
       const { service, google } = createService({ tokens: mockTokens(false) });
 
-      await expect(service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' }))
+      await expect(service.linkProvider('usr_1', 'google', { idToken: 't', nonce: 'n' }, true))
         .rejects.toThrow(InvalidTokenError);
       expect(google.verify).not.toHaveBeenCalled();
     });
@@ -484,11 +509,12 @@ describe('AccountLinkingService', () => {
       const gateway = mockGateway(true);
       const { service, cipher } = createService({ identities, gateway });
 
-      await service.linkProvider('usr_1', 'apple', {
-        idToken: 't',
-        nonce: 'n',
-        authorizationCode: 'auth_code',
-      });
+      await service.linkProvider(
+        'usr_1',
+        'apple',
+        { idToken: 't', nonce: 'n', authorizationCode: 'auth_code' },
+        true,
+      );
 
       expect(gateway.exchangeCode).toHaveBeenCalledWith('auth_code');
       expect(cipher.encrypt).toHaveBeenCalledWith('apple_refresh');

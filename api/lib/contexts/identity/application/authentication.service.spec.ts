@@ -90,10 +90,14 @@ function mockSessions(): SessionService {
   } as unknown as SessionService;
 }
 
-function mockDirectory(memberByEmail: { id: string; userId: string | null } | null = null): MemberDirectory {
+function mockDirectory(
+  memberByEmail: { id: string; userId: string | null; hasBilling?: boolean } | null = null,
+): MemberDirectory {
   return {
-    findByEmail: vi.fn().mockResolvedValue(memberByEmail),
-    claim: vi.fn().mockResolvedValue(undefined),
+    findByEmail: vi.fn().mockResolvedValue(
+      memberByEmail ? { hasBilling: false, ...memberByEmail } : null,
+    ),
+    claim: vi.fn().mockResolvedValue(true),
     createForUser: vi.fn().mockResolvedValue({ id: 'mem_new' }),
   };
 }
@@ -323,6 +327,23 @@ describe('AuthenticationService', () => {
       expect(result).toEqual({ verified: true, claimedMemberId: null });
       expect(users.markEmailVerified).not.toHaveBeenCalled();
     });
+
+    it('does NOT claim a billing-carrying row on a bare verification click', async () => {
+      // A verification click proves the inbox got the token, not that whoever
+      // holds the (possibly attacker-set) password owns the account. The paying
+      // member's row is withheld until a control-proving path.
+      const tokens = mockTokens();
+      (tokens.consume as ReturnType<typeof vi.fn>).mockResolvedValue({ identifier: 'usr_1', bindingHash: null });
+      const users = mockUsers({ findById: vi.fn().mockResolvedValue(user()) });
+      const directory = mockDirectory({ id: 'mem_1', userId: null, hasBilling: true });
+      const { service } = createService({ tokens, users, directory });
+
+      const result = await service.verifyEmail('raw_token');
+
+      expect(result).toEqual({ verified: true, claimedMemberId: null });
+      expect(directory.claim).not.toHaveBeenCalled();
+      expect(users.markEmailVerified).toHaveBeenCalled(); // still verifies the email
+    });
   });
 
   describe('resendVerification', () => {
@@ -376,7 +397,8 @@ describe('AuthenticationService', () => {
 
       expect(credentials.upsertPassword).toHaveBeenCalledWith('usr_1', '$argon2id$mock', TX);
       expect(tokens.invalidateAll).toHaveBeenCalledWith('password_reset', 'usr_1', TX);
-      expect(sessions.revokeAllForUser).toHaveBeenCalledWith('usr_1', 'password_reset');
+      // Revoked inside the transaction so a failed revoke rolls the reset back.
+      expect(sessions.revokeAllForUser).toHaveBeenCalledWith('usr_1', 'password_reset', { tx: TX });
       expect(audit.append).toHaveBeenCalledWith(TX, expect.objectContaining({ eventType: 'PasswordReset' }));
     });
 
@@ -469,6 +491,20 @@ describe('AuthenticationService', () => {
         'member_mobile',
         undefined,
       );
+    });
+
+    it('claims a billing-carrying row via magic link (control proven by the click)', async () => {
+      const tokens = mockTokens();
+      (tokens.consume as ReturnType<typeof vi.fn>).mockResolvedValue({
+        identifier: 'alice@example.com',
+        bindingHash: null,
+      });
+      const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user()) });
+      const directory = mockDirectory({ id: 'mem_1', userId: null, hasBilling: true });
+      const { service } = createService({ tokens, users, directory });
+
+      await service.verifyMagicLink('raw_token', 'member_mobile');
+      expect(directory.claim).toHaveBeenCalledWith(TX, 'mem_1', 'usr_1');
     });
 
     it('rejects a suspended account', async () => {

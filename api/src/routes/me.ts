@@ -288,6 +288,7 @@ export async function meRoutes(app: FastifyInstance) {
           req.principal!.userId,
           provider,
           parsed.data,
+          req.principal!.emailVerified,
         );
         return success(reply, { provider, linked });
       } catch (err) {

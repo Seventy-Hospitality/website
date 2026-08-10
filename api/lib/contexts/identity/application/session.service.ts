@@ -35,6 +35,9 @@ export interface IssuedSession {
   refreshTokenExpiresAt: Date;
 }
 
+/** Bounds the grace-window rotation retry so a pathological race can never spin. */
+const MAX_GRACE_ROTATION_ATTEMPTS = 8;
+
 function toStaffRole(value: string | null): StaffRole | null {
   return value === 'staff' || value === 'admin' ? value : null;
 }
@@ -57,6 +60,9 @@ export function toPrincipal(source: {
 }
 
 export class SessionService {
+  /** In-flight refreshes keyed by presented token hash, for single-flight coalescing. */
+  private readonly inFlightRefreshes = new Map<string, Promise<IssuedSession>>();
+
   constructor(
     private readonly sessionRepo: AuthSessionRepository,
     private readonly userRepo: UserRepository,
@@ -103,13 +109,30 @@ export class SessionService {
    * Rotating refresh. The presented token normally matches the current hash;
    * matching the previous hash inside the grace window is a benign network
    * retry, outside it a theft signal that revokes the whole session.
+   *
+   * Concurrent requests presenting the same token (the admin web app fires
+   * several XHRs at once when the 10-minute access token has expired) are
+   * single-flighted onto one rotation: every caller receives the identical new
+   * token pair, so the browser cannot end up holding an orphaned intermediate
+   * token that the next refresh would reject.
    */
   async refresh(presentedToken: string): Promise<IssuedSession> {
     const presentedHash = hashToken(presentedToken);
-    const now = new Date();
 
+    const inFlight = this.inFlightRefreshes.get(presentedHash);
+    if (inFlight) return inFlight;
+
+    const promise = this.doRefresh(presentedHash).finally(() => {
+      this.inFlightRefreshes.delete(presentedHash);
+    });
+    this.inFlightRefreshes.set(presentedHash, promise);
+    return promise;
+  }
+
+  private async doRefresh(presentedHash: string): Promise<IssuedSession> {
     const current = await this.sessionRepo.findByRefreshTokenHash(presentedHash);
     if (current) {
+      const now = new Date();
       if (!isSessionActive(current, now)) throw new SessionExpiredError();
       const rotated = await this.rotate(current, {
         expectedCurrentHash: presentedHash,
@@ -122,13 +145,31 @@ export class SessionService {
       // token is now the previous one, so fall through to the grace path.
     }
 
-    const prior = await this.sessionRepo.findByPreviousTokenHash(presentedHash);
-    if (!prior) throw new InvalidTokenError();
-    if (!isSessionActive(prior, now)) throw new SessionExpiredError();
+    // Grace path. Within the window a rotated-away token is a benign retry, so
+    // rotate from the row's current hash while keeping previousTokenHash and
+    // rotatedAt anchored (the window never slides). A lost guard here means
+    // another concurrent refresh of the same session won, so re-read and retry
+    // rather than 401-ing a healthy session; outside the window it is a theft
+    // signal that revokes the session.
+    for (let attempt = 0; attempt < MAX_GRACE_ROTATION_ATTEMPTS; attempt++) {
+      const prior = await this.sessionRepo.findByPreviousTokenHash(presentedHash);
+      if (!prior) throw new InvalidTokenError();
+      const now = new Date();
+      if (!isSessionActive(prior, now)) throw new SessionExpiredError();
 
-    if (isWithinRotationGrace(prior.rotatedAt, now)) {
-      // Retry of a lost response: rotate again but keep previousTokenHash and
-      // rotatedAt anchored, so the grace window never slides.
+      if (!isWithinRotationGrace(prior.rotatedAt, now)) {
+        await this.uow.execute(async (tx) => {
+          await this.sessionRepo.revoke(prior.id, 'refresh_reuse', tx);
+          await this.audit.append(tx, {
+            streamType: 'user',
+            streamId: prior.userId,
+            eventType: 'RefreshTokenReuseDetected',
+            data: { sessionId: prior.id, client: prior.client },
+          });
+        });
+        throw new InvalidTokenError();
+      }
+
       const rotated = await this.rotate(prior, {
         expectedCurrentHash: prior.refreshTokenHash,
         previousTokenHash: prior.previousTokenHash,
@@ -136,18 +177,9 @@ export class SessionService {
         now,
       });
       if (rotated) return rotated;
-      throw new InvalidTokenError();
+      // A concurrent grace rotation won; re-read and try again.
     }
 
-    await this.uow.execute(async (tx) => {
-      await this.sessionRepo.revoke(prior.id, 'refresh_reuse', tx);
-      await this.audit.append(tx, {
-        streamType: 'user',
-        streamId: prior.userId,
-        eventType: 'RefreshTokenReuseDetected',
-        data: { sessionId: prior.id, client: prior.client },
-      });
-    });
     throw new InvalidTokenError();
   }
 

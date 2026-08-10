@@ -7,6 +7,7 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
+import { SERVER_FASTIFY_OPTIONS } from './lib/server-options';
 import { assertRoutePolicy, authHook } from './middleware/auth';
 import { memberRoutes } from './routes/members';
 import { authRoutes } from './routes/auth';
@@ -19,7 +20,7 @@ import { mediaRoutes } from './routes/media';
 import { uploadAssetRoutes } from './routes/uploads';
 import { meRoutes } from './routes/me';
 
-const app = Fastify({ logger: true });
+const app = Fastify(SERVER_FASTIFY_OPTIONS);
 
 function getAllowedWebOrigins(configuredWebUrl: string): string[] {
   const origins = new Set<string>([configuredWebUrl]);

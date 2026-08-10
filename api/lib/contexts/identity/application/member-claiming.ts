@@ -29,12 +29,18 @@ export class MemberClaimService {
   async claimIfEligible(
     tx: TransactionContext,
     user: ClaimingUser,
+    options: { accountControlProven: boolean },
   ): Promise<{ claimedMemberId: string | null }> {
     const member = await this.members.findByEmail(tx, user.email);
-    const decision = decideMemberClaim({ member, emailVerified: user.emailVerifiedAt !== null });
+    const decision = decideMemberClaim({
+      member,
+      emailVerified: user.emailVerifiedAt !== null,
+      accountControlProven: options.accountControlProven,
+    });
     if (decision.action !== 'claim') return { claimedMemberId: null };
 
-    await this.members.claim(tx, decision.memberId, user.id);
+    const claimed = await this.members.claim(tx, decision.memberId, user.id);
+    if (!claimed) return { claimedMemberId: null };
     await this.audit.append(tx, {
       streamType: 'member',
       streamId: decision.memberId,

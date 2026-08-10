@@ -131,10 +131,16 @@ export class AuthenticationService {
         data: { email: user.email, method: 'email_token' },
         actorId: user.id,
       });
-      const { claimedMemberId } = await this.memberClaims.claimIfEligible(tx, {
-        ...user,
-        emailVerifiedAt: now,
-      });
+      // Email-verification proves the inbox received the token, not that
+      // whoever holds the account (its password may be an attacker's) is its
+      // owner — so it does not prove account control. A billing-carrying row
+      // is therefore withheld here and claimed only via magic link / OAuth /
+      // password reset.
+      const { claimedMemberId } = await this.memberClaims.claimIfEligible(
+        tx,
+        { ...user, emailVerifiedAt: now },
+        { accountControlProven: false },
+      );
       return { verified: true, claimedMemberId };
     });
   }
@@ -183,7 +189,7 @@ export class AuthenticationService {
     const hash = hashToken(token);
     const secretHash = await this.hasher.hash(newPassword);
 
-    const userId = await this.uow.execute(async (tx) => {
+    await this.uow.execute(async (tx) => {
       const consumed = await this.tokens.consume('password_reset', hash, tx);
       if (!consumed) throw new InvalidTokenError();
 
@@ -193,7 +199,8 @@ export class AuthenticationService {
       await this.credentials.upsertPassword(user.id, secretHash, tx);
       await this.tokens.invalidateAll('password_reset', user.id, tx);
 
-      // Completing an emailed reset proves inbox ownership.
+      // Completing an emailed reset proves inbox ownership AND replaces the
+      // credential, so the resetter now controls the account.
       if (!user.emailVerifiedAt) {
         const now = new Date();
         await this.users.markEmailVerified(user.id, now, tx);
@@ -204,7 +211,11 @@ export class AuthenticationService {
           data: { email: user.email, method: 'password_reset' },
           actorId: user.id,
         });
-        await this.memberClaims.claimIfEligible(tx, { ...user, emailVerifiedAt: now });
+        await this.memberClaims.claimIfEligible(
+          tx,
+          { ...user, emailVerifiedAt: now },
+          { accountControlProven: true },
+        );
       }
 
       await this.audit.append(tx, {
@@ -214,10 +225,13 @@ export class AuthenticationService {
         data: {},
         actorId: user.id,
       });
-      return user.id;
-    });
 
-    await this.sessions.revokeAllForUser(userId, 'password_reset');
+      // Revoke inside the transaction: a failed revoke must roll the whole
+      // reset back (and stay retryable) rather than leaving the password
+      // changed while every pre-reset session — the attacker's included —
+      // keeps authenticating.
+      await this.sessions.revokeAllForUser(user.id, 'password_reset', { tx });
+    });
   }
 
   // ── Magic link (admin sign-in and member account recovery) ──
@@ -272,7 +286,9 @@ export class AuthenticationService {
           data: { email: verified.email, method: 'magic_link' },
           actorId: verified.id,
         });
-        await this.memberClaims.claimIfEligible(tx, verified);
+        // The clicker of the magic link is the party being handed a session,
+        // so this path proves account control.
+        await this.memberClaims.claimIfEligible(tx, verified, { accountControlProven: true });
         return verified;
       }
       return found;

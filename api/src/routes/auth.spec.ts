@@ -509,6 +509,44 @@ describe('auth routes', () => {
 
       expect(res.statusCode).toBe(400);
     });
+
+    it.each([
+      // Prefix-extension host: begins with an allowed prefix but is a different host.
+      'https://auth.expo.io.attacker.tld/',
+      // Embedded credentials resolve the real host to the attacker.
+      'https://auth.expo.io@attacker.tld/',
+      // Subdomain of localhost is not localhost.
+      'http://localhost.attacker.tld/',
+      'https://localhost.evil.com/x',
+    ])('rejects the exfiltration redirect %s (no prefix matching)', async (redirectTo) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/magic-link',
+        payload: { email: 'admin@example.com', redirectTo },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.sendMagicLink).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'seventy://auth/callback',
+      'exp://127.0.0.1:19000/--/auth',
+      'http://localhost:19006/',
+      'https://auth.expo.io/@club70/app',
+    ])('accepts the legitimate app redirect %s', async (redirectTo) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/magic-link',
+        payload: { email: 'admin@example.com', redirectTo },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockAuthenticationService.sendMagicLink).toHaveBeenCalledWith(
+        'admin@example.com',
+        { redirectTo },
+      );
+    });
   });
 
   describe('GET /api/auth/verify', () => {
@@ -566,6 +604,19 @@ describe('auth routes', () => {
 
       expect(res.statusCode).toBe(302);
       expect(res.headers.location).toBe('https://app.test/sign-in?error=missing_token');
+    });
+
+    it('refuses to redirect the token to a prefix-extension host', async () => {
+      // The critical exfiltration: a genuine club email carrying an attacker
+      // redirectTo must not 302 the freshly-minted tokens to the attacker host.
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=valid_token&redirectTo=' +
+          encodeURIComponent('https://auth.expo.io.attacker.tld/'),
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.verifyMagicLink).not.toHaveBeenCalled();
     });
 
     it('returns tokens in the redirect URL for the mobile flow', async () => {
