@@ -33,9 +33,13 @@ lib/
 │   │       ├── member.repository.ts
 │   │       └── index.ts
 │   ├── memberships/
-│   │   ├── domain/               # Membership types, webhook handlers (pure)
-│   │   ├── application/          # Checkout, portal, sync services
-│   │   └── infrastructure/       # Stripe gateway, repositories
+│   │   ├── domain/               # Membership state, current-row pick, apply resolvers (pure)
+│   │   ├── application/          # Subscribe/confirm/change/cancel, SubscriptionGateway port
+│   │   └── infrastructure/       # Repositories (guarded snapshot apply)
+│   ├── billing/                  # Stripe gateway, money ledger, webhooks (see below)
+│   │   ├── domain/               # Ledger math, event refs, pure resolvers
+│   │   ├── application/          # Webhook/billing/payment/reconciliation services
+│   │   └── infrastructure/       # Stripe SDK (ONLY here), ledger + mirror repos, booking adapter
 │   ├── identity/
 │   │   ├── domain/               # Principal, session/linking policies, token logic
 │   │   ├── application/          # Authentication, sessions, account linking
@@ -43,7 +47,7 @@ lib/
 │   ├── bookings/                 # Scheduling/reservations BC (see below)
 │   │   ├── domain/               # Slot math, tiers, participant machine, refund policy
 │   │   ├── application/          # ReservationService, ResourceClaimService
-│   │   └── infrastructure/       # Repositories, stub payment adapter (package C seam)
+│   │   └── infrastructure/       # Repositories, dev stub payment adapter (keyless local only)
 │   ├── events/                   # Club events; claims courts via ResourceClaimPort
 │   └── communications/
 │       ├── domain/               # Email templates (pure data)
@@ -313,14 +317,58 @@ interface Principal {
 complete development principal so any policy can be exercised locally; cron
 still requires its secret.
 
+## Billing
+
+The billing BC owns the Stripe gateway (SDK imports live ONLY in
+`billing/infrastructure`), the member-facing money ledger, the
+payment-method mirror and webhook processing. The other contexts reach it
+through narrow seams:
+
+- **memberships** owns subscription STATE and lifecycle decisions
+  (subscribe/confirm/change/cancel) behind its `SubscriptionGateway` port,
+  which billing's `StripeGateway` implements. Purchase is
+  subscription-first (`default_incomplete`,
+  `save_default_payment_method: on_subscription`,
+  `latest_invoice.confirmation_secret` to PaymentSheet); the confirm
+  endpoint does a synchronous read-back through the same idempotent apply
+  path as the webhook. One membership row per Stripe subscription
+  (memberId is NOT unique); "the member's current membership" is
+  `pickCurrentMembership`. Upgrades change price immediately with
+  prorations; downgrades ride a transient subscription schedule to period
+  end, no refund.
+- **bookings** charges through `BookingPaymentPort`, implemented by
+  `StripeBookingPaymentAdapter`: on-session PaymentIntents
+  (`allow_redirects: 'never'`), server-authoritative amounts, idempotency
+  key per reservation attempt, refunds keyed by the reserved settlement row
+  id. `payment_intent.succeeded` and the reconcile cron settle through
+  `reservationService.handleCapturedPayment`, which also repairs the
+  pay-vs-drop TOCTOU (a capture landing after cancel) at the persisted
+  cancellation refund percent.
+- **billing_transactions** is the append-only member-facing ledger: one row
+  per Stripe money movement, upserted on
+  `[stripeObjectType, stripeObjectId]` by the webhook service, the refund
+  adapter's best-effort observations and the nightly reconcile sweep, all
+  converging on the same rows. `occurredAt` is Stripe's `created`; month
+  buckets group in the venue timezone. Billing reads NEVER fan out to
+  Stripe. `reservation_payments` stays the bookings-side settlement record
+  (refund allocation, state machine); the shared allocation math lives once
+  in `lib/kernel/payment-allocation.ts`.
+
 ## Webhook Processing
 
 Stripe webhooks arrive at `/api/webhooks/stripe`:
 
-1. Verify signature
-2. Process event inline by calling domain-layer handlers
-3. Handlers update aggregate state via repositories
-4. Return 200 even on failure — Stripe retries on non-2xx
+1. Verify signature (thin route), map to a plain event ref
+2. `WebhookService.process`: skip if the event id was already processed
+3. Subscription-shaped events are TRIGGERS: re-fetch the subscription and
+   apply fresh state under a fetch-time ordering guard (no exit from
+   `canceled`), so out-of-order deliveries can never move state backwards
+   or resurrect a canceled membership
+4. Money events upsert ledger rows and drive bookings settlement; refund
+   and dispute events reconcile/freeze the bookings settlement record
+5. Record the event id, answer 200. A transient failure answers **500** so
+   Stripe retries (handlers are idempotent); only permanently unhandleable
+   states (unknown price, unresolvable member) are alerted and acknowledged
 
 ## Scheduled Tasks
 
@@ -334,9 +382,21 @@ The stale event-image cleanup job is exposed both ways:
 - HTTP: `POST /api/cron/cleanup-event-images`
 - CLI: `npm run job:cleanup-event-images`
 
-Scheduling crons (HTTP only):
+Scheduling and billing crons (HTTP; every cron route answers GET as well as
+POST because URL-triggering schedulers issue GETs — the secret, not the
+verb, is the guard):
 
-- `POST /api/cron/expire-holds` — release stale pending_payment holds
+- `/api/cron/expire-holds` — release stale pending_payment holds
   (confirming instead when the payment actually succeeded)
-- `POST /api/cron/dispatch-outbox` — hand undispatched audit rows to the
+- `/api/cron/dispatch-outbox` — hand undispatched audit rows to the
   outbox sink (a no-op until package F wires notifications)
+- `/api/cron/reconcile-billing` — nightly account-wide sweep of the last
+  72h of charges, paid invoices and refunds into the ledger; re-drives
+  bookings settlement (closes webhook gaps and the cancel-vs-pay TOCTOU);
+  prunes old webhook-dedupe rows
+- `/api/cron/subscription-drift` — account-wide subscription listing
+  applied through the same guarded path as webhooks (replaces the old
+  per-member syncFromStripe loop)
+
+One-time job: `npm run job:backfill-billing-ledger` imports historical
+Stripe charges/invoices/refunds into the ledger (ledger-only, idempotent).

@@ -7,7 +7,7 @@ export class PlanRepository {
   async list(activeOnly = true): Promise<Plan[]> {
     return this.prisma.membershipPlan.findMany({
       where: activeOnly ? { active: true } : undefined,
-      orderBy: { amountCents: 'asc' },
+      orderBy: [{ sortOrder: 'asc' }, { amountCents: 'asc' }],
     }) as unknown as Plan[];
   }
 

@@ -146,7 +146,7 @@ model Member {
   updatedAt DateTime @updatedAt
 
   user           User?                    @relation(fields: [userId], references: [id])
-  membership     Membership?
+  memberships    Membership[]
   notes          AdminNote[]
   reservations   Reservation[]            @relation("organizer")
   participations ReservationParticipant[]
@@ -155,15 +155,21 @@ model Member {
   @@map("members")
 }
 
+// One row per Stripe price: a plan that sells monthly AND annually is two
+// rows sharing tier/product (the app's period toggle picks between them).
+// Price changes version rows (new stripePriceId), never mutate amounts.
 model MembershipPlan {
-  id              String  @id @default(cuid())
+  id              String   @id @default(cuid())
   name            String
-  stripePriceId   String  @unique
+  stripePriceId   String   @unique
   stripeProductId String
   amountCents     Int
   interval        String // "month" | "year"
-  tier            String  @default("member") // "member" | "pro"
-  active          Boolean @default(true)
+  tier            String   @default("member") // "member" | "pro"
+  inviteOnly      Boolean  @default(false)
+  features        String[] @default([])
+  sortOrder       Int      @default(0)
+  active          Boolean  @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -173,14 +179,32 @@ model MembershipPlan {
   @@map("membership_plans")
 }
 
+// One row per Stripe subscription (memberId is deliberately NOT unique:
+// Stripe allows a customer several live subscriptions, and re-subscribing
+// after a cancellation is a new subscription id, so webhook apply is a pure
+// upsert by stripeSubscriptionId with no member-resolution branching). "The
+// member's current membership" is a query: pickCurrentMembership in
+// memberships/domain.
 model Membership {
   id                   String   @id @default(cuid())
-  memberId             String   @unique
+  memberId             String
   planId               String
   stripeSubscriptionId String   @unique
-  status               String // "active" | "past_due" | "canceled" | "unpaid" | "incomplete"
+  status               String // "active" | "trialing" | "past_due" | "canceled" | "unpaid" | "incomplete" | "incomplete_expired" | "paused"
   currentPeriodEnd     DateTime
   cancelAtPeriodEnd    Boolean  @default(false)
+
+  // Pending annual->monthly downgrade: a transient Stripe subscription
+  // schedule (phase 2 = the cheaper price, iterations 1, end_behavior
+  // release) applies it at period end with no proration. Cleared when the
+  // schedule detaches (released/completed) or is released for an upgrade.
+  stripeScheduleId       String?
+  pendingPlanId          String?
+  pendingPlanEffectiveAt DateTime?
+
+  // Ordering guard for webhook re-fetch-and-apply: a snapshot fetched
+  // earlier can never overwrite one fetched later, whatever field moved.
+  stripeFetchedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -188,6 +212,7 @@ model Membership {
   member Member         @relation(fields: [memberId], references: [id], onDelete: Cascade)
   plan   MembershipPlan @relation(fields: [planId], references: [id])
 
+  @@index([memberId])
   @@map("memberships")
 }
 
@@ -327,6 +352,10 @@ model Reservation {
   status                 String // "pending_payment" | "confirmed" | "cancelled" | "expired"
   hourlyRateCentsSnapshot Int
   amountPaidCents        Int      @default(0)
+  // The refund percent the cancellation actually applied (tier policy or
+  // 100 for admin/full refunds); relational so a charge that captures AFTER
+  // the cancel (pay-vs-drop TOCTOU) refunds at the same percent.
+  cancelRefundPercent    Int?
   createdByAdminId       String?
 
   createdAt DateTime @default(now())
@@ -368,14 +397,23 @@ model ReservationParticipant {
 }
 
 model ReservationPayment {
-  id                    String   @id @default(cuid())
+  id                    String    @id @default(cuid())
   reservationId         String
   kind                  String // "charge" | "refund"
+  // What a charge paid for: the base booking or a reschedule-grow delta.
+  // Decides the refund percent when an orphaned capture lands on a
+  // cancelled reservation (delta = 100%, base = the cancellation's tier).
+  purpose               String    @default("base") // "base" | "change_delta"
   amountCents           Int // always positive; kind carries the direction
   stripePaymentIntentId String?
-  stripeRefundId        String?
+  stripeRefundId        String?   @unique
   status                String // "pending" | "succeeded" | "failed"
-  createdAt             DateTime @default(now())
+  // Financial freeze: a disputed charge cannot be refunded at Stripe, so a
+  // disputed charge row is excluded from refundable balance (allocateRefund)
+  // while still counting as captured money (netPaid). Set by the
+  // charge.dispute.created webhook.
+  disputedAt            DateTime?
+  createdAt             DateTime  @default(now())
 
   reservation   Reservation               @relation(fields: [reservationId], references: [id], onDelete: Cascade)
   pendingChange ReservationPendingChange?
@@ -430,6 +468,79 @@ model ReservationSeries {
 
   @@index([organizerId, active])
   @@map("reservation_series")
+}
+
+// ── Billing ──
+// billing_transactions is the member-facing money ledger: one row per Stripe
+// money movement (invoice payment, booking charge, refund), append-only,
+// written by the billing context from webhooks, the refund adapter and the
+// nightly reconcile sweep. Stripe is truth for money movement; this ledger is
+// truth for domain meaning (which booking, why the refund).
+// reservation_payments stays the bookings context's per-reservation
+// settlement record (refund allocation + state machine); it is NOT the
+// member-facing history.
+
+model BillingTransaction {
+  id               String   @id @default(cuid())
+  // Deliberately no FK relation: the ledger must survive member
+  // soft-deletion/anonymization (retention + chargeback windows) and nothing
+  // may cascade it away.
+  memberId         String
+  kind             String // "membership_fee" | "booking_fee" | "booking_refund" | "membership_refund" | "adjustment"
+  direction        String // "debit" | "credit"
+  amountCents      Int // always POSITIVE; direction carries the sign
+  taxCents         Int      @default(0)
+  currency         String   @default("usd")
+  status           String // "pending" | "succeeded" | "failed" | "canceled"
+  // Stripe's `created` for the underlying object, NOT our insert time: a
+  // 23:58 charge delivered by a 00:01 webhook must file into the right month.
+  occurredAt       DateTime @db.Timestamptz(3)
+  description      String
+  // The idempotency anchor: webhook, adapter and reconcile sweep all upsert
+  // on [stripeObjectType, stripeObjectId] and converge on one row.
+  stripeObjectType String // "invoice" | "charge" | "refund"
+  stripeObjectId   String
+  stripeChargeId   String?
+  receiptUrl       String?
+  reservationId    String?
+  membershipId     String?
+  stripeEventId    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([stripeObjectType, stripeObjectId])
+  @@index([memberId, occurredAt])
+  @@map("billing_transactions")
+}
+
+// Local mirror of the member's Stripe payment methods so the booking sheet
+// and billing screen render brand+last4 instantly. Fed by payment_method.*
+// webhooks and the set-default endpoint; Stripe stays the source of truth.
+model PaymentMethod {
+  id                    String  @id @default(cuid())
+  memberId              String
+  stripePaymentMethodId String  @unique
+  brand                 String
+  last4                 String
+  expMonth              Int
+  expYear               Int
+  isDefault             Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([memberId])
+  @@map("payment_methods")
+}
+
+// Webhook dedupe: a Stripe event id is recorded once processing succeeded;
+// redeliveries of a recorded event are acknowledged without reprocessing.
+model ProcessedWebhookEvent {
+  eventId     String   @id
+  type        String
+  processedAt DateTime @default(now())
+
+  @@map("processed_webhook_events")
 }
 
 // ── Club events ──

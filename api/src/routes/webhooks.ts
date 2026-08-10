@@ -1,7 +1,14 @@
 import type { FastifyInstance } from 'fastify';
-import { stripeGateway, membershipService, memberRepo } from '@/lib/container';
+import { stripeGateway, webhookService } from '@/lib/container';
 import type Stripe from 'stripe';
 
+/**
+ * Thin transport: verify the signature, map the event, hand it to the
+ * billing webhook service. A processing failure answers 500 so Stripe
+ * RETRIES (the dedupe table records an event only after success, and every
+ * handler is idempotent, so retries are safe); 200 is reserved for
+ * handled, deliberately-ignored and duplicate events.
+ */
 export async function webhookRoutes(app: FastifyInstance) {
   // Need raw body for Stripe signature verification
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
@@ -26,66 +33,11 @@ export async function webhookRoutes(app: FastifyInstance) {
     }
 
     try {
-      await processEvent(event);
+      const outcome = await webhookService.process(stripeGateway.mapWebhookEvent(event));
+      return reply.send({ received: true, outcome });
     } catch (err) {
-      console.error(`Webhook processing failed for ${event.type}:`, err);
+      req.log.error({ err, eventId: event.id, eventType: event.type }, 'webhook processing failed');
+      return reply.status(500).send({ error: 'Webhook processing failed' });
     }
-
-    return reply.send({ received: true });
   });
-}
-
-async function processEvent(event: Stripe.Event) {
-  switch (event.type) {
-    case 'checkout.session.completed': {
-      const session = event.data.object as Stripe.Checkout.Session;
-      const subId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
-      if (!subId || !session.metadata?.memberId) break;
-
-      // Persist stripeCustomerId as backstop (may already be set from checkout route)
-      const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
-      if (customerId && session.metadata.memberId) {
-        await memberRepo.setStripeCustomerId(session.metadata.memberId, customerId).catch(() => {
-          // Ignore if already set (unique constraint) — this is a backstop
-        });
-      }
-
-      const subscription = await stripeGateway.retrieveSubscription(subId);
-      await membershipService.handleCheckoutCompleted(stripeGateway.extractCheckoutData(session, subscription));
-      break;
-    }
-    case 'customer.subscription.updated': {
-      const subscription = event.data.object as Stripe.Subscription;
-      await membershipService.handleSubscriptionUpdated(stripeGateway.extractSubscriptionData(subscription));
-      break;
-    }
-    case 'customer.subscription.deleted': {
-      const subscription = event.data.object as Stripe.Subscription;
-      await membershipService.handleSubscriptionDeleted({ subscriptionId: subscription.id });
-      break;
-    }
-    case 'invoice.paid': {
-      const invoice = event.data.object as Stripe.Invoice;
-      const subscriptionId = stripeGateway.extractInvoiceSubscriptionId(invoice);
-      if (!subscriptionId) break;
-      const sub = await stripeGateway.retrieveSubscription(subscriptionId);
-      await membershipService.handleInvoicePaid({
-        subscriptionId,
-        status: sub.status as any,
-        currentPeriodEnd: new Date(sub.items.data[0].current_period_end * 1000),
-      });
-      break;
-    }
-    case 'invoice.payment_failed': {
-      const invoice = event.data.object as Stripe.Invoice;
-      const subscriptionId = stripeGateway.extractInvoiceSubscriptionId(invoice);
-      if (!subscriptionId) break;
-      await membershipService.handleInvoicePaymentFailed({
-        subscriptionId,
-        status: 'past_due',
-        currentPeriodEnd: new Date(),
-      });
-      break;
-    }
-  }
 }

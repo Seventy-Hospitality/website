@@ -2,7 +2,6 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 import Stripe from 'stripe';
-import { createId } from '@paralleldrive/cuid2';
 import dotenv from 'dotenv';
 import path from 'path';
 import { zonedDateKey } from '../lib/kernel/venue-time';
@@ -40,7 +39,7 @@ async function main() {
   // Replace with actual Stripe test IDs from your dashboard
   const monthlyPlan = await prisma.membershipPlan.upsert({
     where: { stripePriceId: process.env.SEED_MONTHLY_PRICE_ID ?? 'price_monthly_placeholder' },
-    update: { tier: 'member' },
+    update: { tier: 'member', sortOrder: 0 },
     create: {
       name: 'Monthly Membership',
       stripePriceId: process.env.SEED_MONTHLY_PRICE_ID ?? 'price_monthly_placeholder',
@@ -48,13 +47,15 @@ async function main() {
       amountCents: 5000,
       interval: 'month',
       tier: 'member',
+      features: ['Court reservations', 'Club events'],
+      sortOrder: 0,
       active: true,
     },
   });
 
   const annualPlan = await prisma.membershipPlan.upsert({
     where: { stripePriceId: process.env.SEED_ANNUAL_PRICE_ID ?? 'price_annual_placeholder' },
-    update: { tier: 'member' },
+    update: { tier: 'member', sortOrder: 1 },
     create: {
       name: 'Annual Membership',
       stripePriceId: process.env.SEED_ANNUAL_PRICE_ID ?? 'price_annual_placeholder',
@@ -62,13 +63,15 @@ async function main() {
       amountCents: 48000,
       interval: 'year',
       tier: 'member',
+      features: ['Court reservations', 'Club events', '2 months free'],
+      sortOrder: 1,
       active: true,
     },
   });
 
   const proPlan = await prisma.membershipPlan.upsert({
     where: { stripePriceId: process.env.SEED_PRO_PRICE_ID ?? 'price_pro_placeholder' },
-    update: { tier: 'pro' },
+    update: { tier: 'pro', inviteOnly: true, sortOrder: 2 },
     create: {
       name: 'PRO Membership',
       stripePriceId: process.env.SEED_PRO_PRICE_ID ?? 'price_pro_placeholder',
@@ -76,6 +79,9 @@ async function main() {
       amountCents: 96000,
       interval: 'year',
       tier: 'pro',
+      inviteOnly: true,
+      features: ['Everything in Annual', 'PRO facilities', 'Priority booking'],
+      sortOrder: 2,
       active: true,
     },
   });
@@ -142,7 +148,9 @@ async function main() {
   ];
 
   for (const s of subs) {
-    let stripeSubId = `sub_dev_${createId()}`;
+    // Deterministic per member so re-seeding stays idempotent now that
+    // memberships upsert by subscription id (memberId is no longer unique).
+    let stripeSubId = `sub_dev_${s.member.id}`;
 
     if (stripe && s.member.stripeCustomerId && s.status === 'active') {
       // Check for existing subscription before creating
@@ -165,7 +173,7 @@ async function main() {
     }
 
     await prisma.membership.upsert({
-      where: { memberId: s.member.id },
+      where: { stripeSubscriptionId: stripeSubId },
       update: {},
       create: {
         memberId: s.member.id,

@@ -5,7 +5,14 @@ import { NoopOutboxSink, OutboxDispatcher, OutboxRepository } from './infrastruc
 
 // Repositories + infrastructure
 import { MemberRepository } from '@/lib/contexts/members/infrastructure';
-import { MembershipRepository, PlanRepository, StripeGateway } from '@/lib/contexts/memberships/infrastructure';
+import { MembershipRepository, PlanRepository } from '@/lib/contexts/memberships/infrastructure';
+import {
+  StripeGateway,
+  TransactionRepository,
+  PaymentMethodRepository,
+  WebhookEventRepository,
+  StripeBookingPaymentAdapter,
+} from '@/lib/contexts/billing/infrastructure';
 import {
   UserRepository,
   CredentialRepository,
@@ -36,6 +43,13 @@ import { LocalMediaStorage, PrismaManagedMediaAssetRepository, S3MediaStorage, S
 import { MemberService } from '@/lib/contexts/members/application';
 import { MembershipService } from '@/lib/contexts/memberships/application';
 import {
+  BillingService,
+  PaymentService,
+  ReconciliationService,
+  WebhookService,
+} from '@/lib/contexts/billing/application';
+import type { BookingPaymentPort } from '@/lib/contexts/bookings/domain';
+import {
   AuthenticationService,
   SessionService,
   AccountLinkingService,
@@ -64,10 +78,20 @@ export const VENUE_TIMEZONE = process.env.VENUE_TIMEZONE?.trim() || 'America/New
 export const memberRepo = new MemberRepository(db);
 export const membershipRepo = new MembershipRepository(db);
 export const planRepo = new PlanRepository(db);
+export const userRepo = new UserRepository(db);
+
+// ── Billing BC ──
+// Billing owns the Stripe gateway; memberships reaches Stripe only through
+// its SubscriptionGateway port (the gateway implements it), bookings only
+// through BookingPaymentPort (the adapter below).
+
 export const stripeGateway = new StripeGateway(
   process.env.STRIPE_SECRET_KEY ?? '',
   process.env.WEB_URL ?? 'http://localhost:5173',
 );
+export const transactionRepo = new TransactionRepository(db);
+export const paymentMethodRepo = new PaymentMethodRepository(db);
+export const webhookEventRepo = new WebhookEventRepository(db);
 
 // ── Scheduling BC ──
 
@@ -76,9 +100,18 @@ export const resourceRepo = new ResourceRepository(db);
 export const slotClaimRepo = new SlotClaimRepository(db);
 export const reservationRepo = new ReservationRepository(db);
 export const membershipChecker = new PrismaMembershipChecker(db);
-// TODO(package-c): billing replaces the stub with the real on-session
-// PaymentIntent adapter; this is the only wiring point.
-export const bookingPaymentPort = new StubBookingPaymentAdapter();
+
+// The real on-session PaymentIntent adapter needs a Stripe key. Keyless
+// LOCAL development falls back to the instant-success stub; production
+// never does (a missing key must fail payments closed, not book for free).
+const stripeKeyConfigured = Boolean(process.env.STRIPE_SECRET_KEY?.trim());
+if (!stripeKeyConfigured && process.env.NODE_ENV !== 'production') {
+  console.warn('[billing] STRIPE_SECRET_KEY not set; booking payments use the dev stub adapter');
+}
+export const bookingPaymentPort: BookingPaymentPort =
+  stripeKeyConfigured || process.env.NODE_ENV === 'production'
+    ? new StripeBookingPaymentAdapter(stripeGateway, memberRepo, transactionRepo)
+    : new StubBookingPaymentAdapter();
 
 export const clubEventRepo = new ClubEventRepository(db);
 export const managedMediaAssetRepo = new PrismaManagedMediaAssetRepository(db);
@@ -118,7 +151,14 @@ export const notificationService = new NotificationService(resendAdapter);
 // ── Application Services ──
 
 export const memberService = new MemberService(memberRepo);
-export const membershipService = new MembershipService(membershipRepo, planRepo, stripeGateway);
+export const membershipService = new MembershipService(
+  membershipRepo,
+  planRepo,
+  stripeGateway,
+  // Terms acceptance lands on the user row (identity owns it).
+  { recordAcceptance: (userId, version, when) => userRepo.recordTermsAcceptance(userId, version, when) },
+  memberRepo,
+);
 export const reservationService = new ReservationService(
   resourceTypeRepo,
   resourceRepo,
@@ -139,9 +179,41 @@ export const resourceClaimPort = new ResourceClaimService(
 export const mediaService = new MediaService(mediaStorage, managedMediaAssetRepo, eventImageProcessor);
 export const clubEventService = new ClubEventService(clubEventRepo, resourceClaimPort, mediaService, uow);
 
+// ── Billing services ──
+// Wired after the reservation service: billing drives bookings settlement
+// (webhook + reconcile) through the BookingSettlementPort shape it exposes.
+
+export const webhookService = new WebhookService(
+  stripeGateway,
+  webhookEventRepo,
+  transactionRepo,
+  paymentMethodRepo,
+  membershipService,
+  membershipRepo,
+  reservationService,
+  memberRepo,
+);
+export const billingService = new BillingService(
+  transactionRepo,
+  paymentMethodRepo,
+  stripeGateway,
+  memberRepo,
+  membershipRepo,
+  reservationService,
+  VENUE_TIMEZONE,
+);
+export const paymentService = new PaymentService(stripeGateway, paymentMethodRepo, memberRepo, membershipRepo);
+export const reconciliationService = new ReconciliationService(
+  stripeGateway,
+  transactionRepo,
+  webhookEventRepo,
+  memberRepo,
+  membershipRepo,
+  reservationService,
+);
+
 // ── Identity ──
 
-export const userRepo = new UserRepository(db);
 const credentialRepo = new CredentialRepository(db);
 const authIdentityRepo = new AuthIdentityRepository(db);
 const authSessionRepo = new AuthSessionRepository(db);

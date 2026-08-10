@@ -1,4 +1,5 @@
 import type { PrismaClient, Prisma } from '@prisma/client';
+import { pickCurrentMembership } from '@/lib/contexts/memberships/domain';
 import type { Member } from '../domain';
 
 export interface MemberWithRelations {
@@ -10,6 +11,11 @@ export interface MemberWithRelations {
   stripeCustomerId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * The member's CURRENT membership (memberships is one row per Stripe
+   * subscription; the repository picks the operative one), kept in the
+   * historical singular shape every consumer renders.
+   */
   membership: {
     id: string;
     status: string;
@@ -23,6 +29,16 @@ export interface MemberWithRelations {
     authorId: string;
     createdAt: Date;
   }>;
+}
+
+const memberInclude = {
+  memberships: { include: { plan: true } },
+  notes: { orderBy: { createdAt: 'desc' as const } },
+} as const;
+
+function toMemberWithRelations(record: any): MemberWithRelations {
+  const { memberships, ...rest } = record;
+  return { ...rest, membership: pickCurrentMembership(memberships ?? []) ?? null };
 }
 
 export interface ListResult {
@@ -53,16 +69,16 @@ export class MemberRepository {
 
     if (params.status) {
       if (params.status === 'none') {
-        where.membership = null;
+        where.memberships = { none: {} };
       } else {
-        where.membership = { status: params.status };
+        where.memberships = { some: { status: params.status } };
       }
     }
 
     const [data, total] = await Promise.all([
       this.prisma.member.findMany({
         where,
-        include: { membership: { include: { plan: true } }, notes: { orderBy: { createdAt: 'desc' } } },
+        include: memberInclude,
         orderBy: { createdAt: 'desc' },
         skip: (params.page - 1) * params.limit,
         take: params.limit,
@@ -70,7 +86,7 @@ export class MemberRepository {
       this.prisma.member.count({ where }),
     ]);
 
-    return { data: data as unknown as MemberWithRelations[], total, page: params.page, limit: params.limit };
+    return { data: data.map(toMemberWithRelations), total, page: params.page, limit: params.limit };
   }
 
   /**
@@ -97,12 +113,9 @@ export class MemberRepository {
   async getById(id: string): Promise<MemberWithRelations | null> {
     const member = await this.prisma.member.findUnique({
       where: { id },
-      include: {
-        membership: { include: { plan: true } },
-        notes: { orderBy: { createdAt: 'desc' } },
-      },
+      include: memberInclude,
     });
-    return member as unknown as MemberWithRelations | null;
+    return member ? toMemberWithRelations(member) : null;
   }
 
   async create(data: {

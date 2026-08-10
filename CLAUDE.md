@@ -42,7 +42,9 @@ api/
 │   ├── infrastructure/      # Prisma, event store, UoW
 │   ├── contexts/            # Bounded contexts
 │   │   ├── members/         # Member CRUD + admin notes
-│   │   ├── memberships/     # Stripe subscriptions, checkout, portal
+│   │   ├── memberships/     # Subscription lifecycle/state (Stripe via billing's gateway port)
+│   │   ├── billing/         # Stripe gateway, money ledger, payment methods, webhooks
+│   │   ├── bookings/        # Scheduling/reservations (pays via billing's adapter)
 │   │   ├── identity/        # Users, credentials, OAuth identities, sessions, tokens
 │   │   └── communications/  # Email templates, notification delivery
 │   ├── container.ts         # Composition root

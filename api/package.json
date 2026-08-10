@@ -16,7 +16,8 @@
     "db:seed": "npx prisma db seed --config prisma/prisma.config.ts",
     "db:status": "npx prisma migrate status --config prisma/prisma.config.ts",
     "db:studio": "npx prisma studio --config prisma/prisma.config.ts",
-    "job:cleanup-event-images": "tsx src/jobs/cleanup-event-images.ts"
+    "job:cleanup-event-images": "tsx src/jobs/cleanup-event-images.ts",
+    "job:backfill-billing-ledger": "tsx src/jobs/backfill-billing-ledger.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"

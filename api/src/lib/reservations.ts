@@ -1,5 +1,6 @@
 import type { FastifyReply } from 'fastify';
 import { minutesToTimeLabel, zonedMinutesSinceMidnight } from '@/lib/kernel';
+import { MinimumChargeNotMetError } from '@/lib/contexts/billing/domain';
 import {
   type ReservationDetailRecord,
   CannotRemoveOrganizerError,
@@ -173,5 +174,8 @@ export function handleReservationError(reply: FastifyReply, err: unknown) {
   if (err instanceof NotInvitePermittedError) return error(reply, 'FORBIDDEN', err.message, 403);
   if (err instanceof NotReservationOrganizerError) return error(reply, 'FORBIDDEN', err.message, 403);
   if (err instanceof PaymentNotCompletedError) return error(reply, 'PAYMENT_REQUIRED', err.message, 402);
+  // A reschedule delta below Stripe's $0.50 card minimum cannot be charged
+  // (settled decision: block, not absorb).
+  if (err instanceof MinimumChargeNotMetError) return error(reply, 'PAYMENT_TOO_SMALL', err.message, 422);
   throw err;
 }

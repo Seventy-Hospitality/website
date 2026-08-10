@@ -17,11 +17,12 @@ export interface PaymentIntentHandle {
 export type PaymentStatus = 'requires_payment' | 'succeeded' | 'failed' | 'canceled';
 
 /**
- * TODO(package-c): billing owns Stripe. This port is the seam: package C
- * drops in an on-session PaymentIntent implementation (idempotency key per
- * reservation attempt, `allow_redirects: 'never'`) plus webhook-driven
- * confirmation; until then the container wires a stub adapter that fakes the
- * client secret and reports instant success so the flow runs end to end.
+ * Billing owns Stripe; this port is the seam. The billing context wires an
+ * on-session PaymentIntent implementation (idempotency key per reservation
+ * attempt, `allow_redirects: 'never'`, metadata.reservationId both
+ * directions) plus webhook-driven confirmation; a stub adapter that fakes
+ * the client secret and reports instant success remains available for
+ * keyless local development.
  */
 export interface BookingPaymentPort {
   createPaymentIntent(input: {
@@ -35,6 +36,12 @@ export interface BookingPaymentPort {
     paymentIntentId: string | null;
     amountCents: number;
     reservationId: string;
+    /**
+     * Stable key for this exact refund reservation (the ledger row id):
+     * makes the Stripe call idempotent across crash-retries without ever
+     * colliding two legitimate same-amount refunds on one intent.
+     */
+    refundKey: string;
   }): Promise<{ refundId: string }>;
   cancelPaymentIntent(paymentIntentId: string): Promise<void>;
 }

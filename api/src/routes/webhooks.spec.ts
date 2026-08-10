@@ -2,30 +2,19 @@ import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import type Stripe from 'stripe';
 
-const { mockStripeGateway, mockMembershipService, mockMemberRepo } = vi.hoisted(() => ({
+const { mockStripeGateway, mockWebhookService } = vi.hoisted(() => ({
   mockStripeGateway: {
     verifyWebhookSignature: vi.fn(),
-    retrieveSubscription: vi.fn(),
-    extractCheckoutData: vi.fn(),
-    extractSubscriptionData: vi.fn(),
-    extractInvoiceSubscriptionId: vi.fn(),
+    mapWebhookEvent: vi.fn(),
   },
-  mockMembershipService: {
-    handleCheckoutCompleted: vi.fn(),
-    handleSubscriptionUpdated: vi.fn(),
-    handleSubscriptionDeleted: vi.fn(),
-    handleInvoicePaid: vi.fn(),
-    handleInvoicePaymentFailed: vi.fn(),
-  },
-  mockMemberRepo: {
-    setStripeCustomerId: vi.fn().mockResolvedValue(undefined),
+  mockWebhookService: {
+    process: vi.fn(),
   },
 }));
 
 vi.mock('@/lib/container', () => ({
   stripeGateway: mockStripeGateway,
-  membershipService: mockMembershipService,
-  memberRepo: mockMemberRepo,
+  webhookService: mockWebhookService,
 }));
 
 // Import after mocking
@@ -38,6 +27,11 @@ function makeEvent(type: string, object: Record<string, unknown>): Stripe.Event 
     data: { object },
   } as unknown as Stripe.Event;
 }
+
+const HEADERS = {
+  'content-type': 'application/json',
+  'stripe-signature': 'valid_sig',
+} as const;
 
 describe('webhook route: POST /stripe', () => {
   let app: FastifyInstance;
@@ -52,6 +46,13 @@ describe('webhook route: POST /stripe', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockWebhookService.process.mockResolvedValue('handled');
+    mockStripeGateway.mapWebhookEvent.mockReturnValue({
+      eventId: 'evt_test',
+      eventType: 'customer.subscription.updated',
+      kind: 'subscription_changed',
+      subscriptionId: 'sub_1',
+    });
   });
 
   it('returns 400 when stripe-signature header is missing', async () => {
@@ -64,6 +65,7 @@ describe('webhook route: POST /stripe', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: 'Missing signature' });
+    expect(mockWebhookService.process).not.toHaveBeenCalled();
   });
 
   it('returns 400 when signature verification fails', async () => {
@@ -71,313 +73,61 @@ describe('webhook route: POST /stripe', () => {
       throw new Error('Invalid signature');
     });
 
-    const res = await app.inject({
-      method: 'POST',
-      url: '/stripe',
-      payload: '{}',
-      headers: {
-        'content-type': 'application/json',
-        'stripe-signature': 'bad_sig',
-      },
-    });
+    const res = await app.inject({ method: 'POST', url: '/stripe', payload: '{}', headers: HEADERS });
 
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: 'Invalid signature' });
+    expect(mockWebhookService.process).not.toHaveBeenCalled();
   });
 
-  describe('checkout.session.completed', () => {
-    it('dispatches to handleCheckoutCompleted', async () => {
-      const session = {
-        subscription: 'sub_123',
-        metadata: { memberId: 'mbr_1', planId: 'plan_1' },
-      };
-      const event = makeEvent('checkout.session.completed', session);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
+  it('verifies, maps and processes the event, answering 200', async () => {
+    const event = makeEvent('customer.subscription.updated', { id: 'sub_1' });
+    mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
 
-      const fakeSub = { id: 'sub_123', status: 'active' };
-      mockStripeGateway.retrieveSubscription.mockResolvedValue(fakeSub);
-      mockStripeGateway.extractCheckoutData.mockReturnValue({
-        memberId: 'mbr_1',
-        planId: 'plan_1',
-        subscriptionId: 'sub_123',
-        status: 'active',
-      });
+    const res = await app.inject({ method: 'POST', url: '/stripe', payload: '{}', headers: HEADERS });
 
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockStripeGateway.retrieveSubscription).toHaveBeenCalledWith('sub_123');
-      expect(mockStripeGateway.extractCheckoutData).toHaveBeenCalledWith(session, fakeSub);
-      expect(mockMembershipService.handleCheckoutCompleted).toHaveBeenCalled();
-    });
-
-    it('skips processing when subscription ID is missing', async () => {
-      const session = { subscription: null, metadata: { memberId: 'mbr_1' } };
-      const event = makeEvent('checkout.session.completed', session);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockMembershipService.handleCheckoutCompleted).not.toHaveBeenCalled();
-    });
-
-    it('skips processing when memberId metadata is missing', async () => {
-      const session = { subscription: 'sub_123', metadata: {} };
-      const event = makeEvent('checkout.session.completed', session);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockMembershipService.handleCheckoutCompleted).not.toHaveBeenCalled();
-    });
-
-    it('handles expanded subscription object (not string)', async () => {
-      const session = {
-        subscription: { id: 'sub_expanded' },
-        metadata: { memberId: 'mbr_1', planId: 'plan_1' },
-      };
-      const event = makeEvent('checkout.session.completed', session);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-
-      const fakeSub = { id: 'sub_expanded', status: 'active' };
-      mockStripeGateway.retrieveSubscription.mockResolvedValue(fakeSub);
-      mockStripeGateway.extractCheckoutData.mockReturnValue({ subscriptionId: 'sub_expanded' });
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockStripeGateway.retrieveSubscription).toHaveBeenCalledWith('sub_expanded');
-    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ received: true, outcome: 'handled' });
+    expect(mockStripeGateway.mapWebhookEvent).toHaveBeenCalledWith(event);
+    expect(mockWebhookService.process).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'subscription_changed', subscriptionId: 'sub_1' }),
+    );
   });
 
-  describe('customer.subscription.updated', () => {
-    it('dispatches to handleSubscriptionUpdated', async () => {
-      const subscription = { id: 'sub_456', status: 'past_due' };
-      const event = makeEvent('customer.subscription.updated', subscription);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-      mockStripeGateway.extractSubscriptionData.mockReturnValue({
-        subscriptionId: 'sub_456',
-        status: 'past_due',
-      });
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockStripeGateway.extractSubscriptionData).toHaveBeenCalledWith(subscription);
-      expect(mockMembershipService.handleSubscriptionUpdated).toHaveBeenCalled();
+  it('answers 200 for deliberately ignored event types', async () => {
+    mockStripeGateway.verifyWebhookSignature.mockReturnValue(makeEvent('some.unknown.event', {}));
+    mockStripeGateway.mapWebhookEvent.mockReturnValue({
+      eventId: 'evt_test',
+      eventType: 'some.unknown.event',
+      kind: 'ignored',
     });
+    mockWebhookService.process.mockResolvedValue('ignored');
+
+    const res = await app.inject({ method: 'POST', url: '/stripe', payload: '{}', headers: HEADERS });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ received: true, outcome: 'ignored' });
   });
 
-  describe('customer.subscription.deleted', () => {
-    it('dispatches to handleSubscriptionDeleted with subscriptionId', async () => {
-      const subscription = { id: 'sub_789' };
-      const event = makeEvent('customer.subscription.deleted', subscription);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
+  it('answers 200 for duplicate deliveries (dedupe)', async () => {
+    mockStripeGateway.verifyWebhookSignature.mockReturnValue(makeEvent('invoice.paid', {}));
+    mockWebhookService.process.mockResolvedValue('duplicate');
 
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
+    const res = await app.inject({ method: 'POST', url: '/stripe', payload: '{}', headers: HEADERS });
 
-      expect(res.statusCode).toBe(200);
-      expect(mockMembershipService.handleSubscriptionDeleted).toHaveBeenCalledWith({
-        subscriptionId: 'sub_789',
-      });
-    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ received: true, outcome: 'duplicate' });
   });
 
-  describe('invoice.paid', () => {
-    it('dispatches to handleInvoicePaid with subscription data', async () => {
-      const invoice = { id: 'inv_1' };
-      const event = makeEvent('invoice.paid', invoice);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-      mockStripeGateway.extractInvoiceSubscriptionId.mockReturnValue('sub_from_inv');
+  it('returns 500 on transient processing failure so Stripe retries (never the old catch-all 200)', async () => {
+    mockStripeGateway.verifyWebhookSignature.mockReturnValue(
+      makeEvent('customer.subscription.updated', { id: 'sub_err' }),
+    );
+    mockWebhookService.process.mockRejectedValue(new Error('DB down'));
 
-      const fakeSub = {
-        status: 'active',
-        items: { data: [{ current_period_end: 1735689600 }] },
-      };
-      mockStripeGateway.retrieveSubscription.mockResolvedValue(fakeSub);
+    const res = await app.inject({ method: 'POST', url: '/stripe', payload: '{}', headers: HEADERS });
 
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockStripeGateway.retrieveSubscription).toHaveBeenCalledWith('sub_from_inv');
-      expect(mockMembershipService.handleInvoicePaid).toHaveBeenCalledWith({
-        subscriptionId: 'sub_from_inv',
-        status: 'active',
-        currentPeriodEnd: new Date(1735689600 * 1000),
-      });
-    });
-
-    it('skips processing when subscription ID is not extractable', async () => {
-      const invoice = { id: 'inv_2' };
-      const event = makeEvent('invoice.paid', invoice);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-      mockStripeGateway.extractInvoiceSubscriptionId.mockReturnValue(null);
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockMembershipService.handleInvoicePaid).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('invoice.payment_failed', () => {
-    it('dispatches to handleInvoicePaymentFailed with past_due status', async () => {
-      const invoice = { id: 'inv_3' };
-      const event = makeEvent('invoice.payment_failed', invoice);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-      mockStripeGateway.extractInvoiceSubscriptionId.mockReturnValue('sub_fail');
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockMembershipService.handleInvoicePaymentFailed).toHaveBeenCalledWith(
-        expect.objectContaining({
-          subscriptionId: 'sub_fail',
-          status: 'past_due',
-        }),
-      );
-    });
-
-    it('skips processing when subscription ID is not extractable', async () => {
-      const invoice = { id: 'inv_4' };
-      const event = makeEvent('invoice.payment_failed', invoice);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-      mockStripeGateway.extractInvoiceSubscriptionId.mockReturnValue(null);
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockMembershipService.handleInvoicePaymentFailed).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('unknown event type', () => {
-    it('returns 200 and does not call any service method', async () => {
-      const event = makeEvent('some.unknown.event', { id: 'obj_1' });
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ received: true });
-      expect(mockMembershipService.handleCheckoutCompleted).not.toHaveBeenCalled();
-      expect(mockMembershipService.handleSubscriptionUpdated).not.toHaveBeenCalled();
-      expect(mockMembershipService.handleSubscriptionDeleted).not.toHaveBeenCalled();
-      expect(mockMembershipService.handleInvoicePaid).not.toHaveBeenCalled();
-      expect(mockMembershipService.handleInvoicePaymentFailed).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('processEvent error handling', () => {
-    it('returns 200 even when processEvent throws', async () => {
-      const subscription = { id: 'sub_err', status: 'active' };
-      const event = makeEvent('customer.subscription.updated', subscription);
-      mockStripeGateway.verifyWebhookSignature.mockReturnValue(event);
-      mockStripeGateway.extractSubscriptionData.mockReturnValue({});
-      mockMembershipService.handleSubscriptionUpdated.mockRejectedValue(new Error('DB down'));
-
-      const res = await app.inject({
-        method: 'POST',
-        url: '/stripe',
-        payload: '{}',
-        headers: {
-          'content-type': 'application/json',
-          'stripe-signature': 'valid_sig',
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ received: true });
-    });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: 'Webhook processing failed' });
   });
 });

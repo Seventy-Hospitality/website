@@ -103,6 +103,14 @@ export class UserRepository {
     });
   }
 
+  /** Terms acceptance is recorded server-side (memberships' TermsRecorder). */
+  async recordTermsAcceptance(id: string, version: string, when: Date): Promise<void> {
+    await this.prisma.user.update({
+      where: { id },
+      data: { termsAcceptedAt: when, termsVersion: version },
+    });
+  }
+
   // ── Admin surface (src/routes/admin.ts) ──
 
   async list(): Promise<AppUser[]> {

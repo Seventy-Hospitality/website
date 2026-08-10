@@ -103,6 +103,27 @@ export const createCheckoutSchema = z.object({
   planId: z.string().min(1),
 });
 
+// ── Billing (member-facing; the member always comes from the principal) ──
+
+export const subscribeMembershipSchema = z.object({
+  planId: z.string().min(1),
+  /** Recorded server-side on the user row + subscription metadata. */
+  termsVersion: z.string().trim().min(1).max(100),
+});
+
+export const changeMembershipSchema = z.object({
+  planId: z.string().min(1),
+});
+
+export const cancelMembershipQuerySchema = z.object({
+  /** Default cancels at period end; now=true cancels immediately, no refund. */
+  now: booleanQueryParam,
+});
+
+export const billingTransactionsQuerySchema = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/),
+});
+
 /** Member-facing checkout: the member comes from the principal. */
 export const meCheckoutSchema = z.object({
   planId: z.string().min(1),

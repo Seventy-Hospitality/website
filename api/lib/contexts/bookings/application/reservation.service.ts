@@ -18,6 +18,7 @@ import {
   allocateRefund,
   canManageInvites,
   computeNetPaidCents,
+  computeRefundableCents,
   computeRefundCents,
   computeTotalCents,
   freeSlotStartsByResource,
@@ -516,16 +517,20 @@ export class ReservationService {
    *    or the captured charge is refunded in full. A paid booking is never
    *    silently lost and a captured charge is never stranded.
    */
-  async confirm(id: string, viewer: { memberId?: string; actorId?: string }): Promise<ReservationDetailRecord> {
+  async confirm(
+    id: string,
+    viewer: { memberId?: string; actorId?: string; source?: string },
+  ): Promise<ReservationDetailRecord> {
     const detail = await this.getOwn(id, viewer.memberId);
     const actorId = viewer.actorId ?? viewer.memberId;
+    const source = viewer.source;
 
     if (detail.status === 'confirmed') {
       if (!detail.pendingChange) return detail;
-      return this.settlePendingChange(detail, { actorId });
+      return this.settlePendingChange(detail, { actorId, source });
     }
     if (detail.status === 'expired') {
-      return this.recoverExpiredIfPaid(detail, { actorId });
+      return this.recoverExpiredIfPaid(detail, { actorId, source });
     }
     if (detail.status !== 'pending_payment') {
       throw new InvalidReservationStatusError(detail.status, 'pending_payment');
@@ -536,18 +541,293 @@ export class ReservationService {
     const paymentStatus = await this.paymentPort.getPaymentStatus(charge.stripePaymentIntentId);
     if (paymentStatus !== 'succeeded') throw new PaymentNotCompletedError();
 
-    const outcome = await this.settlePendingConfirmation(id, charge, { actorId });
+    const outcome = await this.settlePendingConfirmation(id, charge, { actorId, source });
     if (outcome === 'lost') {
       // A concurrent cancel or expiry beat us; surface the truth.
       const fresh = await this.reservationRepo.getDetail(id);
       if (fresh?.status === 'confirmed') return fresh;
-      if (fresh?.status === 'expired') return this.recoverExpiredIfPaid(fresh, { actorId });
+      if (fresh?.status === 'expired') return this.recoverExpiredIfPaid(fresh, { actorId, source });
       if (fresh?.status === 'cancelled') {
         throw new InvalidReservationStatusError('cancelled', 'pending_payment');
       }
       throw new HoldExpiredError();
     }
     return (await this.reservationRepo.getDetail(id))!;
+  }
+
+  // ── Billing-context entry points (webhook + reconcile cron) ──
+
+  /**
+   * The billing context's "this PaymentIntent captured" entry point
+   * (payment_intent.succeeded webhook and the nightly reconcile sweep). It
+   * settles through the SAME paths as a client confirm, plus the one case
+   * confirm() cannot reach: a CANCELLED reservation whose charge captured in
+   * the sub-second window after cancel() judged the intent uncaptured (the
+   * pay-vs-drop TOCTOU residual recorded in decisions-scheduling.md item
+   * 20). That orphaned capture is refunded in full; the tier-kept balance of
+   * an ordinary paid cancellation is never touched, because only charge rows
+   * still PENDING can be orphaned.
+   */
+  async handleCapturedPayment(
+    id: string,
+    options: { source?: string; intent?: { paymentIntentId: string; amountCents: number } } = {},
+  ): Promise<'confirmed' | 'already_settled' | 'orphan_refunded' | 'not_captured'> {
+    let detail = await this.reservationRepo.getDetail(id);
+    // Throwing NOT-FOUND is deliberate: payment_intent.succeeded can arrive
+    // before the hold row is visible; the webhook 500s and Stripe retries.
+    if (!detail) throw new ReservationNotFoundError(id);
+
+    // A crash between the PI creation and the charge-row insert leaves a
+    // live intent with no row; recreate it from the intent so every
+    // settlement path below can see the money.
+    if (options.intent && !detail.payments.some(
+      (payment) => payment.stripePaymentIntentId === options.intent!.paymentIntentId,
+    )) {
+      await this.uow.execute(async (tx) => {
+        await this.reservationRepo.advisoryLockReservation(tx, id);
+        const existing = await this.reservationRepo.findChargeByPaymentIntent(
+          tx,
+          id,
+          options.intent!.paymentIntentId,
+        );
+        if (existing) return; // raced another recreator
+        await this.reservationRepo.addPayment(tx, {
+          reservationId: id,
+          kind: 'charge',
+          amountCents: options.intent!.amountCents,
+          stripePaymentIntentId: options.intent!.paymentIntentId,
+          status: 'pending',
+        });
+      });
+      detail = (await this.reservationRepo.getDetail(id))!;
+    }
+
+    if (detail.status === 'cancelled') {
+      return this.refundOrphanedCapture(detail, options);
+    }
+
+    try {
+      await this.confirm(id, { source: options.source ?? 'webhook' });
+      return 'confirmed';
+    } catch (error) {
+      if (error instanceof InvalidReservationStatusError) {
+        // A concurrent cancel raced us between the read and the confirm:
+        // re-dispatch so a captured charge is never stranded.
+        const fresh = await this.reservationRepo.getDetail(id);
+        if (fresh?.status === 'cancelled') return this.refundOrphanedCapture(fresh, options);
+        return 'already_settled';
+      }
+      if (error instanceof HoldExpiredError) {
+        // Expired and either not actually paid or already made whole by the
+        // recovery refund; a settled terminal state, never a webhook 500.
+        return 'already_settled';
+      }
+      if (error instanceof PaymentNotCompletedError) {
+        return 'not_captured'; // stale event; nothing captured
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Async-refund finalization (refund.updated / charge.refunded): Stripe
+   * refunds can fail AFTER refunds.create succeeded. A failed refund flips
+   * the row back and restores the paid total so the ledger matches reality;
+   * the schedule change it belonged to stands (settled design: apply
+   * optimistically, escalate to staff on failure).
+   */
+  async reconcileRefundOutcome(
+    stripeRefundId: string,
+    outcome: 'succeeded' | 'failed' | 'canceled',
+    source = 'webhook',
+  ): Promise<'reconciled' | 'unknown'> {
+    const row = await this.reservationRepo.findPaymentByStripeRefundId(stripeRefundId);
+    if (!row) return 'unknown';
+
+    await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, row.reservationId);
+      if (outcome === 'succeeded') {
+        // Externally-recorded rows start pending; our own reserved rows are
+        // already succeeded (completeRefund), so this is usually a no-op.
+        await this.reservationRepo.setPaymentStatusIf(tx, row.id, 'pending', 'succeeded');
+        return;
+      }
+      // A Stripe refund can fail AFTER refunds.create succeeded. Flip the
+      // row back and restore the paid total so the ledger matches reality;
+      // the schedule change it belonged to stands.
+      const flippedSucceeded = await this.reservationRepo.setPaymentStatusIf(tx, row.id, 'succeeded', 'failed');
+      const flippedPending = flippedSucceeded
+        ? false
+        : await this.reservationRepo.setPaymentStatusIf(tx, row.id, 'pending', 'failed');
+      if (flippedSucceeded || flippedPending) {
+        await this.reservationRepo.adjustAmountPaid(tx, row.reservationId, row.amountCents);
+        // TODO(package-f): notify staff; an async-failed refund needs a human.
+        await this.audit.append(tx, {
+          streamType: STREAM_TYPE,
+          streamId: row.reservationId,
+          eventType: 'reservation.refund_failed',
+          data: { amountCents: row.amountCents, stripeRefundId, async: true },
+          source,
+        });
+      }
+    });
+    return 'reconciled';
+  }
+
+  /**
+   * A refund that did NOT originate here (staff goodwill refund from the
+   * Stripe dashboard) must still consume refundable balance in the
+   * settlement record, or a later cancel would allocate against an
+   * already-refunded charge and fail at Stripe. Idempotent by
+   * stripeRefundId under the reservation lock.
+   */
+  async recordExternalRefund(input: {
+    stripeRefundId: string;
+    stripePaymentIntentId: string | null;
+    amountCents: number;
+    status: 'pending' | 'succeeded' | 'failed';
+    source?: string;
+  }): Promise<'recorded' | 'known' | 'unmatched'> {
+    if (await this.reservationRepo.findPaymentByStripeRefundId(input.stripeRefundId)) return 'known';
+    if (!input.stripePaymentIntentId) return 'unmatched';
+    const reservationId = await this.reservationRepo.findReservationIdByPaymentIntent(
+      input.stripePaymentIntentId,
+    );
+    if (!reservationId) return 'unmatched';
+
+    const recorded = await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, reservationId);
+      if (await this.reservationRepo.findPaymentByStripeRefundId(input.stripeRefundId, tx)) return false;
+      await this.reservationRepo.addPayment(tx, {
+        reservationId,
+        kind: 'refund',
+        amountCents: input.amountCents,
+        stripePaymentIntentId: input.stripePaymentIntentId,
+        stripeRefundId: input.stripeRefundId,
+        status: input.status,
+      });
+      if (input.status !== 'failed') {
+        await this.reservationRepo.adjustAmountPaid(tx, reservationId, -input.amountCents);
+      }
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: reservationId,
+        eventType: 'reservation.external_refund_recorded',
+        data: {
+          amountCents: input.amountCents,
+          stripeRefundId: input.stripeRefundId,
+          status: input.status,
+        },
+        source: input.source ?? 'webhook',
+      });
+      return true;
+    });
+    return recorded ? 'recorded' : 'known';
+  }
+
+  /**
+   * charge.dispute.created: freeze the reservation financially. The disputed
+   * charge is excluded from refundable balance (allocateRefund skips it), so
+   * every refund-producing path fails closed until staff resolve it.
+   */
+  async freezeChargeForDispute(
+    stripePaymentIntentId: string,
+    source = 'webhook',
+    now: Date = new Date(),
+  ): Promise<string[]> {
+    const reservationIds = await this.reservationRepo.markChargeDisputed(stripePaymentIntentId, now);
+    for (const reservationId of reservationIds) {
+      await this.uow.execute(async (tx) => {
+        // TODO(package-f): notify staff; a dispute always needs a human.
+        await this.audit.append(tx, {
+          streamType: STREAM_TYPE,
+          streamId: reservationId,
+          eventType: 'reservation.dispute_opened',
+          data: { stripePaymentIntentId },
+          source,
+        });
+      });
+    }
+    return reservationIds;
+  }
+
+  /**
+   * Billing-side blockers for account closure (package E): a member with a
+   * refund in flight or an open dispute cannot be deleted yet.
+   */
+  async hasBlockingFinancialState(memberId: string): Promise<boolean> {
+    const { pendingRefunds, disputedCharges } =
+      await this.reservationRepo.countBlockingFinancialState(memberId);
+    return pendingRefunds > 0 || disputedCharges > 0;
+  }
+
+  /**
+   * A captured charge on a CANCELLED reservation (the pay-vs-drop TOCTOU).
+   * Only charge rows still pending or marked failed can be orphaned:
+   * cancel() settles captured holds through confirm-then-refund, marking
+   * them succeeded, so succeeded rows were already in the cancellation's
+   * math and the tier-kept balance stays untouched. The refund percent is
+   * the one the cancellation actually applied (persisted as
+   * cancelRefundPercent) for base charges, and 100% for an unapplied grow
+   * delta (the extra time was never delivered). A Stripe capture is ground
+   * truth: failed rows flip to succeeded too.
+   */
+  private async refundOrphanedCapture(
+    detail: ReservationDetailRecord,
+    options: { source?: string },
+  ): Promise<'orphan_refunded' | 'already_settled' | 'not_captured'> {
+    // Port calls stay OUTSIDE the transaction.
+    const captured = new Map<string, 'pending' | 'failed'>();
+    for (const payment of detail.payments) {
+      if (payment.kind !== 'charge' || payment.status === 'succeeded' || !payment.stripePaymentIntentId) {
+        continue;
+      }
+      if ((await this.paymentPort.getPaymentStatus(payment.stripePaymentIntentId)) === 'succeeded') {
+        captured.set(payment.id, payment.status);
+      }
+    }
+    if (captured.size === 0) return 'not_captured';
+
+    const reserved = await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, detail.id);
+      const fresh = await this.reservationRepo.getDetail(detail.id, tx);
+      if (!fresh || fresh.status !== 'cancelled') return [] as ReservedRefund[];
+
+      const percent = fresh.cancelRefundPercent ?? 100;
+      let orphanedCents = 0;
+      let refundCents = 0;
+      let ledger = fresh.payments;
+      for (const payment of fresh.payments) {
+        const priorStatus = captured.get(payment.id);
+        if (!priorStatus) continue;
+        if (await this.reservationRepo.setPaymentStatusIf(tx, payment.id, priorStatus, 'succeeded')) {
+          await this.reservationRepo.adjustAmountPaid(tx, detail.id, payment.amountCents);
+          orphanedCents += payment.amountCents;
+          refundCents +=
+            payment.purpose === 'change_delta'
+              ? payment.amountCents
+              : computeRefundCents(payment.amountCents, percent);
+          ledger = ledger.map((row) =>
+            row.id === payment.id ? { ...row, status: 'succeeded' as const } : row,
+          );
+        }
+      }
+      if (orphanedCents === 0) return [] as ReservedRefund[]; // another path settled it
+
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: detail.id,
+        eventType: 'reservation.orphaned_capture_refunded',
+        data: { capturedCents: orphanedCents, refundCents, refundPercent: percent },
+        source: options.source,
+      });
+      if (refundCents === 0) return [] as ReservedRefund[]; // 0% tier keeps it all
+      return this.reserveRefund(tx, detail.id, ledger, refundCents);
+    });
+
+    if (reserved.length === 0) return 'already_settled';
+    await this.executeReservedRefunds(detail.id, reserved, undefined, options.source);
+    return 'orphan_refunded';
   }
 
   // ── Reads ──
@@ -868,6 +1148,7 @@ export class ReservationService {
       const chargeRow = await this.reservationRepo.addPayment(tx, {
         reservationId: id,
         kind: 'charge',
+        purpose: 'change_delta',
         amountCents: params.deltaCents,
         stripePaymentIntentId: intent.paymentIntentId,
         status: 'pending',
@@ -1143,13 +1424,30 @@ export class ReservationService {
 
       const netPaidCents = computeNetPaidCents(ledger);
       const percent = options.fullRefund ? 100 : refundPercentFor(fresh.startsAt, now);
-      const refundCents = computeRefundCents(netPaidCents - paidChangeCents, percent) + paidChangeCents;
+      const policyRefundCents = computeRefundCents(netPaidCents - paidChangeCents, percent) + paidChangeCents;
+      // A disputed charge is frozen: refund only what is actually
+      // refundable, audit the withheld remainder, and never fail the
+      // cancellation itself (the member must always be able to free the
+      // slot; staff resolve the dispute).
+      const refundableCents = computeRefundableCents(ledger);
+      const refundCents = Math.min(policyRefundCents, refundableCents);
+
+      // Persisted so a charge that captures AFTER this cancel (pay-vs-drop
+      // TOCTOU) refunds at the same percent instead of 100%.
+      await this.reservationRepo.setCancelRefundPercent(tx, id, percent);
 
       await this.audit.append(tx, {
         streamType: STREAM_TYPE,
         streamId: id,
         eventType: 'reservation.cancelled',
-        data: { refundCents, refundPercent: percent, previousStatus: fresh.status },
+        data: {
+          refundCents,
+          refundPercent: percent,
+          previousStatus: fresh.status,
+          ...(refundCents < policyRefundCents
+            ? { withheldDisputedCents: policyRefundCents - refundCents }
+            : {}),
+        },
         actorId: actor,
       });
       const reserved = refundCents > 0 ? await this.reserveRefund(tx, id, ledger, refundCents) : [];
@@ -1538,7 +1836,8 @@ export class ReservationService {
           payment.id === charge.id ? { ...payment, status: 'succeeded' as const } : payment,
         );
       }
-      const refundable = computeNetPaidCents(ledger);
+      // Refundable balance, not net paid: a disputed charge stays frozen.
+      const refundable = computeRefundableCents(ledger);
       if (refundable <= 0) return [] as ReservedRefund[]; // already refunded: idempotent
       await this.audit.append(tx, {
         streamType: STREAM_TYPE,
@@ -1605,6 +1904,10 @@ export class ReservationService {
           paymentIntentId: refund.stripePaymentIntentId,
           amountCents: refund.amountCents,
           reservationId,
+          // The reserved row id: a stable idempotency key per refund, so a
+          // crash-retry can never double-refund and two legitimate
+          // same-amount refunds can never collide.
+          refundKey: refund.paymentId,
         }));
       } catch (error) {
         await this.uow.execute(async (tx) => {

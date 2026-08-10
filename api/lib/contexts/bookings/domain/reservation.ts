@@ -23,6 +23,11 @@ export interface Reservation {
   status: ReservationStatus;
   hourlyRateCentsSnapshot: number;
   amountPaidCents: number;
+  /**
+   * The refund percent the cancellation actually applied; lets a charge
+   * that captures after the cancel refund at the same percent.
+   */
+  cancelRefundPercent: number | null;
   createdByAdminId: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -44,10 +49,18 @@ export interface ReservationPayment {
   id: string;
   reservationId: string;
   kind: PaymentKind;
+  /** What a charge paid for: the base booking or a reschedule-grow delta. */
+  purpose: 'base' | 'change_delta';
   amountCents: number; // always positive; kind carries the direction
   stripePaymentIntentId: string | null;
   stripeRefundId: string | null;
   status: 'pending' | 'succeeded' | 'failed';
+  /**
+   * Financial freeze (charge.dispute.created): a disputed charge cannot be
+   * refunded at Stripe, so it is excluded from refundable balance while
+   * still counting as captured money.
+   */
+  disputedAt: Date | null;
   createdAt: Date;
 }
 

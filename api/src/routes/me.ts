@@ -166,9 +166,10 @@ export async function meRoutes(app: FastifyInstance) {
 
   // The portal books one slot on a named facility. The reservation is
   // created through the standard checkout (pending_payment + hold) and
-  // confirmed through the payment port in the same request.
-  // TODO(package-c): with real Stripe this confirm fails closed until the
-  // portal grows a PaymentSheet; the mobile flow uses /api/reservations.
+  // confirmed through the payment port in the same request. With the real
+  // Stripe adapter this confirm fails closed (the intent is unpaid) until
+  // the web portal grows a PaymentSheet; keyless local dev books end to end
+  // via the stub. The mobile flow uses /api/reservations + /confirm.
   app.post('/bookings', { config: { policy: 'active-member' } }, async (req, reply) => {
     const parsed = createSelfBookingSchema.safeParse(req.body);
     if (!parsed.success) {

@@ -156,12 +156,9 @@ export class HoldExpiredError extends Error {
   }
 }
 
-export class InsufficientRefundableBalanceError extends Error {
-  constructor() {
-    super('Refund exceeds the refundable balance for this reservation');
-    this.name = 'InsufficientRefundableBalanceError';
-  }
-}
+// Thrown by the shared allocator in the kernel; re-exported here so the
+// bookings barrel keeps serving it.
+export { InsufficientRefundableBalanceError } from '@/lib/kernel';
 
 export class ReservationChangedError extends Error {
   constructor() {

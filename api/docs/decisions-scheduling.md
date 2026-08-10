@@ -127,13 +127,12 @@ the settled critique design. OPEN-decision recommendations from
 
 ## Package seams left open
 
-- **Package C (billing):** `BookingPaymentPort`
-  (`lib/contexts/bookings/domain/ports.ts`) with
-  `StubBookingPaymentAdapter` wired in the container (`TODO(package-c)`).
-  The stub fakes client secrets and reports instant success. C replaces it
-  with on-session PaymentIntents + `payment_intent.succeeded` webhook
-  confirmation (the webhook calls `reservationService.confirm`), real
-  refunds, and reconciliation of optimistically-recorded refunds.
+- **Package C (billing): CLOSED.** `BookingPaymentPort` is implemented by
+  `StripeBookingPaymentAdapter` (on-session PaymentIntents,
+  `payment_intent.succeeded` -> `reservationService.handleCapturedPayment`
+  -> `confirm()`, real refunds keyed by the reserved row id, refund/dispute
+  reconciliation, and the cancel-vs-pay TOCTOU repair). The stub survives
+  only for keyless local development. See `docs/decisions-billing.md`.
 - **Package D (clubs):** `Reservation.clubId` and
   `ReservationParticipant.viaClubId` are plain nullable columns;
   `invitees.clubIds` on create returns 422 `NOT_IMPLEMENTED`

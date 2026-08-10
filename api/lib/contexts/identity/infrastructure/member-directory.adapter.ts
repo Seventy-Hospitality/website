@@ -19,7 +19,7 @@ export class PrismaMemberDirectory implements MemberDirectory {
   async findByEmail(tx: TransactionContext, email: string) {
     const member = await this.db(tx).member.findUnique({
       where: { email },
-      select: { id: true, userId: true, stripeCustomerId: true, membership: { select: { id: true } } },
+      select: { id: true, userId: true, stripeCustomerId: true, memberships: { select: { id: true }, take: 1 } },
     });
     if (!member) return null;
     return {
@@ -28,7 +28,7 @@ export class PrismaMemberDirectory implements MemberDirectory {
       // A Stripe customer or a membership row makes this a high-value claim
       // target (billing portal, subscription); the claim policy requires
       // proven account control before handing such a row over.
-      hasBilling: member.stripeCustomerId !== null || member.membership !== null,
+      hasBilling: member.stripeCustomerId !== null || member.memberships.length > 0,
     };
   }
 

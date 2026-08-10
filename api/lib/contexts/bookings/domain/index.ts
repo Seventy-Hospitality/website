@@ -29,6 +29,7 @@ export {
 export {
   refundPercentFor,
   computeNetPaidCents,
+  computeRefundableCents,
   computeRefundCents,
   computeRescheduleDeltaCents,
   allocateRefund,

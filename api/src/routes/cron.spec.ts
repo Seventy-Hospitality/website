@@ -1,8 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 
-const { mockMembershipService, mockMediaService, mockDb, mockMembershipChecker, mockReservationService, mockOutboxDispatcher } = vi.hoisted(() => ({
+const {
+  mockMembershipService,
+  mockMediaService,
+  mockDb,
+  mockMembershipChecker,
+  mockReservationService,
+  mockOutboxDispatcher,
+  mockReconciliationService,
+} = vi.hoisted(() => ({
   mockMembershipService: {
-    syncFromStripe: vi.fn(),
+    reconcileSubscriptionDrift: vi.fn().mockResolvedValue({ checked: 0, updated: 0, stale: 0, skipped: 0, orphanedLocal: 0 }),
+  },
+  mockReconciliationService: {
+    reconcileBilling: vi.fn().mockResolvedValue({ charges: 0, invoices: 0, refunds: 0, settlementsTriggered: 0, unmatched: 0, dedupeRowsPruned: 0 }),
   },
   mockMediaService: {
     cleanupStaleEventImages: vi.fn().mockResolvedValue({
@@ -33,6 +44,7 @@ vi.mock('@/lib/container', () => ({
   membershipChecker: mockMembershipChecker,
   reservationService: mockReservationService,
   outboxDispatcher: mockOutboxDispatcher,
+  reconciliationService: mockReconciliationService,
 }));
 
 vi.mock('@/lib/db', () => ({
@@ -92,6 +104,66 @@ describe('cron routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ dispatched: 5 });
+  });
+
+  it('runs the nightly billing reconcile behind the cron secret (GET works for URL schedulers)', async () => {
+    mockReconciliationService.reconcileBilling.mockResolvedValue({
+      charges: 3,
+      invoices: 2,
+      refunds: 1,
+      settlementsTriggered: 1,
+      unmatched: 0,
+      dedupeRowsPruned: 10,
+    });
+
+    const denied = await app.inject({ method: 'POST', url: '/reconcile-billing' });
+    expect(denied.statusCode).toBe(401);
+    expect(mockReconciliationService.reconcileBilling).not.toHaveBeenCalled();
+
+    const viaPost = await app.inject({
+      method: 'POST',
+      url: '/reconcile-billing',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    expect(viaPost.statusCode).toBe(200);
+    expect(viaPost.json()).toEqual(expect.objectContaining({ charges: 3, settlementsTriggered: 1 }));
+
+    const viaGet = await app.inject({
+      method: 'GET',
+      url: '/reconcile-billing',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    expect(viaGet.statusCode).toBe(200);
+  });
+
+  it('runs the account-wide subscription drift check (replaces the per-member sync loop)', async () => {
+    mockMembershipService.reconcileSubscriptionDrift.mockResolvedValue({
+      checked: 12,
+      updated: 2,
+      stale: 0,
+      skipped: 1,
+      orphanedLocal: 0,
+    });
+
+    const denied = await app.inject({ method: 'POST', url: '/subscription-drift' });
+    expect(denied.statusCode).toBe(401);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/subscription-drift',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(expect.objectContaining({ checked: 12, updated: 2 }));
+  });
+
+  it('serves no legacy per-member sync-memberships route', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/sync-memberships',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    expect(response.statusCode).toBe(404);
   });
 
   it('rejects cleanup requests without the cron secret', async () => {

@@ -406,6 +406,7 @@ export class ReservationRepository {
     data: {
       reservationId: string;
       kind: 'charge' | 'refund';
+      purpose?: 'base' | 'change_delta';
       amountCents: number;
       stripePaymentIntentId?: string | null;
       stripeRefundId?: string | null;
@@ -416,12 +417,41 @@ export class ReservationRepository {
       data: {
         reservationId: data.reservationId,
         kind: data.kind,
+        purpose: data.purpose ?? 'base',
         amountCents: data.amountCents,
         stripePaymentIntentId: data.stripePaymentIntentId ?? null,
         stripeRefundId: data.stripeRefundId ?? null,
         status: data.status,
       },
     }) as unknown as ReservationPayment;
+  }
+
+  /** The charge row of a reservation for a specific PaymentIntent. */
+  async findChargeByPaymentIntent(
+    tx: TransactionContext | undefined,
+    reservationId: string,
+    stripePaymentIntentId: string,
+  ): Promise<ReservationPayment | null> {
+    return this.db(tx).reservationPayment.findFirst({
+      where: { reservationId, kind: 'charge', stripePaymentIntentId },
+    }) as unknown as ReservationPayment | null;
+  }
+
+  /** Which reservation a PaymentIntent belongs to (charge-row linkage). */
+  async findReservationIdByPaymentIntent(stripePaymentIntentId: string): Promise<string | null> {
+    const row = await this.prisma.reservationPayment.findFirst({
+      where: { kind: 'charge', stripePaymentIntentId },
+      select: { reservationId: true },
+    });
+    return row?.reservationId ?? null;
+  }
+
+  /** Persist the refund percent a cancellation applied (TOCTOU repair key). */
+  async setCancelRefundPercent(tx: TransactionContext, id: string, percent: number): Promise<void> {
+    await asPrismaTx(tx).reservation.update({
+      where: { id },
+      data: { cancelRefundPercent: percent },
+    });
   }
 
   /**
@@ -448,6 +478,50 @@ export class ReservationRepository {
       data: { status: 'succeeded', stripeRefundId },
     });
     return updated.count > 0;
+  }
+
+  /** Refund row by its Stripe refund id (billing webhook reconciliation). */
+  async findPaymentByStripeRefundId(
+    stripeRefundId: string,
+    tx?: TransactionContext,
+  ): Promise<ReservationPayment | null> {
+    return this.db(tx).reservationPayment.findFirst({
+      where: { stripeRefundId, kind: 'refund' },
+    }) as unknown as ReservationPayment | null;
+  }
+
+  /**
+   * Financial freeze (charge.dispute.created): stamp the disputed charge so
+   * the allocator excludes it from refundable balance. Returns the frozen
+   * rows' reservation ids (usually one).
+   */
+  async markChargeDisputed(stripePaymentIntentId: string, when: Date): Promise<string[]> {
+    const rows = await this.prisma.reservationPayment.findMany({
+      where: { stripePaymentIntentId, kind: 'charge', disputedAt: null },
+      select: { id: true, reservationId: true },
+    });
+    if (rows.length === 0) return [];
+    await this.prisma.reservationPayment.updateMany({
+      where: { id: { in: rows.map((row) => row.id) } },
+      data: { disputedAt: when },
+    });
+    return [...new Set(rows.map((row) => row.reservationId))];
+  }
+
+  /**
+   * Billing-side blockers for account closure (package E): refunds still in
+   * flight and disputed charges on the member's reservations.
+   */
+  async countBlockingFinancialState(memberId: string): Promise<{ pendingRefunds: number; disputedCharges: number }> {
+    const [pendingRefunds, disputedCharges] = await Promise.all([
+      this.prisma.reservationPayment.count({
+        where: { kind: 'refund', status: 'pending', reservation: { organizerId: memberId } },
+      }),
+      this.prisma.reservationPayment.count({
+        where: { kind: 'charge', disputedAt: { not: null }, reservation: { organizerId: memberId } },
+      }),
+    ]);
+    return { pendingRefunds, disputedCharges };
   }
 
   // ── Participants ──
