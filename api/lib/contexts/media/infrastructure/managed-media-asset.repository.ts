@@ -114,19 +114,26 @@ export class PrismaManagedMediaAssetRepository implements ManagedMediaAssetRepos
       return [];
     }
 
-    const referencedEventImages = await this.prisma.clubEvent.findMany({
-      where: {
-        imageUrl: { in: candidates.map((asset: { publicPath: string }) => asset.publicPath) },
-      },
-      select: {
-        imageUrl: true,
-      },
-    });
+    const candidatePaths = candidates.map((asset: { publicPath: string }) => asset.publicPath);
+    // Safety net: never delete an asset something already points at, even if
+    // its attach write was lost (club-event images and club covers share the
+    // managed pipeline).
+    const [referencedEventImages, referencedClubCovers] = await Promise.all([
+      this.prisma.clubEvent.findMany({
+        where: { imageUrl: { in: candidatePaths } },
+        select: { imageUrl: true },
+      }),
+      this.prisma.club.findMany({
+        where: { coverImageUrl: { in: candidatePaths } },
+        select: { coverImageUrl: true },
+      }),
+    ]);
 
     const referencedPaths = new Set(
-      referencedEventImages
-        .map((event) => event.imageUrl)
-        .filter((imageUrl): imageUrl is string => Boolean(imageUrl)),
+      [
+        ...referencedEventImages.map((event) => event.imageUrl),
+        ...referencedClubCovers.map((club) => club.coverImageUrl),
+      ].filter((imageUrl): imageUrl is string => Boolean(imageUrl)),
     );
 
     return candidates

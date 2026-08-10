@@ -133,10 +133,12 @@ the settled critique design. OPEN-decision recommendations from
   -> `confirm()`, real refunds keyed by the reserved row id, refund/dispute
   reconciliation, and the cancel-vs-pay TOCTOU repair). The stub survives
   only for keyless local development. See `docs/decisions-billing.md`.
-- **Package D (clubs):** `Reservation.clubId` and
-  `ReservationParticipant.viaClubId` are plain nullable columns;
-  `invitees.clubIds` on create returns 422 `NOT_IMPLEMENTED`
-  (`TODO(package-d)`).
+- **Package D (clubs): CLOSED.** `invitees.clubIds` is real: bookings
+  expands club chips through `ClubRosterPort` (implemented by the clubs
+  context's `ClubRosterAdapter`) into pending participants with `viaClubId`
+  provenance, snapshot at invite time; `Reservation.clubId` and
+  `ReservationParticipant.viaClubId` became real FKs (SET NULL on club
+  deletion). See `docs/decisions-clubs.md`.
 - **Package F (notifications):** the outbox dispatcher
   (`lib/infrastructure/outbox.ts`, `POST /api/cron/dispatch-outbox`) feeds a
   `NoopOutboxSink` (`TODO(package-f)`); F swaps in the real consumer.

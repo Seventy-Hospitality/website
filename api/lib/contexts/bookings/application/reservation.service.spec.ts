@@ -2,6 +2,7 @@ import { ReservationService } from './reservation.service';
 import type { AuditLog } from './ports';
 import { wallTimeToUtc } from '@/lib/kernel';
 import {
+  ClubInviteNotAllowedError,
   HoldExpiredError,
   InvalidReservationStatusError,
   MaxReservationsExceededError,
@@ -15,6 +16,7 @@ import {
   SlotUnavailableError,
   TierRequiredError,
   type BookingPaymentPort,
+  type ClubRosterPort,
   type MembershipChecker,
   type ResourceType,
 } from '../domain';
@@ -270,6 +272,7 @@ function buildService(overrides: {
   paymentPort?: BookingPaymentPort;
   audit?: AuditLog;
   uow?: UnitOfWork;
+  clubRoster?: ClubRosterPort;
 } = {}) {
   const typeRepo = overrides.typeRepo ?? mockTypeRepo();
   const resourceRepo = overrides.resourceRepo ?? mockResourceRepo();
@@ -289,6 +292,7 @@ function buildService(overrides: {
     audit,
     uow,
     { timezone: NY, holdMinutes: 12 },
+    overrides.clubRoster,
   );
   return { service, typeRepo, resourceRepo, claimRepo, reservationRepo, checker, paymentPort, audit, uow };
 }
@@ -695,13 +699,14 @@ describe('ReservationService.addParticipants', () => {
     );
     const { service } = buildService({ reservationRepo });
 
-    const result = await service.addParticipants('rsv_1', 'mem_2', ['mem_3']);
+    const result = await service.addParticipants('rsv_1', 'mem_2', { memberIds: ['mem_3'] });
 
     expect(result.invited).toEqual(['mem_3']);
     expect(reservationRepo.upsertPendingInvite).toHaveBeenCalledWith(expect.anything(), {
       reservationId: 'rsv_1',
       memberId: 'mem_3',
       invitedById: 'mem_2',
+      viaClubId: null,
     });
   });
 
@@ -712,7 +717,7 @@ describe('ReservationService.addParticipants', () => {
     );
     const { service } = buildService({ reservationRepo });
 
-    await expect(service.addParticipants('rsv_1', 'mem_2', ['mem_3'])).rejects.toThrow(NotInvitePermittedError);
+    await expect(service.addParticipants('rsv_1', 'mem_2', { memberIds: ['mem_3'] })).rejects.toThrow(NotInvitePermittedError);
   });
 
   it('skips already invited members and re-invites declined ones ("add all")', async () => {
@@ -729,10 +734,150 @@ describe('ReservationService.addParticipants', () => {
     );
     const { service } = buildService({ reservationRepo });
 
-    const result = await service.addParticipants('rsv_1', 'mem_1', ['mem_1', 'mem_2', 'mem_3', 'mem_4']);
+    const result = await service.addParticipants('rsv_1', 'mem_1', {
+      memberIds: ['mem_1', 'mem_2', 'mem_3', 'mem_4'],
+    });
 
     expect(result.invited).toEqual(['mem_3', 'mem_4']);
     expect(reservationRepo.upsertPendingInvite).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('club-chip invite expansion (ClubRosterPort seam)', () => {
+  function mockClubRoster(rosters: Record<string, string[]>): ClubRosterPort {
+    return {
+      getRostersForInviter: vi.fn(async (clubIds: string[], inviterId: string) => {
+        for (const clubId of clubIds) {
+          if (!rosters[clubId]?.includes(inviterId)) throw new ClubInviteNotAllowedError();
+        }
+        return clubIds.map((clubId) => ({ clubId, memberIds: rosters[clubId] }));
+      }),
+    };
+  }
+
+  describe('create with inviteeClubIds', () => {
+    it('snapshots the club roster into pending participants with viaClubId provenance, skipping the organizer', async () => {
+      const reservationRepo = mockReservationRepo();
+      const detail = detailFixture();
+      (reservationRepo.createWithClaim as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+      (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+      const clubRoster = mockClubRoster({ club_1: ['mem_1', 'mem_2', 'mem_3'] });
+      const { service, audit } = buildService({ reservationRepo, clubRoster });
+
+      await service.create({ ...CREATE_REQUEST, inviteeClubIds: ['club_1'] });
+
+      const participants = (reservationRepo.createWithClaim as ReturnType<typeof vi.fn>).mock
+        .calls[0][1].participants;
+      expect(participants).toEqual([
+        expect.objectContaining({ memberId: 'mem_1', role: 'organizer', status: 'confirmed' }),
+        expect.objectContaining({ memberId: 'mem_2', status: 'pending', viaClubId: 'club_1' }),
+        expect.objectContaining({ memberId: 'mem_3', status: 'pending', viaClubId: 'club_1' }),
+      ]);
+      expect(
+        (audit.append as ReturnType<typeof vi.fn>).mock.calls
+          .filter(([, event]) => event.eventType === 'reservation.participant_invited')
+          .map(([, event]) => event.data),
+      ).toEqual([
+        { memberId: 'mem_2', invitedById: 'mem_1', viaClubId: 'club_1' },
+        { memberId: 'mem_3', invitedById: 'mem_1', viaClubId: 'club_1' },
+      ]);
+    });
+
+    it('links the reservation to the first club and lets a direct invite outrank club provenance', async () => {
+      const reservationRepo = mockReservationRepo();
+      const detail = detailFixture();
+      (reservationRepo.createWithClaim as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+      (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+      const clubRoster = mockClubRoster({
+        club_1: ['mem_1', 'mem_2'],
+        club_2: ['mem_1', 'mem_2', 'mem_4'],
+      });
+      const { service } = buildService({ reservationRepo, clubRoster });
+
+      await service.create({
+        ...CREATE_REQUEST,
+        inviteeMemberIds: ['mem_2'],
+        inviteeClubIds: ['club_1', 'club_2'],
+      });
+
+      const input = (reservationRepo.createWithClaim as ReturnType<typeof vi.fn>).mock.calls[0][1];
+      expect(input.clubId).toBe('club_1');
+      // mem_2 was directly picked: one row, no club provenance; mem_4 rode club_2.
+      expect(input.participants).toEqual([
+        expect.objectContaining({ memberId: 'mem_1', role: 'organizer' }),
+        expect.objectContaining({ memberId: 'mem_2', status: 'pending' }),
+        expect.objectContaining({ memberId: 'mem_4', status: 'pending', viaClubId: 'club_2' }),
+      ]);
+      expect(input.participants[1].viaClubId).toBeUndefined();
+    });
+
+    it('rejects a club the organizer does not belong to before anything is written', async () => {
+      const reservationRepo = mockReservationRepo();
+      const clubRoster = mockClubRoster({ club_1: ['mem_9'] });
+      const { service } = buildService({ reservationRepo, clubRoster });
+
+      await expect(
+        service.create({ ...CREATE_REQUEST, inviteeClubIds: ['club_1'] }),
+      ).rejects.toThrow(ClubInviteNotAllowedError);
+      expect(reservationRepo.createWithClaim).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when no roster port is wired', async () => {
+      const reservationRepo = mockReservationRepo();
+      const { service } = buildService({ reservationRepo }); // no clubRoster
+
+      await expect(
+        service.create({ ...CREATE_REQUEST, inviteeClubIds: ['club_1'] }),
+      ).rejects.toThrow(ClubInviteNotAllowedError);
+      expect(reservationRepo.createWithClaim).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('addParticipants with clubIds', () => {
+    it('expands against the ACTING inviter and skips already-invited members and the organizer', async () => {
+      const reservationRepo = mockReservationRepo();
+      (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+        detailFixture({
+          status: 'confirmed',
+          participants: [
+            detailFixture().participants[0],
+            guest('mem_2', 'confirmed'),
+            guest('mem_3', 'pending'),
+          ],
+        }),
+      );
+      const clubRoster = mockClubRoster({ club_1: ['mem_1', 'mem_2', 'mem_3', 'mem_4'] });
+      const { service } = buildService({ reservationRepo, clubRoster });
+
+      const result = await service.addParticipants('rsv_1', 'mem_2', { clubIds: ['club_1'] });
+
+      // mem_1 is the organizer, mem_2 the inviter, mem_3 already pending.
+      expect(result.invited).toEqual(['mem_4']);
+      expect(reservationRepo.upsertPendingInvite).toHaveBeenCalledTimes(1);
+      expect(reservationRepo.upsertPendingInvite).toHaveBeenCalledWith(expect.anything(), {
+        reservationId: 'rsv_1',
+        memberId: 'mem_4',
+        invitedById: 'mem_2',
+        viaClubId: 'club_1',
+      });
+    });
+
+    it('rejects a club the inviter does not belong to (cross-club authz)', async () => {
+      const reservationRepo = mockReservationRepo();
+      (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+        detailFixture({
+          status: 'confirmed',
+          participants: [detailFixture().participants[0], guest('mem_2', 'confirmed')],
+        }),
+      );
+      const clubRoster = mockClubRoster({ club_1: ['mem_9'] });
+      const { service } = buildService({ reservationRepo, clubRoster });
+
+      await expect(
+        service.addParticipants('rsv_1', 'mem_2', { clubIds: ['club_1'] }),
+      ).rejects.toThrow(ClubInviteNotAllowedError);
+      expect(reservationRepo.upsertPendingInvite).not.toHaveBeenCalled();
+    });
   });
 });
 

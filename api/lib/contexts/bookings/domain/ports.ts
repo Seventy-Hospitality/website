@@ -46,6 +46,28 @@ export interface BookingPaymentPort {
   cancelPaymentIntent(paymentIntentId: string): Promise<void>;
 }
 
+// ── Club rosters ──
+// Booking a court can invite a whole club (the "CLUB: baddies (6)" chip).
+// The clubs BC owns club membership; bookings reaches it ONLY through this
+// port (implemented in clubs/infrastructure, wired in the container), so the
+// two contexts never import each other's internals.
+
+export interface ClubRoster {
+  clubId: string;
+  /** CURRENT member ids of the club (any role), snapshot at call time. */
+  memberIds: string[];
+}
+
+export interface ClubRosterPort {
+  /**
+   * Rosters of the given clubs, released only when `inviterId` is a member
+   * of EVERY one; otherwise ClubInviteNotAllowedError. A club that does not
+   * exist answers identically to one the inviter does not belong to, so
+   * club ids cannot be probed through the invite path.
+   */
+  getRostersForInviter(clubIds: string[], inviterId: string): Promise<ClubRoster[]>;
+}
+
 // ── Event claims ──
 // The events BC must never write slot_claims directly; it claims courts
 // through this port so the exclusion constraint stays the single arbiter.

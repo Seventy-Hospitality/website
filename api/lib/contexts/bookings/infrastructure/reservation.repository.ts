@@ -108,6 +108,28 @@ export class ReservationRepository {
     return records.map(toDetail);
   }
 
+  /** Club-linked reservations (group activity), newest-first for past. */
+  async listForClub(
+    clubId: string,
+    filter: 'upcoming' | 'past' | 'all',
+    now: Date = new Date(),
+  ): Promise<ReservationDetailRecord[]> {
+    const records = await this.prisma.reservation.findMany({
+      where: {
+        clubId,
+        ...(filter === 'upcoming'
+          ? { endsAt: { gte: now }, status: { in: ['pending_payment', 'confirmed'] } }
+          : {}),
+        ...(filter === 'past'
+          ? { OR: [{ endsAt: { lt: now } }, { status: { in: ['cancelled', 'expired'] } }] }
+          : {}),
+      },
+      include: detailInclude,
+      orderBy: { startsAt: filter === 'past' ? 'desc' : 'asc' },
+    });
+    return records.map(toDetail);
+  }
+
   async listAll(options: { localDate?: string; includeInactive?: boolean } = {}): Promise<ReservationDetailRecord[]> {
     const records = await this.prisma.reservation.findMany({
       where: {

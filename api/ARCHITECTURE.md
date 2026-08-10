@@ -49,6 +49,10 @@ lib/
 │   │   ├── application/          # ReservationService, ResourceClaimService
 │   │   └── infrastructure/       # Repositories, dev stub payment adapter (keyless local only)
 │   ├── events/                   # Club events; claims courts via ResourceClaimPort
+│   ├── clubs/                    # Member-created social clubs (see below)
+│   │   ├── domain/               # Role matrix, invitation machine, link validity (pure)
+│   │   ├── application/          # ClubService (authz, invites, links, deletion seam)
+│   │   └── infrastructure/       # ClubRepository, ClubRosterAdapter (bookings port)
 │   └── communications/
 │       ├── domain/               # Email templates (pure data)
 │       ├── application/          # NotificationService (what to send)
@@ -211,6 +215,44 @@ The bookings BC owns facility scheduling:
   A range counts against the local date of its start.
 - **Events BC** claims courts exclusively through `ResourceClaimPort`; it
   never writes `slot_claims` directly.
+
+## Clubs (member-created social clubs)
+
+The clubs BC owns Club, ClubMember, ClubInvitation and ClubInviteLink.
+These are the members' own groups, not the facility's events.
+
+- **Single-owner model**, enforced in the service under a per-club advisory
+  lock with pure domain rules: promoting another member transfers ownership
+  (actor demoted in the same transaction); the owner cannot demote
+  themselves, be removed, or leave without transferring. Route policy is
+  `member` everywhere; club-level authorization is re-derived per request:
+  outsiders get 404 on any club id (no probing), members get 403 on
+  owner-only actions.
+- **Invitations require acceptance** (no direct-add): a pending
+  `club_invitations` row per (club, invitee), enforced by a partial unique
+  index (raw SQL); history rows (declined/revoked/accepted) accumulate and
+  a re-invite is a new row.
+- **Invite links/QR**: tokens sha256-hashed at rest (identity token
+  pattern), raw value returned exactly once. Members mint; `rotate` revokes
+  all previous links and is owner-only. Join is idempotent (an existing
+  member never 410s) and the consuming UPDATE re-checks
+  revocation/expiry/maxUses so races cannot overshoot a use limit.
+- **Bookings seam**: a court booking can invite a whole club. Bookings
+  reaches club membership ONLY through `ClubRosterPort`
+  (bookings/domain/ports.ts), implemented by the clubs context and wired in
+  the container. Expansion snapshots the CURRENT roster at invite time into
+  pending `reservation_participants` with `viaClubId` provenance; the
+  inviter must belong to every club named. `reservations.clubId` (first
+  club chip) feeds `GET /api/clubs/:id/activity`; both linkage columns are
+  FKs with SET NULL on club deletion.
+- **Covers** ride the media context's ManagedMediaAsset pipeline (event
+  image pattern, `ownerType: 'club'`).
+- **Account deletion seam (package E)**:
+  `clubService.releaseMemberForAccountDeletion` transfers owned clubs to
+  the longest-tenured remaining member (tie: member id), deletes empty
+  clubs, removes memberships and withdraws pending invitations both ways.
+- All mutations append `club.*` audit/outbox events in-transaction
+  (package F consumes them). Decisions: `docs/decisions-clubs.md`.
 
 ## Dependency Wiring
 

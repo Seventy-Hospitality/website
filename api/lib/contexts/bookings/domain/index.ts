@@ -43,6 +43,8 @@ export {
   type ResourceClaimPort,
   type ClaimedResource,
   type EventClaimConflict,
+  type ClubRoster,
+  type ClubRosterPort,
   EventClaimConflictError,
 } from './ports';
 export {
@@ -66,6 +68,7 @@ export {
   CannotRemoveOrganizerError,
   NotInvitePermittedError,
   InviteeNotFoundError,
+  ClubInviteNotAllowedError,
   PaymentNotCompletedError,
   HoldExpiredError,
   InsufficientRefundableBalanceError,

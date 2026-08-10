@@ -142,6 +142,17 @@ export class InviteeNotFoundError extends Error {
   }
 }
 
+/**
+ * A club-chip invite naming a club the inviter does not belong to (or that
+ * does not exist: identical answer, no probing). 404-shaped on the wire.
+ */
+export class ClubInviteNotAllowedError extends Error {
+  constructor() {
+    super('Club not found');
+    this.name = 'ClubInviteNotAllowedError';
+  }
+}
+
 export class PaymentNotCompletedError extends Error {
   constructor() {
     super('Payment has not completed for this reservation');

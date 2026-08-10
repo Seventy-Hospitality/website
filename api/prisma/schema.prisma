@@ -145,12 +145,14 @@ model Member {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user           User?                    @relation(fields: [userId], references: [id])
-  memberships    Membership[]
-  notes          AdminNote[]
-  reservations   Reservation[]            @relation("organizer")
-  participations ReservationParticipant[]
-  series         ReservationSeries[]
+  user            User?                    @relation(fields: [userId], references: [id])
+  memberships     Membership[]
+  notes           AdminNote[]
+  reservations    Reservation[]            @relation("organizer")
+  participations  ReservationParticipant[]
+  series          ReservationSeries[]
+  clubMemberships ClubMember[]
+  clubInvites     ClubInvitation[]         @relation("clubInvitee")
 
   @@map("members")
 }
@@ -344,7 +346,7 @@ model Reservation {
   resourceTypeId         String
   resourceId             String // assigned server-side
   organizerId            String
-  clubId                 String? // plain nullable FK-to-be; clubs arrive in package D
+  clubId                 String? // the club this booking is linked to (group activity); SET NULL on club deletion
   seriesId               String?
   startsAt               DateTime @db.Timestamptz(3)
   endsAt                 DateTime @db.Timestamptz(3)
@@ -364,6 +366,7 @@ model Reservation {
   resourceType  ResourceType              @relation(fields: [resourceTypeId], references: [id])
   resource      Resource                  @relation(fields: [resourceId], references: [id])
   organizer     Member                    @relation("organizer", fields: [organizerId], references: [id])
+  club          Club?                     @relation(fields: [clubId], references: [id], onDelete: SetNull)
   series        ReservationSeries?        @relation(fields: [seriesId], references: [id])
   participants  ReservationParticipant[]
   payments      ReservationPayment[]
@@ -374,6 +377,7 @@ model Reservation {
   @@index([organizerId, status, startsAt])
   @@index([status, startsAt])
   @@index([localDate, status])
+  @@index([clubId, startsAt])
   @@map("reservations")
 }
 
@@ -384,12 +388,13 @@ model ReservationParticipant {
   role          String // "organizer" | "guest"
   status        String // "confirmed" | "pending" | "declined" | "withdrawn"
   invitedById   String?
-  viaClubId     String? // provenance of club-chip invites; clubs arrive in package D
+  viaClubId     String? // provenance of club-chip invites; SET NULL on club deletion
   invitedAt     DateTime  @default(now())
   respondedAt   DateTime?
 
   reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
   member      Member      @relation(fields: [memberId], references: [id])
+  viaClub     Club?       @relation("participantViaClub", fields: [viaClubId], references: [id], onDelete: SetNull)
 
   @@unique([reservationId, memberId])
   @@index([memberId, status])
@@ -541,6 +546,94 @@ model ProcessedWebhookEvent {
   processedAt DateTime @default(now())
 
   @@map("processed_webhook_events")
+}
+
+// ── Clubs (member-created social clubs, NOT the facility) ──
+// One owner per club, enforced in the clubs service (single-owner model).
+// Invitations REQUIRE acceptance (OPEN decision 4): membership rows exist
+// only for members who accepted an invite or joined via a link; direct-add
+// is rejected. Invite-link tokens are stored sha256-hashed like auth_tokens.
+
+model Club {
+  id            String  @id @default(cuid())
+  name          String
+  description   String?
+  coverImageUrl String?
+  // Provenance only, no FK: the creator may leave (or be deleted) while the
+  // club lives on under a transferred owner.
+  createdById   String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members            ClubMember[]
+  invitations        ClubInvitation[]
+  inviteLinks        ClubInviteLink[]
+  reservations       Reservation[]
+  participantInvites ReservationParticipant[] @relation("participantViaClub")
+
+  @@map("clubs")
+}
+
+model ClubMember {
+  id       String   @id @default(cuid())
+  clubId   String
+  memberId String
+  role     String // "owner" | "member"
+  joinedAt DateTime @default(now())
+
+  club   Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@unique([clubId, memberId])
+  @@index([memberId]) // the "my clubs" read
+  @@map("club_members")
+}
+
+// Append-mostly invitation history: a re-invite after decline/revoke is a NEW
+// row. At most one PENDING row per (clubId, invitee), enforced by a partial
+// unique index in the migration (Prisma cannot express partial uniques):
+//   CREATE UNIQUE INDEX "club_invitations_active_invite_key"
+//     ON "club_invitations"("clubId", "inviteeMemberId") WHERE status = 'pending'
+model ClubInvitation {
+  id              String    @id @default(cuid())
+  clubId          String
+  // The inviting member; plain column like ReservationParticipant.invitedById.
+  inviterId       String
+  inviteeMemberId String
+  status          String    @default("pending") // "pending" | "accepted" | "declined" | "revoked"
+  respondedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  club    Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  invitee Member @relation("clubInvitee", fields: [inviteeMemberId], references: [id])
+
+  @@index([clubId, status])
+  @@index([inviteeMemberId, status]) // "my pending invites"
+  @@index([inviterId, status]) // account-deletion seam: withdraw invites they sent
+  @@map("club_invitations")
+}
+
+// Share links / QR codes. The raw token leaves the API exactly once (at
+// creation); only its sha256 is stored, like auth_tokens.
+model ClubInviteLink {
+  id          String    @id @default(cuid())
+  clubId      String
+  tokenHash   String    @unique // sha256 of the raw token
+  createdById String // member id
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  maxUses     Int?
+  useCount    Int       @default(0)
+
+  createdAt DateTime @default(now())
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, revokedAt])
+  @@map("club_invite_links")
 }
 
 // ── Club events ──

@@ -244,8 +244,14 @@ describe('reservation routes', () => {
       expect(res.json().error.code).toBe('SLOT_UNAVAILABLE');
     });
 
-    it('rejects club invitees until package D', async () => {
+    it('passes club invitees through to the service (package D)', async () => {
       signedInAs();
+      mockReservationService.create.mockResolvedValue({
+        reservation: fixtureReservation(),
+        totalCents: 2000,
+        clientSecret: 'pi_secret',
+        holdExpiresAt: null,
+      });
 
       const res = await app.inject({
         method: 'POST',
@@ -255,12 +261,14 @@ describe('reservation routes', () => {
           typeCode: 'badminton_court',
           date: '2026-09-01',
           slots: ['18:00'],
-          invitees: { clubIds: ['club_1'] },
+          invitees: { memberIds: ['mem_2'], clubIds: ['club_1'] },
         },
       });
 
-      expect(res.statusCode).toBe(422);
-      expect(mockReservationService.create).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(201);
+      expect(mockReservationService.create).toHaveBeenCalledWith(
+        expect.objectContaining({ inviteeMemberIds: ['mem_2'], inviteeClubIds: ['club_1'] }),
+      );
     });
 
     it('validates the body', async () => {
@@ -393,7 +401,12 @@ describe('reservation routes', () => {
       });
 
       expect(res.statusCode).toBe(200);
-      expect(mockReservationService.addParticipants).toHaveBeenCalledWith('rsv_1', 'mem_1', ['mem_2'], 'usr_1');
+      expect(mockReservationService.addParticipants).toHaveBeenCalledWith(
+        'rsv_1',
+        'mem_1',
+        { memberIds: ['mem_2'], clubIds: undefined },
+        'usr_1',
+      );
     });
 
     it('maps invite-permission denial to 403', async () => {

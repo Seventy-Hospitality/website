@@ -4,6 +4,7 @@ import { MinimumChargeNotMetError } from '@/lib/contexts/billing/domain';
 import {
   type ReservationDetailRecord,
   CannotRemoveOrganizerError,
+  ClubInviteNotAllowedError,
   HoldExpiredError,
   InactiveMembershipError,
   InsufficientRefundableBalanceError,
@@ -155,6 +156,9 @@ export function handleReservationError(reply: FastifyReply, err: unknown) {
   if (err instanceof ReservationNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof ParticipantNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof InviteeNotFoundError) return error(reply, 'INVITEE_NOT_FOUND', err.message, 404);
+  // 404-shaped on purpose: a club the inviter does not belong to answers
+  // exactly like one that does not exist.
+  if (err instanceof ClubInviteNotAllowedError) return error(reply, 'CLUB_NOT_FOUND', err.message, 404);
   if (err instanceof SlotUnavailableError) return error(reply, 'SLOT_UNAVAILABLE', err.message, 409);
   if (err instanceof HoldExpiredError) return error(reply, 'HOLD_EXPIRED', err.message, 409);
   if (err instanceof InvalidReservationStatusError) return error(reply, 'INVALID_STATUS', err.message, 409);

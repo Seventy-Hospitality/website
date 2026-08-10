@@ -8,6 +8,7 @@ import {
 } from '@/lib/kernel';
 import {
   type BookingPaymentPort,
+  type ClubRosterPort,
   type MembershipChecker,
   type ParticipantResponse,
   type ReservationPayment,
@@ -29,6 +30,7 @@ import {
   selectionToRange,
   tierSatisfies,
   unionSlotStarts,
+  ClubInviteNotAllowedError,
   HoldExpiredError,
   InactiveMembershipError,
   InvalidReservationStatusError,
@@ -145,6 +147,8 @@ export class ReservationService {
     private readonly audit: AuditLog,
     private readonly uow: UnitOfWork,
     config: SchedulingConfig,
+    /** Clubs seam (package D); club-chip invites fail closed without it. */
+    private readonly clubRoster?: ClubRosterPort,
   ) {
     this.timezone = config.timezone;
     this.holdMinutes = config.holdMinutes ?? 12;
@@ -338,6 +342,14 @@ export class ReservationService {
     slots: string[];
     organizerId: string;
     inviteeMemberIds?: string[];
+    /**
+     * Club chips: each club expands to its CURRENT member set at invite
+     * time (snapshot; later joins do not join the reservation), with
+     * viaClubId provenance on every expanded participant. Only clubs the
+     * organizer belongs to are accepted. The first club becomes the
+     * reservation's club linkage (the group-activity feed).
+     */
+    inviteeClubIds?: string[];
     clubId?: string | null;
     actorId?: string;
     admin?: { adminUserId: string };
@@ -369,6 +381,16 @@ export class ReservationService {
       if (missing.length > 0) throw new InviteeNotFoundError(missing);
     }
 
+    // Club chips expand BEFORE the transaction (snapshot semantics). A
+    // directly-picked member wins provenance over their club membership;
+    // club rosters need no existence check (they ARE member rows).
+    const clubInvitees = await this.expandClubInvitees(
+      request.inviteeClubIds ?? [],
+      request.organizerId,
+    );
+    for (const id of inviteeIds) clubInvitees.delete(id);
+    const clubId = request.clubId ?? request.inviteeClubIds?.[0] ?? null;
+
     const totalCents = computeTotalCents(type.hourlyRateCents, durationMinutes);
     const actorId = request.actorId ?? request.organizerId;
 
@@ -397,7 +419,7 @@ export class ReservationService {
             resourceTypeId: type.id,
             resourceId,
             organizerId: request.organizerId,
-            clubId: request.clubId ?? null,
+            clubId,
             startsAt: range.startsAt,
             endsAt: range.endsAt,
             localDate: request.date,
@@ -412,6 +434,13 @@ export class ReservationService {
                 role: 'guest' as const,
                 status: 'pending' as const,
                 invitedById: request.organizerId,
+              })),
+              ...[...clubInvitees].map(([memberId, viaClubId]) => ({
+                memberId,
+                role: 'guest' as const,
+                status: 'pending' as const,
+                invitedById: request.organizerId,
+                viaClubId,
               })),
             ],
           });
@@ -429,6 +458,7 @@ export class ReservationService {
               localDate: request.date,
               totalCents,
               status: detail.status,
+              clubId,
               createdByAdminId: request.admin?.adminUserId ?? null,
             },
             actorId,
@@ -439,6 +469,15 @@ export class ReservationService {
               streamId: detail.id,
               eventType: 'reservation.participant_invited',
               data: { memberId, invitedById: request.organizerId },
+              actorId,
+            });
+          }
+          for (const [memberId, viaClubId] of clubInvitees) {
+            await this.audit.append(tx, {
+              streamType: STREAM_TYPE,
+              streamId: detail.id,
+              eventType: 'reservation.participant_invited',
+              data: { memberId, invitedById: request.organizerId, viaClubId },
               actorId,
             });
           }
@@ -1066,6 +1105,15 @@ export class ReservationService {
 
   async listForMember(memberId: string, filter: 'upcoming' | 'past' | 'all' = 'upcoming') {
     return this.reservationRepo.listForMember(memberId, filter);
+  }
+
+  /**
+   * Club-linked reservations (the club's group-activity feed). The CALLER
+   * must have established club membership first; the clubs context gates
+   * that at the route seam.
+   */
+  async listForClub(clubId: string, filter: 'upcoming' | 'past' | 'all' = 'upcoming') {
+    return this.reservationRepo.listForClub(clubId, filter);
   }
 
   async listAll(options: { localDate?: string; includeInactive?: boolean } = {}) {
@@ -1726,17 +1774,27 @@ export class ReservationService {
     });
   }
 
-  /** Invite permission: organizer + confirmed participants (decision 6). */
+  /**
+   * Invite permission: organizer + confirmed participants (decision 6).
+   * Club chips expand to the club's current member set with viaClubId
+   * provenance; the acting inviter must belong to every named club (they
+   * are sharing THEIR club), and a directly-named member outranks their
+   * club expansion.
+   */
   async addParticipants(
     id: string,
     viewerMemberId: string,
-    memberIds: string[],
+    invitees: { memberIds?: string[]; clubIds?: string[] },
     actorId?: string,
   ): Promise<{ invited: string[] }> {
-    const requested = [...new Set(memberIds)];
+    const requested = [...new Set(invitees.memberIds ?? [])];
     const existing = await this.reservationRepo.filterExistingMemberIds(requested);
     const missing = requested.filter((memberId) => !existing.has(memberId));
     if (missing.length > 0) throw new InviteeNotFoundError(missing);
+
+    // Snapshot expansion outside the transaction, like create().
+    const clubInvitees = await this.expandClubInvitees(invitees.clubIds ?? [], viewerMemberId);
+    for (const memberId of requested) clubInvitees.delete(memberId);
 
     return this.uow.execute(async (tx) => {
       const detail = await this.reservationRepo.getDetail(id, tx);
@@ -1749,29 +1807,63 @@ export class ReservationService {
       }
 
       const invited: string[] = [];
-      for (const memberId of requested) {
-        if (memberId === detail.organizerId) continue;
+      const inviteOne = async (memberId: string, viaClubId: string | null) => {
+        if (memberId === detail.organizerId) return;
         const current = detail.participants.find((row) => row.memberId === memberId);
         // "Add all" hitting an already-invited member is a no-op, not a dup.
-        if (current && (current.status === 'pending' || current.status === 'confirmed')) continue;
+        if (current && (current.status === 'pending' || current.status === 'confirmed')) return;
 
         await this.reservationRepo.upsertPendingInvite(tx, {
           reservationId: id,
           memberId,
           invitedById: viewerMemberId,
+          viaClubId,
         });
         await this.audit.append(tx, {
           streamType: STREAM_TYPE,
           streamId: id,
           eventType: 'reservation.participant_invited',
-          data: { memberId, invitedById: viewerMemberId, reinvite: Boolean(current) },
+          data: {
+            memberId,
+            invitedById: viewerMemberId,
+            reinvite: Boolean(current),
+            ...(viaClubId ? { viaClubId } : {}),
+          },
           actorId: actorId ?? viewerMemberId,
         });
         invited.push(memberId);
-      }
+      };
+
+      for (const memberId of requested) await inviteOne(memberId, null);
+      for (const [memberId, viaClubId] of clubInvitees) await inviteOne(memberId, viaClubId);
 
       return { invited };
     });
+  }
+
+  /**
+   * Club chips -> member ids (memberId -> viaClubId; the first club listing
+   * a member carries the provenance). The roster port rejects any club the
+   * inviter does not belong to; without a wired port (package D absent) the
+   * path fails closed the same way.
+   */
+  private async expandClubInvitees(
+    clubIds: string[],
+    inviterId: string,
+  ): Promise<Map<string, string>> {
+    const unique = [...new Set(clubIds)];
+    if (unique.length === 0) return new Map();
+    if (!this.clubRoster) throw new ClubInviteNotAllowedError();
+
+    const rosters = await this.clubRoster.getRostersForInviter(unique, inviterId);
+    const expansion = new Map<string, string>();
+    for (const roster of rosters) {
+      for (const memberId of roster.memberIds) {
+        if (memberId === inviterId) continue;
+        if (!expansion.has(memberId)) expansion.set(memberId, roster.clubId);
+      }
+    }
+    return expansion;
   }
 
   async removeParticipant(

@@ -89,10 +89,6 @@ export async function reservationRoutes(app: FastifyInstance) {
   app.post('/reservations', { config: { policy: 'active-member' } }, async (req, reply) => {
     const parsed = createReservationSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-    if (parsed.data.invitees?.clubIds?.length) {
-      // TODO(package-d): expand club chips to member ids once clubs exist.
-      return error(reply, 'NOT_IMPLEMENTED', 'Club invitations arrive with the clubs feature', 422);
-    }
 
     try {
       const result = await reservationService.create({
@@ -101,6 +97,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         slots: parsed.data.slots,
         organizerId: memberId(req),
         inviteeMemberIds: parsed.data.invitees?.memberIds,
+        inviteeClubIds: parsed.data.invitees?.clubIds,
         actorId: actorId(req),
       });
       return success(
@@ -239,7 +236,7 @@ export async function reservationRoutes(app: FastifyInstance) {
         const result = await reservationService.addParticipants(
           req.params.id,
           memberId(req),
-          parsed.data.memberIds,
+          { memberIds: parsed.data.memberIds, clubIds: parsed.data.clubIds },
           actorId(req),
         );
         return success(reply, result);

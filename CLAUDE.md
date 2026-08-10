@@ -45,6 +45,7 @@ api/
 │   │   ├── memberships/     # Subscription lifecycle/state (Stripe via billing's gateway port)
 │   │   ├── billing/         # Stripe gateway, money ledger, payment methods, webhooks
 │   │   ├── bookings/        # Scheduling/reservations (pays via billing's adapter)
+│   │   ├── clubs/           # Member-created social clubs (invites, links, rosters)
 │   │   ├── identity/        # Users, credentials, OAuth identities, sessions, tokens
 │   │   └── communications/  # Email templates, notification delivery
 │   ├── container.ts         # Composition root

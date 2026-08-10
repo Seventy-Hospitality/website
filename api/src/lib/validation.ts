@@ -176,7 +176,7 @@ export const createReservationSchema = reservationQuoteSchema.extend({
   invitees: z
     .object({
       memberIds: z.array(z.string().min(1)).max(50).optional(),
-      // TODO(package-d): clubIds expand to member ids once clubs exist.
+      // Club chips: each expands to the club's current member set.
       clubIds: z.array(z.string().min(1)).max(20).optional(),
     })
     .optional(),
@@ -191,9 +191,15 @@ export const respondReservationSchema = z.object({
   response: z.enum(['accept', 'decline']),
 });
 
-export const addParticipantsSchema = z.object({
-  memberIds: z.array(z.string().min(1)).min(1).max(50),
-});
+export const addParticipantsSchema = z
+  .object({
+    memberIds: z.array(z.string().min(1)).max(50).optional(),
+    clubIds: z.array(z.string().min(1)).max(20).optional(),
+  })
+  .refine(
+    (value) => (value.memberIds?.length ?? 0) + (value.clubIds?.length ?? 0) > 0,
+    { message: 'At least one invitee (member or club) is required' },
+  );
 
 export const myReservationsQuerySchema = z.object({
   filter: z.enum(['upcoming', 'past', 'all']).default('upcoming'),
@@ -296,4 +302,49 @@ export const deleteManagedImageSchema = z.object({
 export const cleanupManagedImagesQuerySchema = z.object({
   maxAgeHours: z.coerce.number().int().positive().max(24 * 365).default(24),
   limit: z.coerce.number().int().positive().max(500).default(100),
+});
+
+// ── Clubs ──
+
+export const createClubSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: z.string().trim().max(500).optional(),
+  inviteeMemberIds: z.array(z.string().min(1)).max(50).optional(),
+});
+
+export const updateClubSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: z.string().trim().max(500).nullable().optional(),
+    // Only explicit REMOVAL comes through PATCH; a new cover arrives via the
+    // multipart upload endpoint, which owns the asset lifecycle.
+    coverImageUrl: z.null().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: 'Nothing to update' });
+
+export const clubInvitationsSchema = z.object({
+  memberIds: z.array(z.string().min(1)).min(1).max(50),
+});
+
+export const respondClubInvitationSchema = z.object({
+  response: z.enum(['accept', 'decline']),
+});
+
+export const clubMemberRoleSchema = z.object({
+  role: z.enum(['owner', 'member']),
+});
+
+export const clubInviteLinkSchema = z.object({
+  expiresInDays: z.number().int().positive().max(365).optional(),
+  maxUses: z.number().int().positive().max(500).optional(),
+  // Additionally revoke every other active link (owner-only).
+  rotate: z.boolean().optional(),
+});
+
+export const clubTokenSchema = z.object({
+  token: z.string().trim().min(1).max(200),
+});
+
+export const clubActivityQuerySchema = z.object({
+  filter: z.enum(['upcoming', 'past', 'all']).default('upcoming'),
 });

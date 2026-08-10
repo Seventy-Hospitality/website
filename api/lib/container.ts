@@ -37,6 +37,7 @@ import {
   StubBookingPaymentAdapter,
 } from '@/lib/contexts/bookings/infrastructure';
 import { ClubEventRepository } from '@/lib/contexts/events/infrastructure';
+import { ClubRepository, ClubRosterAdapter } from '@/lib/contexts/clubs/infrastructure';
 import { LocalMediaStorage, PrismaManagedMediaAssetRepository, S3MediaStorage, SharpEventImageProcessor } from '@/lib/contexts/media/infrastructure';
 
 // Application services
@@ -58,6 +59,7 @@ import {
 import { NotificationService } from '@/lib/contexts/communications/application';
 import { ReservationService, ResourceClaimService } from '@/lib/contexts/bookings/application';
 import { ClubEventService } from '@/lib/contexts/events/application';
+import { ClubService } from '@/lib/contexts/clubs/application';
 import { MediaService } from '@/lib/contexts/media/application';
 
 // ── Infrastructure singletons ──
@@ -159,6 +161,10 @@ export const membershipService = new MembershipService(
   { recordAcceptance: (userId, version, when) => userRepo.recordTermsAcceptance(userId, version, when) },
   memberRepo,
 );
+// Clubs BC: bookings expands club-chip invites ONLY through this port.
+export const clubRepo = new ClubRepository(db);
+export const clubRosterPort = new ClubRosterAdapter(db);
+
 export const reservationService = new ReservationService(
   resourceTypeRepo,
   resourceRepo,
@@ -169,6 +175,7 @@ export const reservationService = new ReservationService(
   eventStore,
   uow,
   { timezone: VENUE_TIMEZONE },
+  clubRosterPort,
 );
 export const resourceClaimPort = new ResourceClaimService(
   resourceRepo,
@@ -178,6 +185,8 @@ export const resourceClaimPort = new ResourceClaimService(
 );
 export const mediaService = new MediaService(mediaStorage, managedMediaAssetRepo, eventImageProcessor);
 export const clubEventService = new ClubEventService(clubEventRepo, resourceClaimPort, mediaService, uow);
+// Covers ride the media context's ManagedMediaAsset pipeline (event pattern).
+export const clubService = new ClubService(clubRepo, mediaService, eventStore, uow);
 
 // ── Billing services ──
 // Wired after the reservation service: billing drives bookings settlement
