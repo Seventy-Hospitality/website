@@ -1,9 +1,10 @@
-import type { UnitOfWork } from '@/lib/kernel';
+import type { TransactionContext, UnitOfWork } from '@/lib/kernel';
 import {
   addDaysToDateKey,
   minutesToTimeLabel,
   wallTimeToUtc,
   zonedDateKey,
+  zonedMinutesSinceMidnight,
 } from '@/lib/kernel';
 import {
   type BookingPaymentPort,
@@ -37,6 +38,7 @@ import {
   ParticipantNotFoundError,
   PaymentNotCompletedError,
   ReservationAlreadyStartedError,
+  ReservationChangedError,
   ReservationInPastError,
   ReservationNotFoundError,
   ReservationTooFarInAdvanceError,
@@ -112,6 +114,14 @@ export interface ViewerContext {
   canRespond: boolean;
 }
 
+interface ReservedRefund {
+  paymentId: string;
+  stripePaymentIntentId: string | null;
+  amountCents: number;
+}
+
+type ConfirmOutcome = 'confirmed' | 'already_confirmed' | 'lost';
+
 export class ReservationService {
   private readonly timezone: string;
   private readonly holdMinutes: number;
@@ -152,8 +162,10 @@ export class ReservationService {
   /**
    * Per-date bookable slots for a type: computed per resource, then unioned.
    * Pre-filtered by operating hours, horizon, tier, per-member daily limit
-   * and (for today) already-started slots. `excludeReservationId` is the edit
-   * screen's self-exclusion: the reservation's own claim does not block it.
+   * and (for today) already-started slots. Expired-but-unswept holds read as
+   * free (the booking path reclaims them). `excludeReservationId` is the
+   * edit screen's self-exclusion: the reservation's own claim does not block
+   * it.
    */
   async getAvailability(params: {
     typeCode: string;
@@ -183,7 +195,7 @@ export class ReservationService {
       resources.map((resource) => resource.id),
       windowFrom,
       windowTo,
-      { excludeReservationId: params.excludeReservationId },
+      { excludeReservationId: params.excludeReservationId, now },
     );
 
     const config = this.gridConfig(type);
@@ -229,11 +241,13 @@ export class ReservationService {
 
   /**
    * Free grid of one specific resource for one date (admin views). No tier,
-   * limit or horizon filtering: staff see the raw physical availability.
+   * limit or horizon filtering: staff see the raw physical availability
+   * (minus dead holds, which are functionally free).
    */
   async getResourceAvailability(
     resourceId: string,
     dateKey: string,
+    now: Date = new Date(),
   ): Promise<Array<{ startTime: string; endTime: string }>> {
     const resource = await this.resourceRepo.getById(resourceId);
     if (!resource || !resource.active) throw new ResourceNotFoundError(resourceId);
@@ -245,6 +259,7 @@ export class ReservationService {
       [resourceId],
       wallTimeToUtc(dateKey, 0, this.timezone),
       wallTimeToUtc(dateKey, type.opEndMinutes, this.timezone),
+      { now },
     );
     const perResource = freeSlotStartsByResource({
       dateKey,
@@ -278,7 +293,7 @@ export class ReservationService {
 
     await this.assertUnderDailyLimit(undefined, type, request.memberId, request.date);
 
-    const { candidateIds } = await this.candidateResources(type, request.date, startMinutes);
+    const { candidateIds } = await this.candidateResources(type, request.date, startMinutes, { now });
     if (candidateIds.length === 0) throw new SlotUnavailableError();
 
     return {
@@ -298,7 +313,11 @@ export class ReservationService {
    * candidate resource inserts the reservation as pending_payment plus its
    * active claim with the hold TTL, letting the exclusion constraint
    * arbitrate. On 23P01 the next candidate is tried, then "slot just taken".
-   * The PaymentIntent is created OUTSIDE the transaction.
+   * Expired holds on the type's resources are reclaimed payment-aware BEFORE
+   * candidates are computed (a paid one is confirmed, a dead one released),
+   * so a slot squatted by an abandoned hold is deterministically bookable
+   * between sweeper runs. The PaymentIntent is created OUTSIDE the
+   * transaction.
    *
    * Admin-created reservations (organizer = the target member,
    * createdByAdminId set) are comp: confirmed immediately, no hold, no
@@ -343,7 +362,11 @@ export class ReservationService {
 
     const totalCents = computeTotalCents(type.hourlyRateCents, durationMinutes);
     const actorId = request.actorId ?? request.organizerId;
-    let { candidateIds } = await this.candidateResources(type, request.date, startMinutes);
+
+    const resources = await this.resourceRepo.listActiveByType(type.id);
+    await this.sweepExpiredHolds(resources.map((resource) => resource.id), now, 'reclaim');
+
+    let { candidateIds } = await this.candidateResources(type, request.date, startMinutes, { now });
     if (request.resourceId) {
       candidateIds = candidateIds.filter((candidate) => candidate === request.resourceId);
     }
@@ -357,6 +380,8 @@ export class ReservationService {
         created = await this.uow.execute(async (tx) => {
           await this.reservationRepo.advisoryLockMember(tx, request.organizerId);
           await this.assertUnderDailyLimit(tx, type, request.organizerId, request.date);
+          // Backstop for holds that expired between the sweep above and this
+          // transaction; a hold confirmed mid-race is skipped (CAS inside).
           await this.releaseExpiredHoldsWithAudit(tx, [resourceId], now);
 
           const detail = await this.reservationRepo.createWithClaim(tx, {
@@ -426,7 +451,7 @@ export class ReservationService {
 
     // Stripe lives OUTSIDE the booking transaction. If the intent cannot be
     // created the hold is released immediately instead of squatting the slot
-    // for the TTL.
+    // for the TTL (guarded transition: audit only when we actually expired).
     let intent;
     try {
       intent = await this.paymentPort.createPaymentIntent({
@@ -437,8 +462,15 @@ export class ReservationService {
       });
     } catch (error) {
       await this.uow.execute(async (tx) => {
+        await this.reservationRepo.advisoryLockReservation(tx, created!.id);
+        const expired = await this.reservationRepo.transitionStatus(
+          tx,
+          created!.id,
+          ['pending_payment'],
+          'expired',
+        );
+        if (!expired) return;
         await this.reservationRepo.releaseClaim(tx, created!.id);
-        await this.reservationRepo.updateStatus(tx, created!.id, 'expired');
         await this.audit.append(tx, {
           streamType: STREAM_TYPE,
           streamId: created!.id,
@@ -471,15 +503,30 @@ export class ReservationService {
   // ── Confirm ──
 
   /**
-   * Asserts payment success through the payment port and flips the
-   * reservation to confirmed. Idempotent: confirming a confirmed reservation
-   * is a no-op success. TODO(package-c): the payment_intent.succeeded webhook
-   * calls the same path so a died client cannot lose a paid booking.
+   * The single "payment succeeded" entry point (client confirm now; the
+   * package-C payment_intent.succeeded webhook calls the same path).
+   * Handles, idempotently and race-safely:
+   *  - a pending_payment hold whose intent succeeded -> confirmed (exactly
+   *    one of client/webhook/sweeper wins the compare-and-set and appends
+   *    the audit events);
+   *  - a confirmed reservation with a PAID pending reschedule-grow -> the
+   *    claim move is applied now (or the delta refunded if the slot is gone);
+   *  - an EXPIRED reservation whose intent succeeded (client died, webhook
+   *    lag, force-released hold) -> the slot is re-acquired and confirmed,
+   *    or the captured charge is refunded in full. A paid booking is never
+   *    silently lost and a captured charge is never stranded.
    */
   async confirm(id: string, viewer: { memberId?: string; actorId?: string }): Promise<ReservationDetailRecord> {
     const detail = await this.getOwn(id, viewer.memberId);
-    if (detail.status === 'confirmed') return detail;
-    if (detail.status === 'expired') throw new HoldExpiredError();
+    const actorId = viewer.actorId ?? viewer.memberId;
+
+    if (detail.status === 'confirmed') {
+      if (!detail.pendingChange) return detail;
+      return this.settlePendingChange(detail, { actorId });
+    }
+    if (detail.status === 'expired') {
+      return this.recoverExpiredIfPaid(detail, { actorId });
+    }
     if (detail.status !== 'pending_payment') {
       throw new InvalidReservationStatusError(detail.status, 'pending_payment');
     }
@@ -489,29 +536,17 @@ export class ReservationService {
     const paymentStatus = await this.paymentPort.getPaymentStatus(charge.stripePaymentIntentId);
     if (paymentStatus !== 'succeeded') throw new PaymentNotCompletedError();
 
-    await this.uow.execute(async (tx) => {
-      const fresh = await this.reservationRepo.getDetail(id, tx);
-      if (!fresh || fresh.status === 'confirmed') return; // lost an idempotent race
-      if (fresh.status !== 'pending_payment') throw new HoldExpiredError();
-
-      await this.reservationRepo.confirmReservation(tx, id, fresh.amountPaidCents + charge.amountCents);
-      await this.reservationRepo.setPaymentStatus(tx, charge.id, 'succeeded');
-      await this.audit.append(tx, {
-        streamType: STREAM_TYPE,
-        streamId: id,
-        eventType: 'reservation.payment_captured',
-        data: { amountCents: charge.amountCents, stripePaymentIntentId: charge.stripePaymentIntentId },
-        actorId: viewer.actorId ?? viewer.memberId,
-      });
-      await this.audit.append(tx, {
-        streamType: STREAM_TYPE,
-        streamId: id,
-        eventType: 'reservation.confirmed',
-        data: { reference: fresh.reference },
-        actorId: viewer.actorId ?? viewer.memberId,
-      });
-    });
-
+    const outcome = await this.settlePendingConfirmation(id, charge, { actorId });
+    if (outcome === 'lost') {
+      // A concurrent cancel or expiry beat us; surface the truth.
+      const fresh = await this.reservationRepo.getDetail(id);
+      if (fresh?.status === 'confirmed') return fresh;
+      if (fresh?.status === 'expired') return this.recoverExpiredIfPaid(fresh, { actorId });
+      if (fresh?.status === 'cancelled') {
+        throw new InvalidReservationStatusError('cancelled', 'pending_payment');
+      }
+      throw new HoldExpiredError();
+    }
     return (await this.reservationRepo.getDetail(id))!;
   }
 
@@ -571,6 +606,7 @@ export class ReservationService {
 
     const { candidateIds } = await this.candidateResources(type, change.date, startMinutes, {
       excludeReservationId: id,
+      now,
     });
     if (candidateIds.length === 0) throw new SlotUnavailableError();
 
@@ -588,10 +624,24 @@ export class ReservationService {
   }
 
   /**
-   * Atomic claim-range UPDATE (self-excluding by construction of the
-   * exclusion constraint), guest reset and audit in one transaction per
-   * candidate resource; money delta settled after commit at the snapshot
-   * rate.
+   * Reschedule. Two money paths, decided by the delta at the SNAPSHOT rate:
+   *
+   * - Shrink/equal: the claim-range UPDATE (self-excluding by construction
+   *   of the exclusion constraint), guest reset and audit run in one
+   *   transaction per candidate; the delta is recomputed from the FRESH
+   *   in-transaction ledger under the per-reservation advisory lock and any
+   *   refund is RESERVED in that same transaction (pending ledger rows that
+   *   consume refundable balance), then executed at Stripe after commit.
+   *   Two racing money paths therefore fail closed instead of both
+   *   refunding the full balance.
+   *
+   * - Grow: nothing moves until the delta is captured. The delta
+   *   PaymentIntent is created FIRST (a Stripe failure leaves the
+   *   reservation untouched: no compensation to get wrong), the requested
+   *   change is parked as a pending change with a TTL, and confirm() (or
+   *   the webhook, or the sweeper for a died client) applies the move once
+   *   the intent succeeds; an unpaid change lapses harmlessly. The member
+   *   can never hold grown court time that was not paid for.
    */
   async reschedule(
     id: string,
@@ -600,14 +650,48 @@ export class ReservationService {
     actorId?: string,
     now: Date = new Date(),
   ): Promise<{ reservation: ReservationDetailRecord; deltaCents: number; clientSecret: string | null }> {
-    const quote = await this.rescheduleQuote(id, organizerId, change, now);
     const detail = await this.getOwn(id, organizerId);
+    if (detail.status !== 'confirmed') {
+      throw new InvalidReservationStatusError(detail.status, 'confirmed');
+    }
+    const actor = actorId ?? organizerId;
+
+    // A parked grow whose delta ALREADY captured must be applied, never
+    // dropped: settle it first, then reschedule on top of the fresh state.
+    // (An unpaid one is superseded below and its intent voided; the
+    // sub-second pay-vs-drop race is owned by billing reconciliation.)
+    if (detail.pendingChange) {
+      const changeCharge = detail.payments.find(
+        (payment) => payment.id === detail.pendingChange!.chargePaymentId,
+      );
+      if (changeCharge?.stripePaymentIntentId && changeCharge.status === 'pending') {
+        const status = await this.paymentPort.getPaymentStatus(changeCharge.stripePaymentIntentId);
+        if (status === 'succeeded') {
+          try {
+            await this.settlePendingChange(detail, { actorId: actor });
+          } catch (error) {
+            // Slot gone: the delta was refunded and the change cleared.
+            if (!(error instanceof SlotUnavailableError)) throw error;
+          }
+          return this.reschedule(id, organizerId, change, actorId, now);
+        }
+      }
+    }
+
     const type = detail.resourceType;
-    const { startMinutes } = parseSlotSelection(change.slots, this.gridConfig(type));
+    const { startMinutes, durationMinutes } = parseSlotSelection(change.slots, this.gridConfig(type));
+    this.assertWithinHorizon(type, change.date, now);
     const range = selectionToRange(change.date, startMinutes, this.gridConfig(type), this.timezone);
+    if (range.startsAt <= now) throw new ReservationInPastError();
+
+    // Reclaim dead holds first so a slot squatted by an abandoned hold is
+    // actually reachable, then compute candidates.
+    const resources = await this.resourceRepo.listActiveByType(type.id);
+    await this.sweepExpiredHolds(resources.map((resource) => resource.id), now, 'reclaim');
 
     const { candidateIds } = await this.candidateResources(type, change.date, startMinutes, {
       excludeReservationId: id,
+      now,
     });
     // Prefer keeping the same resource; a pure time shift then never moves courts.
     const ordered = [
@@ -616,26 +700,81 @@ export class ReservationService {
     ];
     if (ordered.length === 0) throw new SlotUnavailableError();
 
-    const actor = actorId ?? organizerId;
-    let moved = false;
+    const newTotalCents = computeTotalCents(detail.hourlyRateCentsSnapshot, durationMinutes);
+    const previewDeltaCents = newTotalCents - computeNetPaidCents(detail.payments);
 
-    for (const resourceId of ordered) {
+    if (previewDeltaCents > 0) {
+      await this.assertUnderDailyLimit(undefined, type, organizerId, change.date, id);
+      return this.requestGrowChange(detail, {
+        range,
+        localDate: change.date,
+        newTotalCents,
+        deltaCents: previewDeltaCents,
+        preferredResourceId: ordered[0],
+        actor,
+        now,
+      });
+    }
+
+    return this.applyImmediateReschedule(detail, type, {
+      range,
+      localDate: change.date,
+      newTotalCents,
+      ordered,
+      actor,
+      now,
+    });
+  }
+
+  /** Shrink/equal reschedule: move now, settle any refund from fresh state. */
+  private async applyImmediateReschedule(
+    detail: ReservationDetailRecord,
+    type: ResourceType,
+    params: {
+      range: { startsAt: Date; endsAt: Date };
+      localDate: string;
+      newTotalCents: number;
+      ordered: string[];
+      actor?: string;
+      now: Date;
+    },
+  ): Promise<{ reservation: ReservationDetailRecord; deltaCents: number; clientSecret: string | null }> {
+    const id = detail.id;
+    let settled: { deltaCents: number; reserved: ReservedRefund[]; replacedIntentId: string | null } | null = null;
+
+    for (const resourceId of params.ordered) {
       try {
-        await this.uow.execute(async (tx) => {
-          await this.reservationRepo.advisoryLockMember(tx, organizerId);
+        settled = await this.uow.execute(async (tx) => {
+          await this.reservationRepo.advisoryLockMember(tx, detail.organizerId);
+          await this.reservationRepo.advisoryLockReservation(tx, id);
           const fresh = await this.reservationRepo.getDetail(id, tx);
           if (!fresh || fresh.status !== 'confirmed') {
             throw new InvalidReservationStatusError(fresh?.status ?? 'missing', 'confirmed');
           }
-          await this.assertUnderDailyLimit(tx, type, organizerId, change.date, id);
-          await this.releaseExpiredHoldsWithAudit(tx, [resourceId], now);
+          await this.assertUnderDailyLimit(tx, type, detail.organizerId, params.localDate, id);
+          await this.releaseExpiredHoldsWithAudit(tx, [resourceId], params.now);
+
+          // A shrink supersedes any unpaid grow request still parked.
+          const replacedIntentId = await this.dropPendingChange(tx, fresh);
+          const ledger = replacedIntentId !== null
+            ? fresh.payments.map((payment) =>
+                payment.id === fresh.pendingChange?.chargePaymentId
+                  ? { ...payment, status: 'failed' as const }
+                  : payment,
+              )
+            : fresh.payments;
+
+          // Money from FRESH in-transaction state, under the lock; the
+          // pre-transaction preview only chose the path.
+          const deltaCents = params.newTotalCents - computeNetPaidCents(ledger);
+          if (deltaCents > 0) throw new ReservationChangedError();
 
           await this.reservationRepo.moveClaimAndReservation(tx, {
             reservationId: id,
             resourceId,
-            startsAt: range.startsAt,
-            endsAt: range.endsAt,
-            localDate: change.date,
+            startsAt: params.range.startsAt,
+            endsAt: params.range.endsAt,
+            localDate: params.localDate,
           });
           const resetMemberIds = await this.reservationRepo.resetConfirmedGuestsToPending(tx, id);
           await this.audit.append(tx, {
@@ -644,14 +783,16 @@ export class ReservationService {
             eventType: 'reservation.rescheduled',
             data: {
               from: { startsAt: fresh.startsAt.toISOString(), endsAt: fresh.endsAt.toISOString(), resourceId: fresh.resourceId },
-              to: { startsAt: range.startsAt.toISOString(), endsAt: range.endsAt.toISOString(), resourceId },
-              deltaCents: quote.deltaCents,
+              to: { startsAt: params.range.startsAt.toISOString(), endsAt: params.range.endsAt.toISOString(), resourceId },
+              deltaCents,
               resetParticipants: resetMemberIds,
             },
-            actorId: actor,
+            actorId: params.actor,
           });
+
+          const reserved = deltaCents < 0 ? await this.reserveRefund(tx, id, ledger, -deltaCents) : [];
+          return { deltaCents, reserved, replacedIntentId };
         });
-        moved = true;
         break;
       } catch (error) {
         if (error instanceof SlotUnavailableError) continue;
@@ -659,38 +800,242 @@ export class ReservationService {
       }
     }
 
-    if (!moved) throw new SlotUnavailableError();
+    if (!settled) throw new SlotUnavailableError();
 
-    let clientSecret: string | null = null;
-    if (quote.deltaCents > 0) {
-      // Grow: a new on-session PaymentIntent for the difference.
-      // TODO(package-c): confirmation of the delta charge rides the same
-      // webhook seam as the initial payment.
-      const intent = await this.paymentPort.createPaymentIntent({
+    if (settled.replacedIntentId) {
+      await this.paymentPort.cancelPaymentIntent(settled.replacedIntentId).catch(() => {});
+    }
+    await this.executeReservedRefunds(id, settled.reserved, params.actor);
+
+    return {
+      reservation: (await this.reservationRepo.getDetail(id))!,
+      deltaCents: settled.deltaCents,
+      clientSecret: null,
+    };
+  }
+
+  /** Grow: park the change; the move applies only once the delta is paid. */
+  private async requestGrowChange(
+    detail: ReservationDetailRecord,
+    params: {
+      range: { startsAt: Date; endsAt: Date };
+      localDate: string;
+      newTotalCents: number;
+      deltaCents: number;
+      preferredResourceId: string;
+      actor?: string;
+      now: Date;
+    },
+  ): Promise<{ reservation: ReservationDetailRecord; deltaCents: number; clientSecret: string | null }> {
+    const id = detail.id;
+
+    // The intent exists BEFORE anything is written: a Stripe failure leaves
+    // the reservation exactly as it was (create() needs compensation because
+    // it must hold the slot first; a grow already owns its slot).
+    const intent = await this.paymentPort.createPaymentIntent({
+      reservationId: id,
+      memberId: detail.organizerId,
+      amountCents: params.deltaCents,
+      attempt: detail.payments.length + 1,
+    });
+
+    const expiresAt = new Date(params.now.getTime() + this.holdMinutes * 60_000);
+    let staleQuote = false;
+    let replacedIntentId: string | null = null;
+
+    await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, id);
+      const fresh = await this.reservationRepo.getDetail(id, tx);
+      if (!fresh || fresh.status !== 'confirmed') {
+        throw new InvalidReservationStatusError(fresh?.status ?? 'missing', 'confirmed');
+      }
+
+      replacedIntentId = await this.dropPendingChange(tx, fresh);
+      const ledger = replacedIntentId !== null
+        ? fresh.payments.map((payment) =>
+            payment.id === fresh.pendingChange?.chargePaymentId
+              ? { ...payment, status: 'failed' as const }
+              : payment,
+          )
+        : fresh.payments;
+
+      const freshDeltaCents = params.newTotalCents - computeNetPaidCents(ledger);
+      if (freshDeltaCents !== params.deltaCents) {
+        staleQuote = true;
+        return;
+      }
+
+      const chargeRow = await this.reservationRepo.addPayment(tx, {
         reservationId: id,
-        memberId: organizerId,
-        amountCents: quote.deltaCents,
-        attempt: detail.payments.length + 1,
+        kind: 'charge',
+        amountCents: params.deltaCents,
+        stripePaymentIntentId: intent.paymentIntentId,
+        status: 'pending',
       });
-      await this.uow.execute(async (tx) => {
-        await this.reservationRepo.addPayment(tx, {
-          reservationId: id,
-          kind: 'charge',
-          amountCents: quote.deltaCents,
-          stripePaymentIntentId: intent.paymentIntentId,
-          status: 'pending',
-        });
+      await this.reservationRepo.createPendingChange(tx, {
+        reservationId: id,
+        resourceId: params.preferredResourceId,
+        startsAt: params.range.startsAt,
+        endsAt: params.range.endsAt,
+        localDate: params.localDate,
+        deltaCents: params.deltaCents,
+        chargePaymentId: chargeRow.id,
+        expiresAt,
       });
-      clientSecret = intent.clientSecret;
-    } else if (quote.deltaCents < 0) {
-      await this.applyRefund(id, detail.payments, -quote.deltaCents, actor);
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: id,
+        eventType: 'reservation.change_requested',
+        data: {
+          to: { startsAt: params.range.startsAt.toISOString(), endsAt: params.range.endsAt.toISOString() },
+          deltaCents: params.deltaCents,
+          expiresAt: expiresAt.toISOString(),
+        },
+        actorId: params.actor,
+      });
+    });
+
+    if (replacedIntentId) {
+      await this.paymentPort.cancelPaymentIntent(replacedIntentId).catch(() => {});
+    }
+    if (staleQuote) {
+      await this.paymentPort.cancelPaymentIntent(intent.paymentIntentId).catch(() => {});
+      throw new ReservationChangedError();
     }
 
     return {
       reservation: (await this.reservationRepo.getDetail(id))!,
-      deltaCents: quote.deltaCents,
-      clientSecret,
+      deltaCents: params.deltaCents,
+      clientSecret: intent.clientSecret,
     };
+  }
+
+  /**
+   * Applies a PAID pending change: re-validates candidates for the parked
+   * range, moves the claim (exclusion constraint arbitrating), resets
+   * confirmed guests and captures the delta into the ledger. When the slot
+   * was taken while the member paid, the delta is refunded in full and the
+   * original booking stays untouched.
+   */
+  private async settlePendingChange(
+    detail: ReservationDetailRecord,
+    options: { actorId?: string; source?: string },
+  ): Promise<ReservationDetailRecord> {
+    const id = detail.id;
+    const pending = detail.pendingChange!;
+    const charge = detail.payments.find((payment) => payment.id === pending.chargePaymentId);
+    if (!charge?.stripePaymentIntentId) throw new PaymentNotCompletedError();
+    const paymentStatus = await this.paymentPort.getPaymentStatus(charge.stripePaymentIntentId);
+    if (paymentStatus !== 'succeeded') throw new PaymentNotCompletedError();
+
+    const now = new Date();
+    const type = detail.resourceType;
+    const config = this.gridConfig(type);
+    const startMin = zonedMinutesSinceMidnight(pending.startsAt, this.timezone, pending.localDate);
+    const endMin = zonedMinutesSinceMidnight(pending.endsAt, this.timezone, pending.localDate);
+    const startMinutes: number[] = [];
+    for (let minute = startMin; minute < endMin; minute += config.slotDurationMinutes) {
+      startMinutes.push(minute);
+    }
+
+    const { candidateIds } = await this.candidateResources(type, pending.localDate, startMinutes, {
+      excludeReservationId: id,
+      now,
+    });
+    const ordered = [...new Set([pending.resourceId, detail.resourceId, ...candidateIds])].filter(
+      (candidate) => candidateIds.includes(candidate),
+    );
+
+    for (const resourceId of ordered) {
+      try {
+        const outcome = await this.uow.execute(async (tx) => {
+          await this.reservationRepo.advisoryLockMember(tx, detail.organizerId);
+          await this.reservationRepo.advisoryLockReservation(tx, id);
+          const fresh = await this.reservationRepo.getDetail(id, tx);
+          if (!fresh || fresh.status !== 'confirmed' || fresh.pendingChange?.id !== pending.id) {
+            return 'stale' as const;
+          }
+          // The change may land on a different local date; re-check the limit.
+          await this.assertUnderDailyLimit(tx, type, detail.organizerId, pending.localDate, id);
+          await this.releaseExpiredHoldsWithAudit(tx, [resourceId], now);
+
+          await this.reservationRepo.moveClaimAndReservation(tx, {
+            reservationId: id,
+            resourceId,
+            startsAt: pending.startsAt,
+            endsAt: pending.endsAt,
+            localDate: pending.localDate,
+          });
+          const resetMemberIds = await this.reservationRepo.resetConfirmedGuestsToPending(tx, id);
+          await this.reservationRepo.clearPendingChange(tx, id);
+          if (await this.reservationRepo.setPaymentStatusIf(tx, charge.id, 'pending', 'succeeded')) {
+            await this.reservationRepo.adjustAmountPaid(tx, id, charge.amountCents);
+            await this.audit.append(tx, {
+              streamType: STREAM_TYPE,
+              streamId: id,
+              eventType: 'reservation.payment_captured',
+              data: { amountCents: charge.amountCents, stripePaymentIntentId: charge.stripePaymentIntentId },
+              actorId: options.actorId,
+              source: options.source,
+            });
+          }
+          await this.audit.append(tx, {
+            streamType: STREAM_TYPE,
+            streamId: id,
+            eventType: 'reservation.rescheduled',
+            data: {
+              from: { startsAt: fresh.startsAt.toISOString(), endsAt: fresh.endsAt.toISOString(), resourceId: fresh.resourceId },
+              to: { startsAt: pending.startsAt.toISOString(), endsAt: pending.endsAt.toISOString(), resourceId },
+              deltaCents: pending.deltaCents,
+              resetParticipants: resetMemberIds,
+            },
+            actorId: options.actorId,
+            source: options.source,
+          });
+          return 'applied' as const;
+        });
+
+        if (outcome === 'stale') {
+          // Another path resolved the change (applied it, cancelled the
+          // reservation, or swept it). Idempotent success when the
+          // reservation is fine; otherwise report its actual state.
+          const fresh = await this.reservationRepo.getDetail(id);
+          if (fresh && fresh.status === 'confirmed' && !fresh.pendingChange) return fresh;
+          throw new InvalidReservationStatusError(fresh?.status ?? 'missing', 'confirmed');
+        }
+        return (await this.reservationRepo.getDetail(id))!;
+      } catch (error) {
+        if (error instanceof SlotUnavailableError) continue;
+        throw error;
+      }
+    }
+
+    // Slot gone: the member keeps the original booking and the captured
+    // delta comes straight back.
+    const reserved = await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, id);
+      const fresh = await this.reservationRepo.getDetail(id, tx);
+      if (!fresh || fresh.pendingChange?.id !== pending.id) return [] as ReservedRefund[];
+      await this.reservationRepo.clearPendingChange(tx, id);
+      let ledger = fresh.payments;
+      if (await this.reservationRepo.setPaymentStatusIf(tx, charge.id, 'pending', 'succeeded')) {
+        await this.reservationRepo.adjustAmountPaid(tx, id, charge.amountCents);
+        ledger = ledger.map((payment) =>
+          payment.id === charge.id ? { ...payment, status: 'succeeded' as const } : payment,
+        );
+      }
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: id,
+        eventType: 'reservation.change_rejected',
+        data: { reason: 'slot_unavailable', deltaCents: pending.deltaCents },
+        actorId: options.actorId,
+        source: options.source,
+      });
+      return this.reserveRefund(tx, id, ledger, charge.amountCents);
+    });
+    await this.executeReservedRefunds(id, reserved, options.actorId, options.source);
+    throw new SlotUnavailableError();
   }
 
   // ── Cancel ──
@@ -699,6 +1044,15 @@ export class ReservationService {
    * Cancel with the tiered refund policy (100% >24h, 50% 2-24h, 0% inside).
    * Admin and event-conflict cancellations refund in full: the club
    * cancelled, not the member.
+   *
+   * pending_payment does NOT mean uncaptured: the on-session intent may have
+   * succeeded moments before (confirm/webhook lag), so the intent status is
+   * checked first, exactly like the sweeper, and a paid hold is confirmed
+   * before cancelling so the tiered refund sees the money. Refund percent
+   * and balance are computed from FRESH in-transaction state under the
+   * per-reservation advisory lock, and the refund is RESERVED in the same
+   * transaction (fail-closed against any concurrent money path) before
+   * Stripe runs.
    */
   async cancel(
     id: string,
@@ -712,17 +1066,85 @@ export class ReservationService {
     if (!options.fullRefund && now >= detail.startsAt) throw new ReservationAlreadyStartedError();
 
     const actor = options.actorId ?? options.memberId;
-    const percent = options.fullRefund ? 100 : refundPercentFor(detail.startsAt, now);
-    const netPaidCents = computeNetPaidCents(detail.payments);
-    const refundCents = detail.status === 'confirmed' ? computeRefundCents(netPaidCents, percent) : 0;
 
-    await this.uow.execute(async (tx) => {
+    // Payment-status reads happen OUTSIDE the transaction (port calls).
+    let holdIntentToVoid: string | null = null;
+    if (detail.status === 'pending_payment') {
+      const charge = [...detail.payments].reverse().find((payment) => payment.kind === 'charge');
+      const paymentStatus = charge?.stripePaymentIntentId
+        ? await this.paymentPort.getPaymentStatus(charge.stripePaymentIntentId)
+        : 'failed';
+      if (paymentStatus === 'succeeded' && charge) {
+        // Captured money: settle as confirmed first so the refund path owns it.
+        await this.settlePendingConfirmation(id, charge, { actorId: actor });
+      } else {
+        holdIntentToVoid = charge?.stripePaymentIntentId ?? null;
+      }
+    }
+
+    // An unapplied pending change refunds its captured delta IN FULL (the
+    // extra time was never delivered, so no tier applies); an unpaid one is
+    // simply dropped and its intent voided.
+    let pendingChangePaid = false;
+    if (detail.pendingChange) {
+      const changeCharge = detail.payments.find(
+        (payment) => payment.id === detail.pendingChange!.chargePaymentId,
+      );
+      if (changeCharge?.stripePaymentIntentId && changeCharge.status === 'pending') {
+        pendingChangePaid =
+          (await this.paymentPort.getPaymentStatus(changeCharge.stripePaymentIntentId)) === 'succeeded';
+      }
+    }
+
+    const settlement = await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, id);
       const fresh = await this.reservationRepo.getDetail(id, tx);
       if (!fresh || !isActiveReservationStatus(fresh.status)) {
         throw new InvalidReservationStatusError(fresh?.status ?? 'missing', 'pending_payment or confirmed');
       }
+      const cancelled = await this.reservationRepo.transitionStatus(
+        tx,
+        id,
+        ['pending_payment', 'confirmed'],
+        'cancelled',
+      );
+      if (!cancelled) {
+        throw new InvalidReservationStatusError(fresh.status, 'pending_payment or confirmed');
+      }
       await this.reservationRepo.releaseClaim(tx, id);
-      await this.reservationRepo.updateStatus(tx, id, 'cancelled');
+
+      // Resolve any parked change request.
+      let ledger = fresh.payments;
+      let changeIntentToVoid: string | null = null;
+      let paidChangeCents = 0;
+      if (fresh.pendingChange) {
+        const changeCharge = fresh.payments.find(
+          (payment) => payment.id === fresh.pendingChange!.chargePaymentId,
+        );
+        await this.reservationRepo.clearPendingChange(tx, id);
+        if (changeCharge?.status === 'pending') {
+          if (pendingChangePaid) {
+            if (await this.reservationRepo.setPaymentStatusIf(tx, changeCharge.id, 'pending', 'succeeded')) {
+              await this.reservationRepo.adjustAmountPaid(tx, id, changeCharge.amountCents);
+              ledger = ledger.map((payment) =>
+                payment.id === changeCharge.id ? { ...payment, status: 'succeeded' as const } : payment,
+              );
+              paidChangeCents = changeCharge.amountCents;
+            }
+          } else {
+            await this.reservationRepo.setPaymentStatusIf(tx, changeCharge.id, 'pending', 'failed');
+            changeIntentToVoid = changeCharge.stripePaymentIntentId;
+            ledger = ledger.map((payment) =>
+              payment.id === changeCharge.id ? { ...payment, status: 'failed' as const } : payment,
+            );
+          }
+        }
+      }
+
+      const netPaidCents = computeNetPaidCents(ledger);
+      const percent = options.fullRefund ? 100 : refundPercentFor(fresh.startsAt, now);
+      const refundCents = computeRefundCents(netPaidCents - paidChangeCents, percent) + paidChangeCents;
+
       await this.audit.append(tx, {
         streamType: STREAM_TYPE,
         streamId: id,
@@ -730,22 +1152,20 @@ export class ReservationService {
         data: { refundCents, refundPercent: percent, previousStatus: fresh.status },
         actorId: actor,
       });
+      const reserved = refundCents > 0 ? await this.reserveRefund(tx, id, ledger, refundCents) : [];
+      return { refundCents, reserved, previousStatus: fresh.status, changeIntentToVoid };
     });
 
-    if (detail.status === 'pending_payment') {
-      // Best effort: an uncaptured intent left behind is cleaned up by
-      // billing reconciliation if this fails.
-      const pendingCharge = [...detail.payments].reverse().find((payment) => payment.kind === 'charge');
-      if (pendingCharge?.stripePaymentIntentId) {
-        await this.paymentPort.cancelPaymentIntent(pendingCharge.stripePaymentIntentId).catch(() => {});
-      }
-      return { refundCents: 0 };
+    // Void the unpaid intents outside the transaction, best effort; billing
+    // reconciliation (package C) cleans up any miss.
+    if (settlement.previousStatus === 'pending_payment' && holdIntentToVoid) {
+      await this.paymentPort.cancelPaymentIntent(holdIntentToVoid).catch(() => {});
     }
-
-    if (refundCents > 0) {
-      await this.applyRefund(id, detail.payments, refundCents, actor);
+    if (settlement.changeIntentToVoid) {
+      await this.paymentPort.cancelPaymentIntent(settlement.changeIntentToVoid).catch(() => {});
     }
-    return { refundCents };
+    await this.executeReservedRefunds(id, settlement.reserved, actor);
+    return { refundCents: settlement.refundCents };
   }
 
   // ── Participants ──
@@ -867,11 +1287,32 @@ export class ReservationService {
   // ── Sweeper (cron) ──
 
   /**
-   * Expire stale pending_payment holds, but check the PaymentIntent first:
-   * a hold whose payment actually succeeded is confirmed, never expired.
+   * Expire stale pending_payment holds and lapsed pending changes, checking
+   * the PaymentIntent first in both cases: paid money is always settled
+   * (confirm the hold / apply the change), never dropped.
    */
-  async expireStaleHolds(now: Date = new Date()): Promise<{ expired: number; confirmed: number }> {
-    const holds = await this.reservationRepo.listExpiredHolds(now);
+  async expireStaleHolds(
+    now: Date = new Date(),
+  ): Promise<{ expired: number; confirmed: number; changesApplied: number; changesExpired: number }> {
+    const holds = await this.sweepExpiredHolds(undefined, now, 'sweeper');
+    const changes = await this.sweepExpiredPendingChanges(now);
+    return { ...holds, ...changes };
+  }
+
+  /**
+   * Shared payment-aware sweep, used by the cron sweeper (all resources) and
+   * by create/reschedule to reclaim dead holds on the resources they are
+   * about to book. A hold whose intent succeeded is confirmed (the CAS +
+   * per-reservation lock make client/webhook/sweeper races settle on exactly
+   * one winner); anything else is expired and released.
+   */
+  private async sweepExpiredHolds(
+    resourceIds: string[] | undefined,
+    now: Date,
+    source: string,
+  ): Promise<{ expired: number; confirmed: number }> {
+    if (resourceIds && resourceIds.length === 0) return { expired: 0, confirmed: 0 };
+    const holds = await this.reservationRepo.listExpiredHolds(now, resourceIds);
     let expired = 0;
     let confirmed = 0;
 
@@ -882,36 +1323,31 @@ export class ReservationService {
         : 'failed';
 
       if (paymentStatus === 'succeeded' && charge) {
-        await this.uow.execute(async (tx) => {
-          const fresh = await this.reservationRepo.getDetail(hold.id, tx);
-          if (!fresh || fresh.status !== 'pending_payment') return;
-          await this.reservationRepo.confirmReservation(tx, hold.id, fresh.amountPaidCents + charge.amountCents);
-          await this.reservationRepo.setPaymentStatus(tx, charge.id, 'succeeded');
-          await this.audit.append(tx, {
-            streamType: STREAM_TYPE,
-            streamId: hold.id,
-            eventType: 'reservation.confirmed',
-            data: { reference: fresh.reference, via: 'sweeper' },
-            source: 'sweeper',
-          });
-        });
-        confirmed += 1;
+        const outcome = await this.settlePendingConfirmation(hold.id, charge, { source });
+        if (outcome === 'confirmed') confirmed += 1;
         continue;
       }
 
-      await this.uow.execute(async (tx) => {
-        const fresh = await this.reservationRepo.getDetail(hold.id, tx);
-        if (!fresh || fresh.status !== 'pending_payment') return;
+      const didExpire = await this.uow.execute(async (tx) => {
+        await this.reservationRepo.advisoryLockReservation(tx, hold.id);
+        const transitioned = await this.reservationRepo.transitionStatus(
+          tx,
+          hold.id,
+          ['pending_payment'],
+          'expired',
+        );
+        if (!transitioned) return false; // confirmed or cancelled mid-race
         await this.reservationRepo.releaseClaim(tx, hold.id);
-        await this.reservationRepo.updateStatus(tx, hold.id, 'expired');
         await this.audit.append(tx, {
           streamType: STREAM_TYPE,
           streamId: hold.id,
           eventType: 'reservation.expired',
           data: { reason: 'hold_ttl' },
-          source: 'sweeper',
+          source,
         });
+        return true;
       });
+      if (!didExpire) continue;
       if (charge?.stripePaymentIntentId) {
         await this.paymentPort.cancelPaymentIntent(charge.stripePaymentIntentId).catch(() => {});
       }
@@ -921,7 +1357,306 @@ export class ReservationService {
     return { expired, confirmed };
   }
 
+  /** Lapsed pending changes: apply the paid ones, drop the unpaid ones. */
+  private async sweepExpiredPendingChanges(
+    now: Date,
+  ): Promise<{ changesApplied: number; changesExpired: number }> {
+    const stale = await this.reservationRepo.listExpiredPendingChanges(now);
+    let changesApplied = 0;
+    let changesExpired = 0;
+
+    for (const detail of stale) {
+      const pending = detail.pendingChange!;
+      const charge = detail.payments.find((payment) => payment.id === pending.chargePaymentId);
+      const paymentStatus = charge?.stripePaymentIntentId
+        ? await this.paymentPort.getPaymentStatus(charge.stripePaymentIntentId)
+        : 'failed';
+
+      if (paymentStatus === 'succeeded' && charge) {
+        // A died client must not lose a paid grow: apply it (or refund the
+        // delta inside settlePendingChange when the slot is gone).
+        try {
+          await this.settlePendingChange(detail, { source: 'sweeper' });
+          changesApplied += 1;
+        } catch (error) {
+          if (error instanceof SlotUnavailableError) {
+            changesExpired += 1; // delta refunded, original booking intact
+          } else if (!(error instanceof InvalidReservationStatusError)) {
+            throw error;
+          }
+        }
+        continue;
+      }
+
+      const cleared = await this.uow.execute(async (tx) => {
+        await this.reservationRepo.advisoryLockReservation(tx, detail.id);
+        const fresh = await this.reservationRepo.getDetail(detail.id, tx);
+        if (!fresh || fresh.pendingChange?.id !== pending.id) return false;
+        await this.reservationRepo.clearPendingChange(tx, detail.id);
+        if (charge) {
+          await this.reservationRepo.setPaymentStatusIf(tx, charge.id, 'pending', 'failed');
+        }
+        await this.audit.append(tx, {
+          streamType: STREAM_TYPE,
+          streamId: detail.id,
+          eventType: 'reservation.change_expired',
+          data: { deltaCents: pending.deltaCents },
+          source: 'sweeper',
+        });
+        return true;
+      });
+      if (!cleared) continue;
+      if (charge?.stripePaymentIntentId) {
+        await this.paymentPort.cancelPaymentIntent(charge.stripePaymentIntentId).catch(() => {});
+      }
+      changesExpired += 1;
+    }
+
+    return { changesApplied, changesExpired };
+  }
+
   // ── Internals ──
+
+  /**
+   * The one place a pending_payment hold becomes confirmed. Compare-and-set
+   * under the per-reservation advisory lock: exactly one of a racing client
+   * confirm, webhook and sweeper wins and appends the payment_captured +
+   * confirmed audit events; the others see 'already_confirmed' or 'lost'
+   * and write nothing (no duplicate outbox rows, no clobbered cancel).
+   */
+  private async settlePendingConfirmation(
+    id: string,
+    charge: ReservationPayment,
+    options: { actorId?: string; source?: string },
+  ): Promise<ConfirmOutcome> {
+    return this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, id);
+      const fresh = await this.reservationRepo.getDetail(id, tx);
+      if (!fresh) return 'lost';
+      if (fresh.status === 'confirmed') return 'already_confirmed';
+      if (fresh.status !== 'pending_payment') return 'lost';
+
+      const paidLedger = fresh.payments.map((payment) =>
+        payment.id === charge.id ? { ...payment, status: 'succeeded' as const } : payment,
+      );
+      const confirmed = await this.reservationRepo.confirmFrom(
+        tx,
+        id,
+        'pending_payment',
+        computeNetPaidCents(paidLedger),
+      );
+      if (!confirmed) return 'lost';
+      await this.reservationRepo.setPaymentStatusIf(tx, charge.id, 'pending', 'succeeded');
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: id,
+        eventType: 'reservation.payment_captured',
+        data: { amountCents: charge.amountCents, stripePaymentIntentId: charge.stripePaymentIntentId },
+        actorId: options.actorId,
+        source: options.source,
+      });
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: id,
+        eventType: 'reservation.confirmed',
+        data: { reference: fresh.reference, ...(options.source ? { via: options.source } : {}) },
+        actorId: options.actorId,
+        source: options.source,
+      });
+      return 'confirmed';
+    });
+  }
+
+  /**
+   * An expired reservation whose intent actually captured (client died,
+   * webhook lag, or a force-released hold that raced its payment) must never
+   * strand the money: re-acquire the slot if it is still free and confirm;
+   * otherwise refund the captured charge in full. The package-C
+   * payment_intent.succeeded webhook lands here for exactly this case.
+   */
+  private async recoverExpiredIfPaid(
+    detail: ReservationDetailRecord,
+    options: { actorId?: string; source?: string },
+  ): Promise<ReservationDetailRecord> {
+    const id = detail.id;
+    const charge = [...detail.payments].reverse().find((payment) => payment.kind === 'charge');
+    if (!charge?.stripePaymentIntentId) throw new HoldExpiredError();
+    const paymentStatus = await this.paymentPort.getPaymentStatus(charge.stripePaymentIntentId);
+    if (paymentStatus !== 'succeeded') throw new HoldExpiredError();
+
+    let reacquired = false;
+    try {
+      reacquired = await this.uow.execute(async (tx) => {
+        await this.reservationRepo.advisoryLockReservation(tx, id);
+        const fresh = await this.reservationRepo.getDetail(id, tx);
+        if (!fresh) return false;
+        if (fresh.status === 'confirmed') return true; // another recoverer won
+        if (fresh.status !== 'expired') return false;
+
+        // The exclusion constraint arbitrates the re-acquisition.
+        if (!(await this.reservationRepo.reactivateClaim(tx, id))) return false;
+        const paidLedger = fresh.payments.map((payment) =>
+          payment.id === charge.id ? { ...payment, status: 'succeeded' as const } : payment,
+        );
+        if (!(await this.reservationRepo.confirmFrom(tx, id, 'expired', computeNetPaidCents(paidLedger)))) {
+          return false;
+        }
+        await this.reservationRepo.setPaymentStatusIf(tx, charge.id, 'pending', 'succeeded');
+        await this.audit.append(tx, {
+          streamType: STREAM_TYPE,
+          streamId: id,
+          eventType: 'reservation.payment_captured',
+          data: { amountCents: charge.amountCents, stripePaymentIntentId: charge.stripePaymentIntentId },
+          actorId: options.actorId,
+          source: options.source,
+        });
+        await this.audit.append(tx, {
+          streamType: STREAM_TYPE,
+          streamId: id,
+          eventType: 'reservation.confirmed',
+          data: { reference: fresh.reference, recovered: true },
+          actorId: options.actorId,
+          source: options.source,
+        });
+        return true;
+      });
+    } catch (error) {
+      if (!(error instanceof SlotUnavailableError)) throw error;
+      reacquired = false;
+    }
+
+    if (reacquired) return (await this.reservationRepo.getDetail(id))!;
+
+    // Slot gone: make the member whole instead of stranding the charge.
+    const reserved = await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, id);
+      const fresh = await this.reservationRepo.getDetail(id, tx);
+      if (!fresh || fresh.status !== 'expired') return [] as ReservedRefund[];
+      let ledger = fresh.payments;
+      if (await this.reservationRepo.setPaymentStatusIf(tx, charge.id, 'pending', 'succeeded')) {
+        ledger = ledger.map((payment) =>
+          payment.id === charge.id ? { ...payment, status: 'succeeded' as const } : payment,
+        );
+      }
+      const refundable = computeNetPaidCents(ledger);
+      if (refundable <= 0) return [] as ReservedRefund[]; // already refunded: idempotent
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: id,
+        eventType: 'reservation.expired_paid_refunded',
+        data: { amountCents: refundable, stripePaymentIntentId: charge.stripePaymentIntentId },
+        actorId: options.actorId,
+        source: options.source,
+      });
+      return this.reserveRefund(tx, id, ledger, refundable);
+    });
+    await this.executeReservedRefunds(id, reserved, options.actorId, options.source);
+    throw new HoldExpiredError();
+  }
+
+  /**
+   * Phase 1 of a refund, inside the caller's transaction (which holds the
+   * per-reservation advisory lock): allocate against the FRESH ledger and
+   * write PENDING refund rows. Pending refunds consume refundable balance
+   * (see allocateRefund), so a concurrent money path re-reading the ledger
+   * fails closed instead of refunding the same charge twice. Stripe runs
+   * after commit in phase 2 (executeReservedRefunds).
+   */
+  private async reserveRefund(
+    tx: TransactionContext,
+    reservationId: string,
+    payments: Array<Pick<ReservationPayment, 'id' | 'kind' | 'amountCents' | 'status' | 'stripePaymentIntentId' | 'createdAt'>>,
+    refundCents: number,
+  ): Promise<ReservedRefund[]> {
+    const allocations = allocateRefund(payments, refundCents); // throws fail-closed
+    const reserved: ReservedRefund[] = [];
+    for (const allocation of allocations) {
+      const row = await this.reservationRepo.addPayment(tx, {
+        reservationId,
+        kind: 'refund',
+        amountCents: allocation.amountCents,
+        stripePaymentIntentId: allocation.stripePaymentIntentId,
+        status: 'pending',
+      });
+      reserved.push({ paymentId: row.id, ...allocation });
+    }
+    if (allocations.length > 0) {
+      await this.reservationRepo.adjustAmountPaid(tx, reservationId, -refundCents);
+    }
+    return reserved;
+  }
+
+  /**
+   * Phase 2: execute reserved refunds at Stripe, then mark each row
+   * succeeded. A Stripe failure marks the row failed and restores the paid
+   * total so the ledger matches reality; billing reconciliation (package C,
+   * with per-row idempotency keys) re-issues or reconciles it.
+   */
+  private async executeReservedRefunds(
+    reservationId: string,
+    reserved: ReservedRefund[],
+    actorId?: string,
+    source?: string,
+  ): Promise<void> {
+    for (const refund of reserved) {
+      let refundId: string;
+      try {
+        ({ refundId } = await this.paymentPort.refund({
+          paymentIntentId: refund.stripePaymentIntentId,
+          amountCents: refund.amountCents,
+          reservationId,
+        }));
+      } catch (error) {
+        await this.uow.execute(async (tx) => {
+          await this.reservationRepo.advisoryLockReservation(tx, reservationId);
+          if (await this.reservationRepo.setPaymentStatusIf(tx, refund.paymentId, 'pending', 'failed')) {
+            await this.reservationRepo.adjustAmountPaid(tx, reservationId, refund.amountCents);
+          }
+          await this.audit.append(tx, {
+            streamType: STREAM_TYPE,
+            streamId: reservationId,
+            eventType: 'reservation.refund_failed',
+            data: { amountCents: refund.amountCents, stripePaymentIntentId: refund.stripePaymentIntentId },
+            actorId,
+            source,
+          });
+        });
+        throw error;
+      }
+      await this.uow.execute(async (tx) => {
+        await this.reservationRepo.completeRefund(tx, refund.paymentId, refundId);
+        await this.audit.append(tx, {
+          streamType: STREAM_TYPE,
+          streamId: reservationId,
+          eventType: 'reservation.payment_refunded',
+          data: { amountCents: refund.amountCents, stripeRefundId: refundId },
+          actorId,
+          source,
+        });
+      });
+    }
+  }
+
+  /**
+   * Drops a parked pending change inside the caller's transaction, marking
+   * its unpaid charge failed. Returns the intent id to void post-commit, or
+   * null when there was nothing to drop.
+   */
+  private async dropPendingChange(
+    tx: TransactionContext,
+    fresh: ReservationDetailRecord,
+  ): Promise<string | null> {
+    if (!fresh.pendingChange) return null;
+    const changeCharge = fresh.payments.find(
+      (payment) => payment.id === fresh.pendingChange!.chargePaymentId,
+    );
+    await this.reservationRepo.clearPendingChange(tx, fresh.id);
+    if (changeCharge?.status === 'pending') {
+      await this.reservationRepo.setPaymentStatusIf(tx, changeCharge.id, 'pending', 'failed');
+      return changeCharge.stripePaymentIntentId ?? null;
+    }
+    return null;
+  }
 
   private gridConfig(type: ResourceType): SlotGridConfig {
     return {
@@ -971,13 +1706,15 @@ export class ReservationService {
 
   /**
    * Per-resource availability then single-resource fit, ordered by
-   * displayOrder so the retry loop walks a stable candidate list.
+   * displayOrder so the retry loop walks a stable candidate list. Passing
+   * `now` makes expired-but-unswept holds read as free (the write paths
+   * reclaim them before inserting).
    */
   private async candidateResources(
     type: ResourceType,
     dateKey: string,
     startMinutes: number[],
-    options: { excludeReservationId?: string } = {},
+    options: { excludeReservationId?: string; now?: Date } = {},
   ): Promise<{ resources: Resource[]; candidateIds: string[] }> {
     const resources = await this.resourceRepo.listActiveByType(type.id);
     if (resources.length === 0) return { resources, candidateIds: [] };
@@ -1029,44 +1766,6 @@ export class ReservationService {
         streamId: reservationId,
         eventType: 'reservation.expired',
         data: { reason: 'hold_ttl_force_release' },
-      });
-    }
-  }
-
-  /**
-   * Refund against the newest charges with refundable balance, applied
-   * optimistically; package C reconciles through refund webhooks.
-   */
-  private async applyRefund(
-    reservationId: string,
-    payments: ReservationPayment[],
-    refundCents: number,
-    actorId?: string,
-  ): Promise<void> {
-    const allocations = allocateRefund(payments, refundCents);
-    for (const allocation of allocations) {
-      const { refundId } = await this.paymentPort.refund({
-        paymentIntentId: allocation.stripePaymentIntentId,
-        amountCents: allocation.amountCents,
-        reservationId,
-      });
-      await this.uow.execute(async (tx) => {
-        await this.reservationRepo.addPayment(tx, {
-          reservationId,
-          kind: 'refund',
-          amountCents: allocation.amountCents,
-          stripePaymentIntentId: allocation.stripePaymentIntentId,
-          stripeRefundId: refundId,
-          status: 'succeeded',
-        });
-        await this.reservationRepo.adjustAmountPaid(tx, reservationId, -allocation.amountCents);
-        await this.audit.append(tx, {
-          streamType: STREAM_TYPE,
-          streamId: reservationId,
-          eventType: 'reservation.payment_refunded',
-          data: { amountCents: allocation.amountCents, stripeRefundId: refundId },
-          actorId,
-        });
       });
     }
   }

@@ -109,6 +109,34 @@ released AS (
 UPDATE "reservations" SET "status" = 'cancelled', "updatedAt" = CURRENT_TIMESTAMP
 WHERE "id" IN (SELECT reservation_id FROM conflicting);
 
+-- 5b. Pre-flight: legacy event creation never checked events against each
+-- other, so two ACTIVE events may legally block the same court at
+-- overlapping times. Step 6 would then trip the exclusion constraint
+-- mid-INSERT with a raw 23P01. Fail loudly and actionably instead, matching
+-- the orphan-bookings check above: deactivate or retime one of each pair,
+-- then rerun the migration.
+DO $$
+DECLARE
+  pair RECORD;
+  conflicts TEXT := '';
+  n INTEGER := 0;
+BEGIN
+  FOR pair IN
+    SELECT a."eventId" AS event_a, b."eventId" AS event_b, a."courtId" AS court_id
+    FROM "club_event_courts" a
+    JOIN "club_events" ea ON ea."id" = a."eventId" AND ea."active" = true
+    JOIN "club_event_courts" b ON b."courtId" = a."courtId" AND b."eventId" > a."eventId"
+    JOIN "club_events" eb ON eb."id" = b."eventId" AND eb."active" = true
+    WHERE ea."startsAt" < eb."endsAt" AND eb."startsAt" < ea."endsAt"
+  LOOP
+    n := n + 1;
+    conflicts := conflicts || format(' [events %s and %s on court %s]', pair.event_a, pair.event_b, pair.court_id);
+  END LOOP;
+  IF n > 0 THEN
+    RAISE EXCEPTION '% pairs of active club events block the same court at overlapping times; deactivate or retime one of each pair before migrating:%', n, conflicts;
+  END IF;
+END $$;
+
 -- 6. ClubEventCourt -> event-kind claims spanning [startsAt, endsAt) per
 -- claimed court. Inactive events keep their rows as released (they never
 -- blocked availability).

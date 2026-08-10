@@ -50,6 +50,14 @@ describe('computeNetPaidCents', () => {
     ]);
     expect(net).toBe(2500);
   });
+
+  it('counts PENDING refunds as already gone (reserved money, fail closed)', () => {
+    const net = computeNetPaidCents([
+      payment({ amountCents: 3000 }),
+      payment({ kind: 'refund', amountCents: 1000, status: 'pending' }),
+    ]);
+    expect(net).toBe(2000);
+  });
 });
 
 describe('computeRefundCents', () => {
@@ -112,6 +120,35 @@ describe('allocateRefund', () => {
         300,
       ),
     ).toThrow(InsufficientRefundableBalanceError);
+  });
+
+  it('treats PENDING refunds as consuming balance (a reserved refund blocks a second one)', () => {
+    // The double-refund guard: a concurrent money path reserved 800 but its
+    // Stripe call has not completed; a second refund of 300 must fail closed.
+    expect(() =>
+      allocateRefund(
+        [
+          payment({ stripePaymentIntentId: 'pi_1', amountCents: 1000 }),
+          payment({ kind: 'refund', stripePaymentIntentId: 'pi_1', amountCents: 800, status: 'pending' }),
+        ],
+        300,
+      ),
+    ).toThrow(InsufficientRefundableBalanceError);
+    expect(
+      allocateRefund(
+        [
+          payment({ stripePaymentIntentId: 'pi_1', amountCents: 1000 }),
+          payment({ kind: 'refund', stripePaymentIntentId: 'pi_1', amountCents: 800, status: 'pending' }),
+        ],
+        200,
+      ),
+    ).toEqual([{ stripePaymentIntentId: 'pi_1', amountCents: 200 }]);
+  });
+
+  it('never allocates against a merely pending charge', () => {
+    expect(() => allocateRefund([payment({ status: 'pending' })], 100)).toThrow(
+      InsufficientRefundableBalanceError,
+    );
   });
 
   it('returns nothing for a non-positive refund', () => {

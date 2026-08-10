@@ -30,12 +30,18 @@ export class SlotClaimRepository {
     return tx ? asPrismaTx(tx) : this.prisma;
   }
 
-  /** Active claims overlapping a window, for availability computation. */
+  /**
+   * Active claims overlapping a window, for availability computation.
+   * `options.now` makes expired-but-unswept holds (status still 'active',
+   * hold TTL lapsed) read as FREE: between sweeper runs an abandoned hold
+   * must not squat inventory, and the create/reschedule paths reclaim it
+   * (payment-aware sweep + in-transaction force-release) before inserting.
+   */
   async listActiveInWindow(
     resourceIds: string[],
     from: Date,
     to: Date,
-    options: { excludeReservationId?: string } = {},
+    options: { excludeReservationId?: string; now?: Date } = {},
   ): Promise<ClaimRange[]> {
     if (resourceIds.length === 0) return [];
     const claims = await this.prisma.slotClaim.findMany({
@@ -45,6 +51,7 @@ export class SlotClaimRepository {
         startsAt: { lt: to },
         endsAt: { gt: from },
         ...(options.excludeReservationId ? { NOT: { reservationId: options.excludeReservationId } } : {}),
+        ...(options.now ? { OR: [{ expiresAt: null }, { expiresAt: { gte: options.now } }] } : {}),
       },
       select: { resourceId: true, startsAt: true, endsAt: true },
     });

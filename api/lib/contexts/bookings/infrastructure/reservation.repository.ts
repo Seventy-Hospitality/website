@@ -8,6 +8,7 @@ import type {
   Reservation,
   ReservationParticipant,
   ReservationPayment,
+  ReservationPendingChange,
   ReservationStatus,
   ResourceType,
 } from '../domain';
@@ -24,6 +25,7 @@ export interface ReservationDetailRecord extends Reservation {
   participants: ParticipantWithMember[];
   payments: ReservationPayment[];
   claim: { id: string; status: string; expiresAt: Date | null } | null;
+  pendingChange: ReservationPendingChange | null;
 }
 
 export interface CreateReservationInput {
@@ -58,6 +60,7 @@ const detailInclude = {
   },
   payments: { orderBy: { createdAt: 'asc' as const } },
   claims: { select: { id: true, kind: true, status: true, expiresAt: true } },
+  pendingChange: true,
 } as const;
 
 function toDetail(record: any): ReservationDetailRecord {
@@ -136,6 +139,20 @@ export class ReservationRepository {
     await asPrismaTx(tx).$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${memberId}))`;
   }
 
+  /**
+   * Serialize the mutating paths of ONE reservation (confirm, cancel,
+   * reschedule, sweeper, refund settlement). The compare-and-set status
+   * writes below are the correctness backstop; the lock is what lets a
+   * money-settling transaction re-read the ledger knowing no concurrent
+   * path is mid-settlement on the same reservation. Prefixed so the
+   * keyspace cannot collide with the per-member lock. A transaction taking
+   * both locks must take the member lock FIRST (consistent ordering).
+   */
+  async advisoryLockReservation(tx: TransactionContext, reservationId: string): Promise<void> {
+    const key = `reservation:${reservationId}`;
+    await asPrismaTx(tx).$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+  }
+
   async countActiveOnDate(
     tx: TransactionContext | undefined,
     params: {
@@ -159,8 +176,14 @@ export class ReservationRepository {
   /**
    * A conflicting claim whose hold TTL lapsed before the sweeper ran is dead
    * weight: release it (and expire its reservation) so the insert can retry.
-   * A hold whose payment actually succeeded is re-confirmed by the webhook or
-   * refunded by billing; the slot is not kept hostage.
+   * A hold whose payment actually succeeded is re-confirmed by the webhook
+   * (confirm() recovers an expired-but-paid reservation) or refunded; the
+   * slot is not kept hostage.
+   *
+   * Every write is compare-and-set, in the same order as every other
+   * transition (reservation first, then claim): a hold confirmed mid-race
+   * fails the pending_payment re-check under the row lock and is skipped
+   * whole, so claim.status can never diverge from reservation.status.
    */
   async forceReleaseExpiredHolds(tx: TransactionContext, resourceIds: string[], now: Date): Promise<string[]> {
     if (resourceIds.length === 0) return [];
@@ -176,16 +199,37 @@ export class ReservationRepository {
     });
     if (stale.length === 0) return [];
 
-    await prisma.slotClaim.updateMany({
-      where: { id: { in: stale.map((claim) => claim.id) } },
-      data: { status: 'released' },
-    });
-    const reservationIds = stale.map((claim) => claim.reservationId!).filter(Boolean);
-    await prisma.reservation.updateMany({
-      where: { id: { in: reservationIds }, status: 'pending_payment' },
-      data: { status: 'expired' },
-    });
-    return reservationIds;
+    const releasedIds: string[] = [];
+    for (const claim of stale) {
+      if (!claim.reservationId) continue;
+      const expired = await prisma.reservation.updateMany({
+        where: { id: claim.reservationId, status: 'pending_payment' },
+        data: { status: 'expired' },
+      });
+      if (expired.count === 0) {
+        // Lost the reservation row. A concurrent confirm re-armed the claim
+        // (expiresAt cleared in the same transaction): leave it alone and
+        // let the exclusion constraint reject our insert. Only a reservation
+        // that is provably dead may have a leftover claim swept up.
+        const fresh = await prisma.reservation.findUnique({
+          where: { id: claim.reservationId },
+          select: { status: true },
+        });
+        if (fresh && (fresh.status === 'expired' || fresh.status === 'cancelled')) {
+          await prisma.slotClaim.updateMany({
+            where: { id: claim.id, status: 'active', expiresAt: { lt: now } },
+            data: { status: 'released', expiresAt: null },
+          });
+        }
+        continue;
+      }
+      const released = await prisma.slotClaim.updateMany({
+        where: { id: claim.id, status: 'active', expiresAt: { lt: now } },
+        data: { status: 'released', expiresAt: null },
+      });
+      if (released.count > 0) releasedIds.push(claim.reservationId);
+    }
+    return releasedIds;
   }
 
   /**
@@ -242,12 +286,24 @@ export class ReservationRepository {
    * Reschedule: an UPDATE of the claim's range (and possibly resource). The
    * exclusion constraint checks the updated row against other rows only, so
    * overlap with the reservation's own old range is fine by construction.
+   * The reservation row is written first, matching the row-lock order of
+   * every other transition (reservation, then claim).
    */
   async moveClaimAndReservation(
     tx: TransactionContext,
     params: { reservationId: string; resourceId: string; startsAt: Date; endsAt: Date; localDate: string },
   ): Promise<void> {
     const prisma = asPrismaTx(tx);
+    await prisma.reservation.update({
+      where: { id: params.reservationId },
+      data: {
+        resourceId: params.resourceId,
+        startsAt: params.startsAt,
+        endsAt: params.endsAt,
+        localDate: params.localDate,
+      },
+    });
+
     try {
       await prisma.$executeRaw`
         UPDATE "slot_claims"
@@ -262,29 +318,50 @@ export class ReservationRepository {
       if (isClaimConflictError(error)) throw new SlotUnavailableError();
       throw error;
     }
+  }
 
-    await prisma.reservation.update({
-      where: { id: params.reservationId },
-      data: {
-        resourceId: params.resourceId,
-        startsAt: params.startsAt,
-        endsAt: params.endsAt,
-        localDate: params.localDate,
-      },
+  /**
+   * Compare-and-set status transition. Every status write in the system goes
+   * through this (or confirmFrom): an unconditional UPDATE-by-id would let a
+   * transition that raced a concurrent one resurrect the loser's state
+   * (confirm clobbering a cancel was the concrete bug). A false return means
+   * the caller lost the race and must re-read instead of writing.
+   */
+  async transitionStatus(
+    tx: TransactionContext,
+    id: string,
+    from: ReservationStatus[],
+    to: ReservationStatus,
+  ): Promise<boolean> {
+    const updated = await asPrismaTx(tx).reservation.updateMany({
+      where: { id, status: { in: from } },
+      data: { status: to },
     });
+    return updated.count > 0;
   }
 
-  async updateStatus(tx: TransactionContext, id: string, status: ReservationStatus): Promise<void> {
-    await asPrismaTx(tx).reservation.update({ where: { id }, data: { status } });
-  }
-
-  async confirmReservation(tx: TransactionContext, id: string, amountPaidCents: number): Promise<void> {
+  /**
+   * Compare-and-set confirm: flips `from` -> confirmed, sets the paid total
+   * and clears the hold TTL on the still-active claim in one transaction.
+   * Exactly one concurrent confirmer (client, webhook, sweeper) sees true.
+   */
+  async confirmFrom(
+    tx: TransactionContext,
+    id: string,
+    from: ReservationStatus,
+    amountPaidCents: number,
+  ): Promise<boolean> {
     const prisma = asPrismaTx(tx);
-    await prisma.reservation.update({ where: { id }, data: { status: 'confirmed', amountPaidCents } });
+    const updated = await prisma.reservation.updateMany({
+      where: { id, status: from },
+      data: { status: 'confirmed', amountPaidCents },
+    });
+    if (updated.count === 0) return false;
     await prisma.slotClaim.updateMany({
-      where: { reservationId: id, kind: 'reservation' },
+      where: { reservationId: id, kind: 'reservation', status: 'active' },
       data: { expiresAt: null },
     });
+    return true;
   }
 
   async releaseClaim(tx: TransactionContext, reservationId: string): Promise<void> {
@@ -292,6 +369,27 @@ export class ReservationRepository {
       where: { reservationId, kind: 'reservation', status: 'active' },
       data: { status: 'released', expiresAt: null },
     });
+  }
+
+  /**
+   * Re-arm a released reservation claim (expired-but-paid recovery). The
+   * exclusion constraint arbitrates against whoever claimed the range in the
+   * meantime; a lost race maps to SlotUnavailableError. Returns false when
+   * there is no released claim to re-arm.
+   */
+  async reactivateClaim(tx: TransactionContext, reservationId: string): Promise<boolean> {
+    const prisma = asPrismaTx(tx);
+    try {
+      const count = await prisma.$executeRaw`
+        UPDATE "slot_claims"
+        SET "status" = 'active', "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "reservationId" = ${reservationId} AND "kind" = 'reservation' AND "status" = 'released'
+      `;
+      return count > 0;
+    } catch (error) {
+      if (isClaimConflictError(error)) throw new SlotUnavailableError();
+      throw error;
+    }
   }
 
   async adjustAmountPaid(tx: TransactionContext, id: string, deltaCents: number): Promise<void> {
@@ -326,8 +424,30 @@ export class ReservationRepository {
     }) as unknown as ReservationPayment;
   }
 
-  async setPaymentStatus(tx: TransactionContext, paymentId: string, status: 'pending' | 'succeeded' | 'failed'): Promise<void> {
-    await asPrismaTx(tx).reservationPayment.update({ where: { id: paymentId }, data: { status } });
+  /**
+   * Compare-and-set payment status flip; false means another path already
+   * moved the row, so the caller must not double-book its side effects.
+   */
+  async setPaymentStatusIf(
+    tx: TransactionContext,
+    paymentId: string,
+    expected: 'pending' | 'succeeded' | 'failed',
+    next: 'pending' | 'succeeded' | 'failed',
+  ): Promise<boolean> {
+    const updated = await asPrismaTx(tx).reservationPayment.updateMany({
+      where: { id: paymentId, status: expected },
+      data: { status: next },
+    });
+    return updated.count > 0;
+  }
+
+  /** Marks a reserved (pending) refund row as executed at Stripe. */
+  async completeRefund(tx: TransactionContext, paymentId: string, stripeRefundId: string): Promise<boolean> {
+    const updated = await asPrismaTx(tx).reservationPayment.updateMany({
+      where: { id: paymentId, kind: 'refund', status: 'pending' },
+      data: { status: 'succeeded', stripeRefundId },
+    });
+    return updated.count > 0;
   }
 
   // ── Participants ──
@@ -403,13 +523,53 @@ export class ReservationRepository {
     return confirmed.map((participant) => participant.memberId);
   }
 
+  // ── Pending changes (reschedule-grow awaiting its delta charge) ──
+
+  async createPendingChange(
+    tx: TransactionContext,
+    input: {
+      reservationId: string;
+      resourceId: string;
+      startsAt: Date;
+      endsAt: Date;
+      localDate: string;
+      deltaCents: number;
+      chargePaymentId: string;
+      expiresAt: Date;
+    },
+  ): Promise<void> {
+    await asPrismaTx(tx).reservationPendingChange.create({ data: input });
+  }
+
+  async clearPendingChange(tx: TransactionContext, reservationId: string): Promise<boolean> {
+    const deleted = await asPrismaTx(tx).reservationPendingChange.deleteMany({
+      where: { reservationId },
+    });
+    return deleted.count > 0;
+  }
+
+  async listExpiredPendingChanges(now: Date): Promise<ReservationDetailRecord[]> {
+    const records = await this.prisma.reservation.findMany({
+      where: { pendingChange: { is: { expiresAt: { lt: now } } } },
+      include: detailInclude,
+    });
+    return records.map(toDetail);
+  }
+
   // ── Sweeper ──
 
-  async listExpiredHolds(now: Date): Promise<ReservationDetailRecord[]> {
+  async listExpiredHolds(now: Date, resourceIds?: string[]): Promise<ReservationDetailRecord[]> {
     const records = await this.prisma.reservation.findMany({
       where: {
         status: 'pending_payment',
-        claims: { some: { kind: 'reservation', status: 'active', expiresAt: { lt: now } } },
+        claims: {
+          some: {
+            kind: 'reservation',
+            status: 'active',
+            expiresAt: { lt: now },
+            ...(resourceIds ? { resourceId: { in: resourceIds } } : {}),
+          },
+        },
       },
       include: detailInclude,
     });

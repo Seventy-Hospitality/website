@@ -97,6 +97,7 @@ function detailFixture(overrides: Partial<ReservationDetailRecord> = {}): Reserv
     ],
     payments: [],
     claim: { id: 'clm_1', status: 'active', expiresAt: new Date(NOW.getTime() + 12 * 60_000) },
+    pendingChange: null,
     ...overrides,
   };
 }
@@ -128,6 +129,33 @@ function paymentRow(overrides: Record<string, unknown> = {}) {
     createdAt: NOW,
     ...overrides,
   };
+}
+
+/** A parked reschedule-grow (60 -> 90 min, +1000) awaiting its delta charge. */
+function pendingChangeFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'pc_1',
+    reservationId: 'rsv_1',
+    resourceId: 'r1',
+    startsAt: wallTimeToUtc(DATE, 19 * 60, NY),
+    endsAt: wallTimeToUtc(DATE, 20 * 60 + 30, NY),
+    localDate: DATE,
+    deltaCents: 1000,
+    chargePaymentId: 'pay_2',
+    expiresAt: new Date(NOW.getTime() + 12 * 60_000),
+    createdAt: NOW,
+  };
+}
+
+function deltaChargeRow(overrides: Record<string, unknown> = {}) {
+  return paymentRow({
+    id: 'pay_2',
+    amountCents: 1000,
+    stripePaymentIntentId: 'pi_2',
+    status: 'pending' as const,
+    createdAt: new Date(NOW.getTime() + 1000), // newer than the base charge
+    ...overrides,
+  });
 }
 
 function mockTypeRepo(types: ResourceType[] = [BADMINTON, SHOWER]): ResourceTypeRepository {
@@ -171,16 +199,22 @@ function mockReservationRepo(): ReservationRepository {
     listAll: vi.fn().mockResolvedValue([]),
     countUpcomingForResources: vi.fn().mockResolvedValue(0),
     advisoryLockMember: vi.fn(),
+    advisoryLockReservation: vi.fn(),
     countActiveOnDate: vi.fn().mockResolvedValue(0),
     forceReleaseExpiredHolds: vi.fn().mockResolvedValue([]),
     createWithClaim: vi.fn(),
     moveClaimAndReservation: vi.fn(),
-    updateStatus: vi.fn(),
-    confirmReservation: vi.fn(),
+    transitionStatus: vi.fn().mockResolvedValue(true),
+    confirmFrom: vi.fn().mockResolvedValue(true),
     releaseClaim: vi.fn(),
+    reactivateClaim: vi.fn().mockResolvedValue(true),
     adjustAmountPaid: vi.fn(),
     addPayment: vi.fn().mockResolvedValue(paymentRow()),
-    setPaymentStatus: vi.fn(),
+    setPaymentStatusIf: vi.fn().mockResolvedValue(true),
+    completeRefund: vi.fn().mockResolvedValue(true),
+    createPendingChange: vi.fn(),
+    clearPendingChange: vi.fn().mockResolvedValue(true),
+    listExpiredPendingChanges: vi.fn().mockResolvedValue([]),
     getParticipant: vi.fn(),
     upsertPendingInvite: vi.fn(),
     updateParticipantStatus: vi.fn(),
@@ -247,6 +281,10 @@ function buildService(overrides: {
   return { service, typeRepo, resourceRepo, claimRepo, reservationRepo, checker, paymentPort, audit, uow };
 }
 
+function auditEventTypes(audit: AuditLog): string[] {
+  return (audit.append as ReturnType<typeof vi.fn>).mock.calls.map(([, event]) => event.eventType);
+}
+
 const CREATE_REQUEST = {
   typeCode: 'badminton_court',
   date: DATE,
@@ -290,6 +328,18 @@ describe('ReservationService.create', () => {
     );
     expect(result.clientSecret).toBe('pi_1_secret');
     expect(result.holdExpiresAt).toEqual(new Date(NOW.getTime() + 12 * 60_000));
+  });
+
+  it('sweeps expired holds on the type resources before computing candidates', async () => {
+    const reservationRepo = mockReservationRepo();
+    const detail = detailFixture();
+    (reservationRepo.createWithClaim as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    const { service } = buildService({ reservationRepo });
+
+    await service.create(CREATE_REQUEST);
+
+    expect(reservationRepo.listExpiredHolds).toHaveBeenCalledWith(NOW, ['r1', 'r2']);
   });
 
   it('retries the next candidate resource on a 23P01 conflict', async () => {
@@ -376,7 +426,7 @@ describe('ReservationService.create', () => {
     );
   });
 
-  it('releases the hold when the payment intent cannot be created', async () => {
+  it('releases the hold via a guarded transition when the payment intent cannot be created', async () => {
     const reservationRepo = mockReservationRepo();
     const paymentPort = mockPaymentPort();
     const detail = detailFixture();
@@ -385,13 +435,18 @@ describe('ReservationService.create', () => {
     const { service } = buildService({ reservationRepo, paymentPort });
 
     await expect(service.create(CREATE_REQUEST)).rejects.toThrow('stripe down');
+    expect(reservationRepo.transitionStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      'rsv_1',
+      ['pending_payment'],
+      'expired',
+    );
     expect(reservationRepo.releaseClaim).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
-    expect(reservationRepo.updateStatus).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 'expired');
   });
 });
 
 describe('ReservationService.confirm', () => {
-  it('asserts payment success through the port and flips to confirmed', async () => {
+  it('asserts payment success through the port and flips to confirmed via compare-and-set', async () => {
     const reservationRepo = mockReservationRepo();
     const paymentPort = mockPaymentPort();
     const detail = detailFixture({ payments: [paymentRow({ status: 'pending' })] });
@@ -401,8 +456,9 @@ describe('ReservationService.confirm', () => {
     await service.confirm('rsv_1', { memberId: 'mem_1' });
 
     expect(paymentPort.getPaymentStatus).toHaveBeenCalledWith('pi_1');
-    expect(reservationRepo.confirmReservation).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 2000);
-    expect(reservationRepo.setPaymentStatus).toHaveBeenCalledWith(expect.anything(), 'pay_1', 'succeeded');
+    expect(reservationRepo.advisoryLockReservation).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
+    expect(reservationRepo.confirmFrom).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 'pending_payment', 2000);
+    expect(reservationRepo.setPaymentStatusIf).toHaveBeenCalledWith(expect.anything(), 'pay_1', 'pending', 'succeeded');
   });
 
   it('rejects a confirm by anyone but the organizer as a 404-shaped error', async () => {
@@ -432,15 +488,139 @@ describe('ReservationService.confirm', () => {
 
     const result = await service.confirm('rsv_1', { memberId: 'mem_1' });
     expect(result.status).toBe('confirmed');
-    expect(reservationRepo.confirmReservation).not.toHaveBeenCalled();
+    expect(reservationRepo.confirmFrom).not.toHaveBeenCalled();
   });
 
-  it('reports an expired hold', async () => {
+  it('appends no events when a concurrent confirmer already won (no duplicate outbox rows)', async () => {
     const reservationRepo = mockReservationRepo();
-    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detailFixture({ status: 'expired' }));
+    const audit = mockAudit();
+    const pending = detailFixture({ payments: [paymentRow({ status: 'pending' })] });
+    const confirmed = detailFixture({ status: 'confirmed', amountPaidCents: 2000, payments: [paymentRow()] });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(pending) // getOwn
+      .mockResolvedValue(confirmed); // in-tx fresh read: the race is already lost
+    const { service } = buildService({ reservationRepo, audit });
+
+    const result = await service.confirm('rsv_1', { memberId: 'mem_1' });
+
+    expect(result.status).toBe('confirmed');
+    expect(reservationRepo.confirmFrom).not.toHaveBeenCalled();
+    expect(audit.append).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a concurrent cancel instead of resurrecting the reservation', async () => {
+    const reservationRepo = mockReservationRepo();
+    const pending = detailFixture({ payments: [paymentRow({ status: 'pending' })] });
+    const cancelled = detailFixture({ status: 'cancelled' });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(pending) // getOwn
+      .mockResolvedValue(cancelled); // fresh reads
     const { service } = buildService({ reservationRepo });
 
+    await expect(service.confirm('rsv_1', { memberId: 'mem_1' })).rejects.toThrow(InvalidReservationStatusError);
+    expect(reservationRepo.confirmFrom).not.toHaveBeenCalled();
+  });
+
+  it('recovers an expired reservation whose intent captured by re-acquiring the slot', async () => {
+    const reservationRepo = mockReservationRepo();
+    const audit = mockAudit();
+    const expired = detailFixture({ status: 'expired', payments: [paymentRow({ status: 'pending' })] });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(expired);
+    const { service } = buildService({ reservationRepo, audit });
+
+    await service.confirm('rsv_1', { memberId: 'mem_1' });
+
+    expect(reservationRepo.reactivateClaim).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
+    expect(reservationRepo.confirmFrom).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 'expired', 2000);
+    expect(auditEventTypes(audit)).toEqual(
+      expect.arrayContaining(['reservation.payment_captured', 'reservation.confirmed']),
+    );
+  });
+
+  it('refunds a captured charge in full when the expired slot is already gone', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    const audit = mockAudit();
+    const expired = detailFixture({ status: 'expired', payments: [paymentRow({ status: 'pending' })] });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(expired);
+    (reservationRepo.reactivateClaim as ReturnType<typeof vi.fn>).mockRejectedValue(new SlotUnavailableError());
+    const { service } = buildService({ reservationRepo, paymentPort, audit });
+
     await expect(service.confirm('rsv_1', { memberId: 'mem_1' })).rejects.toThrow(HoldExpiredError);
+
+    // The refund was reserved as a pending ledger row, then executed.
+    expect(reservationRepo.addPayment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: 'refund', amountCents: 2000, status: 'pending' }),
+    );
+    expect(paymentPort.refund).toHaveBeenCalledWith({ paymentIntentId: 'pi_1', amountCents: 2000, reservationId: 'rsv_1' });
+    expect(reservationRepo.completeRefund).toHaveBeenCalledWith(expect.anything(), 'pay_1', 're_1');
+    expect(auditEventTypes(audit)).toEqual(
+      expect.arrayContaining(['reservation.expired_paid_refunded', 'reservation.payment_refunded']),
+    );
+  });
+
+  it('reports an expired hold whose payment never succeeded', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({ status: 'expired', payments: [paymentRow({ status: 'pending' })] }),
+    );
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await expect(service.confirm('rsv_1', { memberId: 'mem_1' })).rejects.toThrow(HoldExpiredError);
+  });
+
+  it('applies a PAID pending change: the claim moves only now', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    const detail = detailFixture({
+      status: 'confirmed',
+      amountPaidCents: 2000,
+      payments: [paymentRow(), deltaChargeRow()],
+      pendingChange: pendingChangeFixture() as never,
+    });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await service.confirm('rsv_1', { memberId: 'mem_1' });
+
+    expect(paymentPort.getPaymentStatus).toHaveBeenCalledWith('pi_2');
+    expect(reservationRepo.moveClaimAndReservation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        reservationId: 'rsv_1',
+        startsAt: wallTimeToUtc(DATE, 19 * 60, NY),
+        endsAt: wallTimeToUtc(DATE, 20 * 60 + 30, NY),
+      }),
+    );
+    expect(reservationRepo.clearPendingChange).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
+    expect(reservationRepo.setPaymentStatusIf).toHaveBeenCalledWith(expect.anything(), 'pay_2', 'pending', 'succeeded');
+    expect(reservationRepo.adjustAmountPaid).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 1000);
+  });
+
+  it('refunds the delta and keeps the original booking when the parked slot is gone', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    const audit = mockAudit();
+    const detail = detailFixture({
+      status: 'confirmed',
+      amountPaidCents: 2000,
+      payments: [paymentRow(), deltaChargeRow()],
+      pendingChange: pendingChangeFixture() as never,
+    });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    (reservationRepo.moveClaimAndReservation as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new SlotUnavailableError(),
+    );
+    const { service } = buildService({ reservationRepo, paymentPort, audit });
+
+    await expect(service.confirm('rsv_1', { memberId: 'mem_1' })).rejects.toThrow(SlotUnavailableError);
+
+    expect(reservationRepo.clearPendingChange).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
+    expect(paymentPort.refund).toHaveBeenCalledWith({ paymentIntentId: 'pi_2', amountCents: 1000, reservationId: 'rsv_1' });
+    expect(auditEventTypes(audit)).toEqual(expect.arrayContaining(['reservation.change_rejected']));
   });
 });
 
@@ -571,7 +751,7 @@ describe('ReservationService.reschedule', () => {
     });
   }
 
-  it('moves the claim, resets confirmed guests and refunds a shrink delta', async () => {
+  it('moves the claim, resets confirmed guests and reserves+executes a shrink refund', async () => {
     const reservationRepo = mockReservationRepo();
     const paymentPort = mockPaymentPort();
     const detail = confirmedDetail();
@@ -582,6 +762,7 @@ describe('ReservationService.reschedule', () => {
     // Shrink from 60 to 30 minutes: delta -1000 at the snapshot rate.
     const result = await service.reschedule('rsv_1', 'mem_1', { date: DATE, slots: ['19:00'] }, undefined, NOW);
 
+    expect(reservationRepo.advisoryLockReservation).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
     expect(reservationRepo.moveClaimAndReservation).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -593,11 +774,17 @@ describe('ReservationService.reschedule', () => {
     );
     expect(reservationRepo.resetConfirmedGuestsToPending).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
     expect(result.deltaCents).toBe(-1000);
+    // Reserved as a pending ledger row in the transaction, executed after.
+    expect(reservationRepo.addPayment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: 'refund', amountCents: 1000, status: 'pending' }),
+    );
     expect(paymentPort.refund).toHaveBeenCalledWith({ paymentIntentId: 'pi_1', amountCents: 1000, reservationId: 'rsv_1' });
+    expect(reservationRepo.completeRefund).toHaveBeenCalledWith(expect.anything(), 'pay_1', 're_1');
     expect(reservationRepo.adjustAmountPaid).toHaveBeenCalledWith(expect.anything(), 'rsv_1', -1000);
   });
 
-  it('charges a grow delta through a new payment intent', async () => {
+  it('parks a grow as a pending change: intent first, no move until the delta is paid', async () => {
     const reservationRepo = mockReservationRepo();
     const paymentPort = mockPaymentPort();
     (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(confirmedDetail());
@@ -612,10 +799,41 @@ describe('ReservationService.reschedule', () => {
     );
 
     expect(result.deltaCents).toBe(1000);
+    expect(result.clientSecret).toBe('pi_1_secret');
     expect(paymentPort.createPaymentIntent).toHaveBeenCalledWith(
       expect.objectContaining({ amountCents: 1000, reservationId: 'rsv_1' }),
     );
-    expect(result.clientSecret).toBe('pi_1_secret');
+    // Nothing moved and no money was captured: the change is parked.
+    expect(reservationRepo.moveClaimAndReservation).not.toHaveBeenCalled();
+    expect(reservationRepo.addPayment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: 'charge', amountCents: 1000, status: 'pending' }),
+    );
+    expect(reservationRepo.createPendingChange).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        reservationId: 'rsv_1',
+        deltaCents: 1000,
+        chargePaymentId: 'pay_1',
+        expiresAt: new Date(NOW.getTime() + 12 * 60_000),
+      }),
+    );
+  });
+
+  it('leaves the reservation untouched when the delta intent cannot be created', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(confirmedDetail());
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('stripe down'));
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await expect(
+      service.reschedule('rsv_1', 'mem_1', { date: DATE, slots: ['19:00', '19:30', '20:00'] }, undefined, NOW),
+    ).rejects.toThrow('stripe down');
+
+    expect(reservationRepo.moveClaimAndReservation).not.toHaveBeenCalled();
+    expect(reservationRepo.createPendingChange).not.toHaveBeenCalled();
+    expect(reservationRepo.addPayment).not.toHaveBeenCalled();
   });
 
   it('refuses to reschedule anything but a confirmed reservation', async () => {
@@ -640,13 +858,13 @@ describe('ReservationService.reschedule', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      { excludeReservationId: 'rsv_1' },
+      { excludeReservationId: 'rsv_1', now: NOW },
     );
   });
 });
 
 describe('ReservationService.cancel', () => {
-  it('applies the 50% tier between 2h and 24h', async () => {
+  it('applies the 50% tier between 2h and 24h from FRESH in-transaction state', async () => {
     const reservationRepo = mockReservationRepo();
     const paymentPort = mockPaymentPort();
     (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
@@ -659,8 +877,14 @@ describe('ReservationService.cancel', () => {
     const { refundCents } = await service.cancel('rsv_1', { memberId: 'mem_1', now });
 
     expect(refundCents).toBe(1000);
+    expect(reservationRepo.advisoryLockReservation).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
+    expect(reservationRepo.transitionStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      'rsv_1',
+      ['pending_payment', 'confirmed'],
+      'cancelled',
+    );
     expect(reservationRepo.releaseClaim).toHaveBeenCalled();
-    expect(reservationRepo.updateStatus).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 'cancelled');
     expect(paymentPort.refund).toHaveBeenCalledWith({ paymentIntentId: 'pi_1', amountCents: 1000, reservationId: 'rsv_1' });
   });
 
@@ -696,9 +920,10 @@ describe('ReservationService.cancel', () => {
     expect(refundCents).toBe(2000);
   });
 
-  it('cancels a pending_payment hold without a refund and voids the intent', async () => {
+  it('cancels an UNPAID pending_payment hold without a refund and voids the intent', async () => {
     const reservationRepo = mockReservationRepo();
     const paymentPort = mockPaymentPort();
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
     (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
       detailFixture({ payments: [paymentRow({ status: 'pending' })] }),
     );
@@ -709,6 +934,88 @@ describe('ReservationService.cancel', () => {
     expect(refundCents).toBe(0);
     expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledWith('pi_1');
     expect(paymentPort.refund).not.toHaveBeenCalled();
+  });
+
+  it('never eats a captured charge: a paid-but-unconfirmed hold is confirmed, then refunded per tier', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    const pendingPaid = detailFixture({ payments: [paymentRow({ status: 'pending' })] });
+    const confirmedPaid = detailFixture({
+      status: 'confirmed',
+      amountPaidCents: 2000,
+      payments: [paymentRow()],
+    });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(pendingPaid) // getOwn
+      .mockResolvedValueOnce(pendingPaid) // settlePendingConfirmation fresh read
+      .mockResolvedValue(confirmedPaid); // cancel transaction and after
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    // The stub intent reports succeeded: the money is captured.
+    const { refundCents } = await service.cancel('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    expect(reservationRepo.confirmFrom).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 'pending_payment', 2000);
+    expect(refundCents).toBe(2000); // >24h out: 100% tier
+    expect(paymentPort.refund).toHaveBeenCalledWith({ paymentIntentId: 'pi_1', amountCents: 2000, reservationId: 'rsv_1' });
+    expect(paymentPort.cancelPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it('refunds a PAID unapplied pending change at 100% on top of the tiered base refund', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({
+        status: 'confirmed',
+        amountPaidCents: 2000,
+        payments: [paymentRow(), deltaChargeRow()],
+        pendingChange: pendingChangeFixture() as never,
+      }),
+    );
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    // 2-24h window: base refunds 50% of 2000 = 1000; the paid delta (1000)
+    // bought time that was never delivered, so it comes back in full.
+    const now = wallTimeToUtc(DATE, 10 * 60, NY);
+    const { refundCents } = await service.cancel('rsv_1', { memberId: 'mem_1', now });
+
+    expect(refundCents).toBe(2000);
+    expect(reservationRepo.clearPendingChange).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
+    expect(reservationRepo.setPaymentStatusIf).toHaveBeenCalledWith(expect.anything(), 'pay_2', 'pending', 'succeeded');
+  });
+
+  it('drops an UNPAID pending change and voids its intent on cancel', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({
+        status: 'confirmed',
+        amountPaidCents: 2000,
+        payments: [paymentRow(), deltaChargeRow()],
+        pendingChange: pendingChangeFixture() as never,
+      }),
+    );
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    const { refundCents } = await service.cancel('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    expect(refundCents).toBe(2000); // base only, 100% tier
+    expect(reservationRepo.setPaymentStatusIf).toHaveBeenCalledWith(expect.anything(), 'pay_2', 'pending', 'failed');
+    expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledWith('pi_2');
+  });
+
+  it('yields when a concurrent transition already moved the reservation', async () => {
+    const reservationRepo = mockReservationRepo();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({ status: 'confirmed', amountPaidCents: 2000, payments: [paymentRow()] }),
+    );
+    (reservationRepo.transitionStatus as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const { service } = buildService({ reservationRepo });
+
+    await expect(service.cancel('rsv_1', { memberId: 'mem_1', now: NOW })).rejects.toThrow(
+      InvalidReservationStatusError,
+    );
+    expect(reservationRepo.releaseClaim).not.toHaveBeenCalled();
   });
 
   it('refuses to cancel after the reservation started (members)', async () => {
@@ -735,12 +1042,12 @@ describe('ReservationService.expireStaleHolds', () => {
 
     const result = await service.expireStaleHolds(NOW);
 
-    expect(result).toEqual({ expired: 0, confirmed: 1 });
-    expect(reservationRepo.confirmReservation).toHaveBeenCalled();
+    expect(result).toEqual({ expired: 0, confirmed: 1, changesApplied: 0, changesExpired: 0 });
+    expect(reservationRepo.confirmFrom).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 'pending_payment', 2000);
     expect(reservationRepo.releaseClaim).not.toHaveBeenCalled();
   });
 
-  it('expires a hold whose payment did not succeed', async () => {
+  it('expires a hold whose payment did not succeed via a guarded transition', async () => {
     const reservationRepo = mockReservationRepo();
     const paymentPort = mockPaymentPort();
     (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
@@ -751,10 +1058,74 @@ describe('ReservationService.expireStaleHolds', () => {
 
     const result = await service.expireStaleHolds(NOW);
 
-    expect(result).toEqual({ expired: 1, confirmed: 0 });
+    expect(result).toEqual({ expired: 1, confirmed: 0, changesApplied: 0, changesExpired: 0 });
+    expect(reservationRepo.transitionStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      'rsv_1',
+      ['pending_payment'],
+      'expired',
+    );
     expect(reservationRepo.releaseClaim).toHaveBeenCalled();
-    expect(reservationRepo.updateStatus).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 'expired');
     expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledWith('pi_1');
+  });
+
+  it('appends nothing when the client confirmed mid-race (no duplicate confirmed events)', async () => {
+    const reservationRepo = mockReservationRepo();
+    const audit = mockAudit();
+    const hold = detailFixture({ payments: [paymentRow({ status: 'pending' })] });
+    (reservationRepo.listExpiredHolds as ReturnType<typeof vi.fn>).mockResolvedValue([hold]);
+    // By the time the sweeper's transaction reads it, the client confirmed.
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({ status: 'confirmed', amountPaidCents: 2000, payments: [paymentRow()] }),
+    );
+    const { service } = buildService({ reservationRepo, audit });
+
+    const result = await service.expireStaleHolds(NOW);
+
+    expect(result).toEqual({ expired: 0, confirmed: 0, changesApplied: 0, changesExpired: 0 });
+    expect(reservationRepo.confirmFrom).not.toHaveBeenCalled();
+    expect(audit.append).not.toHaveBeenCalled();
+  });
+
+  it('applies a PAID lapsed pending change instead of dropping it (died client)', async () => {
+    const reservationRepo = mockReservationRepo();
+    const detail = detailFixture({
+      status: 'confirmed',
+      amountPaidCents: 2000,
+      payments: [paymentRow(), deltaChargeRow()],
+      pendingChange: pendingChangeFixture() as never,
+    });
+    (reservationRepo.listExpiredPendingChanges as ReturnType<typeof vi.fn>).mockResolvedValue([detail]);
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    const { service } = buildService({ reservationRepo });
+
+    const result = await service.expireStaleHolds(NOW);
+
+    expect(result).toEqual({ expired: 0, confirmed: 0, changesApplied: 1, changesExpired: 0 });
+    expect(reservationRepo.moveClaimAndReservation).toHaveBeenCalled();
+    expect(reservationRepo.clearPendingChange).toHaveBeenCalledWith(expect.anything(), 'rsv_1');
+  });
+
+  it('drops an UNPAID lapsed pending change and voids its intent', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    const detail = detailFixture({
+      status: 'confirmed',
+      amountPaidCents: 2000,
+      payments: [paymentRow(), deltaChargeRow()],
+      pendingChange: pendingChangeFixture() as never,
+    });
+    (reservationRepo.listExpiredPendingChanges as ReturnType<typeof vi.fn>).mockResolvedValue([detail]);
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    const result = await service.expireStaleHolds(NOW);
+
+    expect(result).toEqual({ expired: 0, confirmed: 0, changesApplied: 0, changesExpired: 1 });
+    expect(reservationRepo.moveClaimAndReservation).not.toHaveBeenCalled();
+    expect(reservationRepo.setPaymentStatusIf).toHaveBeenCalledWith(expect.anything(), 'pay_2', 'pending', 'failed');
+    expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledWith('pi_2');
   });
 });
 
@@ -786,6 +1157,20 @@ describe('ReservationService availability and quote', () => {
     expect(days[0].slots.length).toBeGreaterThan(0); // 07-07 within 7 days
     expect(days[1].slots.length).toBeGreaterThan(0); // 07-08 boundary day
     expect(days[2].slots).toEqual([]); // 07-09 beyond maxAdvanceDays
+  });
+
+  it('asks the claim read to treat expired holds as free', async () => {
+    const claimRepo = mockClaimRepo();
+    const { service } = buildService({ claimRepo });
+
+    await service.getAvailability({ typeCode: 'badminton_court', startDate: DATE, memberId: 'mem_1', now: NOW });
+
+    expect(claimRepo.listActiveInWindow).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      { excludeReservationId: undefined, now: NOW },
+    );
   });
 
   it('locks PRO types for member-tier viewers', async () => {

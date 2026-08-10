@@ -162,3 +162,10 @@ export class InsufficientRefundableBalanceError extends Error {
     this.name = 'InsufficientRefundableBalanceError';
   }
 }
+
+export class ReservationChangedError extends Error {
+  constructor() {
+    super('This reservation changed while the request was in flight; get a fresh quote and retry');
+    this.name = 'ReservationChangedError';
+  }
+}

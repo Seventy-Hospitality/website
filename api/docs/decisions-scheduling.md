@@ -77,6 +77,54 @@ the settled critique design. OPEN-decision recommendations from
     (`lib/kernel/venue-time.ts`); slots straddling a transition may span
     30/90 real minutes and are priced by wall-clock duration.
 
+## Review fixes (2026-08-10, post-package-B concurrency/domain review)
+
+18. **Compare-and-set transitions + per-reservation advisory lock.** Every
+    status write goes through `transitionStatus`/`confirmFrom`
+    (`UPDATE ... WHERE status = ...`; 0 rows = lost the race, re-read and
+    yield), and every mutating path on an existing reservation takes
+    `pg_advisory_xact_lock(hashtext('reservation:' || id))` (member lock
+    first when both are held). Kills the confirm-clobbers-cancel and
+    duplicate-confirm-events races; force-release re-checks
+    status/expiresAt row-by-row so a hold confirmed mid-race is skipped.
+19. **Refunds are reserved in-transaction before Stripe.** The mutating
+    transaction re-reads the ledger under the reservation lock and writes
+    PENDING refund rows; pending refunds consume refundable balance in
+    `allocateRefund`/`computeNetPaidCents`, so concurrent money paths fail
+    closed instead of double-refunding. Stripe runs post-commit; a Stripe
+    failure marks the row failed and restores the paid total (package C
+    re-issues with idempotency keys).
+20. **`pending_payment` never means uncaptured.** `cancel()` checks the
+    intent first (like the sweeper): a paid hold is confirmed and then
+    cancelled with the tiered refund. `confirm()` recovers an EXPIRED
+    reservation whose intent captured: re-acquire the slot through the
+    exclusion constraint, else refund in full. A captured charge is never
+    stranded; the sub-second pay-vs-drop TOCTOU that remains is owned by
+    package-C billing reconciliation.
+21. **Reschedule-grow is pay-first.** The claim move for a grow is parked in
+    `reservation_pending_changes` (TTL = hold TTL) and applied by
+    `confirm()`/webhook/sweeper only once the delta intent succeeds; the
+    delta intent is created before anything is written, so a Stripe failure
+    leaves the reservation untouched, and an unpaid grow lapses without
+    ever granting unpaid court time. If the target range is gone by the
+    time the delta is paid, the delta refunds in full and the original
+    booking stands. Cancel of a reservation with a PAID unapplied change
+    refunds that delta at 100% (the time was never delivered) on top of the
+    tiered base refund.
+22. **Expired-but-unswept holds read as free** in availability and
+    candidate computation (`listActiveInWindow` filters `expiresAt < now`),
+    and create/reschedule run the payment-aware sweep over the type's
+    resources before computing candidates, so the reclaim path fires
+    deterministically instead of depending on the sweeper interval.
+23. **Backfill pre-flight for event-vs-event overlaps.** Legacy event
+    creation never checked events against each other, so step 6 of the
+    backfill now RAISEs with the offending event pairs instead of aborting
+    mid-INSERT on a raw 23P01.
+24. **Organizer email is redacted on member surfaces.**
+    `serializeLegacyBooking` includes the organizer's email only for
+    `audience: 'admin'` or when the viewer is the organizer (fail-closed
+    default); `/api/me/home` and `/api/me/bookings` pass the viewer.
+
 ## Package seams left open
 
 - **Package C (billing):** `BookingPaymentPort`
@@ -105,3 +153,17 @@ loser 23P01/40P01), self-excluding claim UPDATE, advisory-lock
 serialization, and an end-to-end service run (racing creates landing on
 different courts, confirm, respond, reschedule with guest reset + refund
 delta, tiered cancel, event-conflict listing, outbox drain).
+
+Review-fix validation (2026-08-10, throwaway Postgres 16): full chain incl.
+`reservation_pending_changes` applied to an empty database, zero drift.
+Live interleavings under READ COMMITTED: (a) confirm commits between
+force-release's SELECT and its writes: the reservation CAS re-checks via
+EvalPlanQual and skips, final state confirmed + active claim, overlapping
+insert still loses 23P01; (b) force-release wins the row first: the late
+confirm CAS returns 0 rows instead of resurrecting the reservation, and
+recovery re-arms the released claim; (c) recovery against a re-claimed
+range loses 23P01 (mapped to the full-refund path); pending-change
+uniqueness and cascade verified. Backfill pre-flight: two overlapping
+active events on one court abort the migration with the offending pair
+named; after deactivating one, the backfill completes (active + released
+event claims as expected).

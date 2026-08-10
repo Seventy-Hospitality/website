@@ -123,7 +123,9 @@ export async function meRoutes(app: FastifyInstance) {
         spotlightEvents: events.slice(0, 6).map(serializeEvent),
         upcomingBookings: reservations
           .slice(0, 8)
-          .map((reservation) => serializeLegacyBooking(reservation, VENUE_TIMEZONE)),
+          .map((reservation) =>
+            serializeLegacyBooking(reservation, VENUE_TIMEZONE, { viewerMemberId: memberId(req) }),
+          ),
         upcomingReservations: reservations
           .slice(0, 8)
           .map((reservation) =>
@@ -156,7 +158,9 @@ export async function meRoutes(app: FastifyInstance) {
     const reservations = await reservationService.listForMember(memberId(req), 'upcoming');
     return success(
       reply,
-      reservations.map((reservation) => serializeLegacyBooking(reservation, VENUE_TIMEZONE)),
+      reservations.map((reservation) =>
+        serializeLegacyBooking(reservation, VENUE_TIMEZONE, { viewerMemberId: memberId(req) }),
+      ),
     );
   });
 
@@ -186,7 +190,11 @@ export async function meRoutes(app: FastifyInstance) {
       const confirmed = await reservationService.confirm(created.reservation.id, {
         memberId: memberId(req),
       });
-      return success(reply, serializeLegacyBooking(confirmed, VENUE_TIMEZONE), 201);
+      return success(
+        reply,
+        serializeLegacyBooking(confirmed, VENUE_TIMEZONE, { viewerMemberId: memberId(req) }),
+        201,
+      );
     } catch (err) {
       return handleMemberError(reply, err);
     }

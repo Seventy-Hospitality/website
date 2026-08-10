@@ -51,6 +51,27 @@ export interface ReservationPayment {
   createdAt: Date;
 }
 
+/**
+ * A requested reschedule-GROW waiting for its delta charge. The claim move
+ * only takes physical effect once the delta PaymentIntent succeeds; until
+ * then the reservation keeps its existing claim, so an abandoned payment can
+ * never leave extra time uncharged or strand the original booking.
+ */
+export interface ReservationPendingChange {
+  id: string;
+  reservationId: string;
+  /** Preferred landing resource, re-validated when the change is applied. */
+  resourceId: string;
+  startsAt: Date;
+  endsAt: Date;
+  localDate: string;
+  /** Always positive: shrink/equal reschedules apply immediately. */
+  deltaCents: number;
+  chargePaymentId: string;
+  expiresAt: Date;
+  createdAt: Date;
+}
+
 /** Statuses under which a reservation still owns its slot. */
 export function isActiveReservationStatus(status: ReservationStatus): boolean {
   return status === 'pending_payment' || status === 'confirmed';

@@ -73,6 +73,7 @@ describe('ReservationRepository claim writes', () => {
 
   it('maps a 23P01 on the claim UPDATE (reschedule) to SlotUnavailableError', async () => {
     const tx = {
+      reservation: { update: vi.fn().mockResolvedValue({}) },
       $executeRaw: vi.fn().mockRejectedValue(p2010('23P01')),
     } as unknown as TransactionContext;
 
@@ -97,5 +98,111 @@ describe('ReservationRepository claim writes', () => {
 
     const repo = new ReservationRepository({} as never);
     await expect(repo.createWithClaim(tx, input)).rejects.toBe(boom);
+  });
+
+  it('maps a 23P01 on claim re-activation (expired-but-paid recovery) to SlotUnavailableError', async () => {
+    const tx = {
+      $executeRaw: vi.fn().mockRejectedValue(p2010('23P01')),
+    } as unknown as TransactionContext;
+
+    const repo = new ReservationRepository({} as never);
+    await expect(repo.reactivateClaim(tx, 'rsv_1')).rejects.toThrow(SlotUnavailableError);
+  });
+});
+
+describe('ReservationRepository compare-and-set transitions', () => {
+  it('confirmFrom reports a lost race without touching the claim', async () => {
+    const tx = {
+      reservation: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      slotClaim: { updateMany: vi.fn() },
+    } as unknown as TransactionContext;
+
+    const repo = new ReservationRepository({} as never);
+    const confirmed = await repo.confirmFrom(tx, 'rsv_1', 'pending_payment', 2000);
+
+    expect(confirmed).toBe(false);
+    expect((tx as any).reservation.updateMany).toHaveBeenCalledWith({
+      where: { id: 'rsv_1', status: 'pending_payment' },
+      data: { status: 'confirmed', amountPaidCents: 2000 },
+    });
+    expect((tx as any).slotClaim.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('transitionStatus guards on the expected source statuses', async () => {
+    const tx = {
+      reservation: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    } as unknown as TransactionContext;
+
+    const repo = new ReservationRepository({} as never);
+    const moved = await repo.transitionStatus(tx, 'rsv_1', ['pending_payment', 'confirmed'], 'cancelled');
+
+    expect(moved).toBe(true);
+    expect((tx as any).reservation.updateMany).toHaveBeenCalledWith({
+      where: { id: 'rsv_1', status: { in: ['pending_payment', 'confirmed'] } },
+      data: { status: 'cancelled' },
+    });
+  });
+});
+
+describe('ReservationRepository.forceReleaseExpiredHolds', () => {
+  const now = new Date('2026-07-01T12:13:00Z');
+
+  it('expires the reservation first (CAS) and skips holds a concurrent confirm won', async () => {
+    const tx = {
+      slotClaim: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: 'clm_1', reservationId: 'rsv_1' },
+          { id: 'clm_2', reservationId: 'rsv_2' },
+        ]),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      reservation: {
+        updateMany: vi
+          .fn()
+          .mockResolvedValueOnce({ count: 1 }) // rsv_1: genuinely stale, expired
+          .mockResolvedValueOnce({ count: 0 }), // rsv_2: a concurrent confirm won the row
+        findUnique: vi.fn().mockResolvedValue({ status: 'confirmed' }),
+      },
+    };
+
+    const repo = new ReservationRepository({} as never);
+    const released = await repo.forceReleaseExpiredHolds(tx as unknown as TransactionContext, ['r1'], now);
+
+    expect(released).toEqual(['rsv_1']);
+    // Reservation CAS is guarded on pending_payment...
+    expect(tx.reservation.updateMany).toHaveBeenNthCalledWith(1, {
+      where: { id: 'rsv_1', status: 'pending_payment' },
+      data: { status: 'expired' },
+    });
+    // ...and the claim release re-checks active + expired-TTL row-by-row, so
+    // the concurrently-confirmed hold's claim is never touched.
+    expect(tx.slotClaim.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.slotClaim.updateMany).toHaveBeenCalledWith({
+      where: { id: 'clm_1', status: 'active', expiresAt: { lt: now } },
+      data: { status: 'released', expiresAt: null },
+    });
+  });
+
+  it('sweeps up a leftover claim only when its reservation is provably dead', async () => {
+    const tx = {
+      slotClaim: {
+        findMany: vi.fn().mockResolvedValue([{ id: 'clm_1', reservationId: 'rsv_1' }]),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      reservation: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        findUnique: vi.fn().mockResolvedValue({ status: 'expired' }),
+      },
+    };
+
+    const repo = new ReservationRepository({} as never);
+    const released = await repo.forceReleaseExpiredHolds(tx as unknown as TransactionContext, ['r1'], now);
+
+    // The zombie claim is released but no reservation is reported expired.
+    expect(released).toEqual([]);
+    expect(tx.slotClaim.updateMany).toHaveBeenCalledWith({
+      where: { id: 'clm_1', status: 'active', expiresAt: { lt: now } },
+      data: { status: 'released', expiresAt: null },
+    });
   });
 });

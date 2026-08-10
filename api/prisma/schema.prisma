@@ -273,9 +273,10 @@ model Resource {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  type         ResourceType  @relation(fields: [typeId], references: [id])
-  claims       SlotClaim[]
-  reservations Reservation[]
+  type           ResourceType               @relation(fields: [typeId], references: [id])
+  claims         SlotClaim[]
+  reservations   Reservation[]
+  pendingChanges ReservationPendingChange[]
 
   @@index([typeId, active])
   @@map("resources")
@@ -331,13 +332,14 @@ model Reservation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  resourceType ResourceType             @relation(fields: [resourceTypeId], references: [id])
-  resource     Resource                 @relation(fields: [resourceId], references: [id])
-  organizer    Member                   @relation("organizer", fields: [organizerId], references: [id])
-  series       ReservationSeries?       @relation(fields: [seriesId], references: [id])
-  participants ReservationParticipant[]
-  payments     ReservationPayment[]
-  claims       SlotClaim[]
+  resourceType  ResourceType              @relation(fields: [resourceTypeId], references: [id])
+  resource      Resource                  @relation(fields: [resourceId], references: [id])
+  organizer     Member                    @relation("organizer", fields: [organizerId], references: [id])
+  series        ReservationSeries?        @relation(fields: [seriesId], references: [id])
+  participants  ReservationParticipant[]
+  payments      ReservationPayment[]
+  claims        SlotClaim[]
+  pendingChange ReservationPendingChange?
 
   @@index([organizerId, localDate])
   @@index([organizerId, status, startsAt])
@@ -375,10 +377,37 @@ model ReservationPayment {
   status                String // "pending" | "succeeded" | "failed"
   createdAt             DateTime @default(now())
 
-  reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  reservation   Reservation               @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  pendingChange ReservationPendingChange?
 
   @@index([reservationId])
   @@map("reservation_payments")
+}
+
+// A requested reschedule-GROW that is waiting for its delta charge. The move
+// only takes physical effect when the delta PaymentIntent succeeds (confirm
+// applies it, the exclusion constraint arbitrating); until then the
+// reservation keeps its existing claim untouched, so a failed or abandoned
+// payment can never leave extra court time uncharged or strand the original
+// booking. The sweeper applies paid changes and drops unpaid ones at expiry.
+model ReservationPendingChange {
+  id              String   @id @default(cuid())
+  reservationId   String   @unique
+  resourceId      String // preferred landing resource, re-validated at apply
+  startsAt        DateTime @db.Timestamptz(3)
+  endsAt          DateTime @db.Timestamptz(3)
+  localDate       String
+  deltaCents      Int // always positive: shrink/equal changes apply immediately
+  chargePaymentId String   @unique
+  expiresAt       DateTime @db.Timestamptz(3)
+  createdAt       DateTime @default(now())
+
+  reservation Reservation        @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  charge      ReservationPayment @relation(fields: [chargePaymentId], references: [id], onDelete: Cascade)
+  resource    Resource           @relation(fields: [resourceId], references: [id])
+
+  @@index([expiresAt])
+  @@map("reservation_pending_changes")
 }
 
 // The Weekly badge: local wall time + weekday, materialized into concrete

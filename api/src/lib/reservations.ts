@@ -11,6 +11,7 @@ import {
   InvalidSlotSelectionError,
   InviteeNotFoundError,
   MaxReservationsExceededError,
+  ReservationChangedError,
   NotInvitePermittedError,
   NotReservationOrganizerError,
   OrganizerCannotRespondError,
@@ -69,6 +70,23 @@ export function serializeReservation(
       status: participant.status,
       invitedById: participant.invitedById,
     })),
+    ...(detail.pendingChange
+      ? {
+          // A reschedule-grow awaiting its delta payment; the reservation
+          // keeps its current range until the delta is captured.
+          pendingChange: {
+            date: detail.pendingChange.localDate,
+            startTime: minutesToTimeLabel(
+              zonedMinutesSinceMidnight(detail.pendingChange.startsAt, options.timezone, detail.pendingChange.localDate),
+            ),
+            endTime: minutesToTimeLabel(
+              zonedMinutesSinceMidnight(detail.pendingChange.endsAt, options.timezone, detail.pendingChange.localDate),
+            ),
+            deltaCents: detail.pendingChange.deltaCents,
+            expiresAt: detail.pendingChange.expiresAt.toISOString(),
+          },
+        }
+      : { pendingChange: null }),
     ...(viewer
       ? {
           myParticipation: {
@@ -83,11 +101,25 @@ export function serializeReservation(
   };
 }
 
-/** The admin web's pre-cutover booking shape, served from reservations. */
-export function serializeLegacyBooking(detail: ReservationDetailRecord, timezone: string) {
+/**
+ * The admin web's pre-cutover booking shape, served from reservations.
+ *
+ * The organizer's email is PII: it is included only for the admin surface
+ * (`audience: 'admin'`) or when the viewer IS the organizer. Member-facing
+ * routes list reservations the caller merely participates in, and a guest
+ * must not read the organizer's address, so the default fails closed.
+ */
+export function serializeLegacyBooking(
+  detail: ReservationDetailRecord,
+  timezone: string,
+  options: { audience?: 'admin' | 'member'; viewerMemberId?: string } = {},
+) {
   const startMinutes = zonedMinutesSinceMidnight(detail.startsAt, timezone, detail.localDate);
   const endMinutes = zonedMinutesSinceMidnight(detail.endsAt, timezone, detail.localDate);
   const organizer = detail.participants.find((participant) => participant.role === 'organizer');
+  const includeEmail =
+    options.audience === 'admin' ||
+    (organizer !== undefined && organizer.memberId === options.viewerMemberId);
 
   return {
     id: detail.id,
@@ -100,7 +132,7 @@ export function serializeLegacyBooking(detail: ReservationDetailRecord, timezone
           id: organizer.member.id,
           firstName: organizer.member.firstName,
           lastName: organizer.member.lastName,
-          email: organizer.member.email,
+          email: includeEmail ? organizer.member.email : null,
         }
       : null,
     date: detail.localDate,
@@ -127,6 +159,7 @@ export function handleReservationError(reply: FastifyReply, err: unknown) {
   if (err instanceof InvalidReservationStatusError) return error(reply, 'INVALID_STATUS', err.message, 409);
   if (err instanceof InvalidParticipantTransitionError) return error(reply, 'INVALID_RESPONSE', err.message, 409);
   if (err instanceof InsufficientRefundableBalanceError) return error(reply, 'REFUND_UNAVAILABLE', err.message, 409);
+  if (err instanceof ReservationChangedError) return error(reply, 'RESERVATION_CHANGED', err.message, 409);
   if (err instanceof OutsideOperatingHoursError) return error(reply, 'OUTSIDE_HOURS', err.message, 422);
   if (err instanceof InvalidSlotSelectionError) return error(reply, 'INVALID_SLOTS', err.message, 422);
   if (err instanceof MaxReservationsExceededError) return error(reply, 'MAX_BOOKINGS', err.message, 422);

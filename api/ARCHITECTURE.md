@@ -84,7 +84,7 @@ lib/
 
 **Concrete implementations of abstract interfaces.**
 
-- Repositories (Prisma-backed or event-sourced)
+- Repositories (Prisma-backed)
 - External service clients (Stripe, Resend)
 - This is the ONLY place Prisma, Stripe SDK, etc. are imported
 
@@ -172,9 +172,36 @@ The bookings BC owns facility scheduling:
   TTL in one transaction (retrying the next candidate resource on a lost
   race), then creates the PaymentIntent OUTSIDE the transaction through
   `BookingPaymentPort` (stubbed until package C). The sweeper cron
-  (`/api/cron/expire-holds`) checks the intent before expiring a hold.
+  (`/api/cron/expire-holds`) checks the intent before expiring a hold, and
+  the create/reschedule paths run the same payment-aware sweep over the
+  type's resources before computing candidates, so a slot squatted by an
+  abandoned hold is reclaimed between sweeper runs (availability reads also
+  treat expired-but-unswept holds as free).
+- **State transitions are compare-and-set** (`UPDATE ... WHERE status = ...`,
+  0 rows = lost the race) and every mutating path on an existing reservation
+  additionally takes `pg_advisory_xact_lock(hashtext('reservation:' || id))`:
+  a confirm racing a cancel/expiry can never resurrect the loser's state,
+  and exactly one of client confirm / webhook / sweeper appends the
+  confirmed audit events. `confirm()` is the single "payment succeeded"
+  entry point; it also recovers an EXPIRED reservation whose intent
+  actually captured (re-acquire the slot via the exclusion constraint, or
+  refund in full), and `cancel()` checks the intent before treating
+  `pending_payment` as uncaptured.
+- **Refunds are reserved before Stripe runs**: the mutating transaction
+  re-reads the ledger under the reservation lock, writes PENDING refund
+  rows (which consume refundable balance, so concurrent money paths fail
+  closed), commits, and only then calls Stripe, marking each row succeeded
+  or failed afterwards.
+- **Reschedule money**: shrink/equal applies the (self-excluding) claim
+  UPDATE immediately and reserves the refund in the same transaction. A
+  GROW never moves the claim before the delta is captured: the delta intent
+  is created first, the requested range is parked in
+  `reservation_pending_changes` with a TTL, and `confirm()`/the sweeper
+  applies the move once the intent succeeds (refunding the delta if the
+  target range was taken meanwhile). An unpaid change lapses harmlessly.
 - **Per-member daily limit**: cross-aggregate, so the booking transaction
-  takes `pg_advisory_xact_lock(hashtext(memberId))` before counting.
+  takes `pg_advisory_xact_lock(hashtext(memberId))` before counting (member
+  lock always BEFORE the reservation lock when both are held).
 - **Time model**: UTC instants (`timestamptz`) + one venue IANA zone
   (`VENUE_TIMEZONE`); wall-clock math lives in `lib/kernel/venue-time.ts`.
   A range counts against the local date of its start.

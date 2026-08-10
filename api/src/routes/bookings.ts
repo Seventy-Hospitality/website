@@ -250,7 +250,11 @@ export async function bookingRoutes(app: FastifyInstance) {
             admin: { adminUserId: adminActor(req) },
             actorId: adminActor(req),
           });
-          return success(reply, serializeLegacyBooking(result.reservation, VENUE_TIMEZONE), 201);
+          return success(
+            reply,
+            serializeLegacyBooking(result.reservation, VENUE_TIMEZONE, { audience: 'admin' }),
+            201,
+          );
         } catch (err) {
           return handleReservationError(reply, err);
         }
@@ -287,7 +291,9 @@ export async function bookingRoutes(app: FastifyInstance) {
     });
     return success(
       reply,
-      reservations.map((reservation) => serializeLegacyBooking(reservation, VENUE_TIMEZONE)),
+      reservations.map((reservation) =>
+        serializeLegacyBooking(reservation, VENUE_TIMEZONE, { audience: 'admin' }),
+      ),
     );
   });
 

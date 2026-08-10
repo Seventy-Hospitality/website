@@ -10,6 +10,7 @@ export {
   type Reservation,
   type ReservationParticipant,
   type ReservationPayment,
+  type ReservationPendingChange,
   type ReservationStatus,
   type ParticipantRole,
   type ParticipantStatus,
@@ -46,6 +47,7 @@ export {
   PaymentNotCompletedError,
   HoldExpiredError,
   InsufficientRefundableBalanceError,
+  ReservationChangedError,
 } from './domain';
 export {
   ReservationService,

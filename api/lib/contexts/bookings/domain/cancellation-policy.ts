@@ -17,13 +17,23 @@ export function refundPercentFor(startsAt: Date, now: Date): number {
   return 0;
 }
 
-/** Net money captured for a reservation: succeeded charges minus succeeded refunds. */
+/**
+ * Net money captured for a reservation: succeeded charges minus refunds.
+ * Refunds count while still PENDING: refunds are reserved in the mutating
+ * transaction before Stripe runs, and a reserved refund is money already
+ * committed to leave, so every concurrent money path must treat it as gone
+ * (fail closed). Charges count only once actually captured.
+ */
 export function computeNetPaidCents(
   payments: Array<Pick<ReservationPayment, 'kind' | 'amountCents' | 'status'>>,
 ): number {
   return payments.reduce((net, payment) => {
-    if (payment.status !== 'succeeded') return net;
-    return payment.kind === 'charge' ? net + payment.amountCents : net - payment.amountCents;
+    if (payment.kind === 'charge') {
+      return payment.status === 'succeeded' ? net + payment.amountCents : net;
+    }
+    return payment.status === 'succeeded' || payment.status === 'pending'
+      ? net - payment.amountCents
+      : net;
   }, 0);
 }
 
@@ -51,8 +61,11 @@ export interface RefundAllocation {
 /**
  * Allocate a refund across succeeded charges, newest first, each capped at
  * that charge's remaining refundable balance (charge minus refunds already
- * attributed to its payment intent). Fails closed when the requested refund
- * exceeds the total refundable balance.
+ * attributed to its payment intent). PENDING refunds consume balance too:
+ * they are reserved rows written before Stripe runs, and counting them is
+ * what makes two concurrent money paths fail closed instead of both
+ * refunding the same charge. Fails closed when the requested refund exceeds
+ * the total refundable balance.
  */
 export function allocateRefund(
   payments: Array<Pick<ReservationPayment, 'kind' | 'amountCents' | 'status' | 'stripePaymentIntentId' | 'createdAt'>>,
@@ -60,16 +73,16 @@ export function allocateRefund(
 ): RefundAllocation[] {
   if (refundCents <= 0) return [];
 
-  const succeeded = payments.filter((payment) => payment.status === 'succeeded');
   const refundedByIntent = new Map<string | null, number>();
-  for (const payment of succeeded) {
+  for (const payment of payments) {
     if (payment.kind !== 'refund') continue;
+    if (payment.status !== 'succeeded' && payment.status !== 'pending') continue;
     const key = payment.stripePaymentIntentId;
     refundedByIntent.set(key, (refundedByIntent.get(key) ?? 0) + payment.amountCents);
   }
 
-  const charges = succeeded
-    .filter((payment) => payment.kind === 'charge')
+  const charges = payments
+    .filter((payment) => payment.kind === 'charge' && payment.status === 'succeeded')
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   const allocations: RefundAllocation[] = [];

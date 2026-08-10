@@ -195,6 +195,33 @@ describe('me routes', () => {
       });
     });
 
+    it('keeps the caller own email on bookings they organize', async () => {
+      signedInAs();
+      mockReservationService.listForMember.mockResolvedValue([fixtureReservation()]);
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/bookings', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data[0].member.email).toBe('alice@example.com');
+    });
+
+    it('redacts the organizer email from bookings the caller merely participates in', async () => {
+      // mem_2 is a guest on Alice's reservation: the organizer's email is
+      // PII and must not leak through the legacy serializer.
+      signedInAs({ memberId: 'mem_2' });
+      mockMemberService.getById.mockResolvedValue(fixtureMember({ id: 'mem_2', email: 'guest@example.com' }));
+      mockReservationService.listForMember.mockResolvedValue([fixtureReservation()]);
+
+      const bookings = await app.inject({ method: 'GET', url: '/api/me/bookings', headers: AUTH });
+      expect(bookings.statusCode).toBe(200);
+      expect(bookings.json().data[0].member.email).toBeNull();
+      expect(bookings.json().data[0].member.firstName).toBe('Alice');
+
+      const home = await app.inject({ method: 'GET', url: '/api/me/home', headers: AUTH });
+      expect(home.statusCode).toBe(200);
+      expect(home.json().data.upcomingBookings[0].member.email).toBeNull();
+    });
+
     it('lists reservations with participation status', async () => {
       signedInAs();
       mockReservationService.listForMember.mockResolvedValue([fixtureReservation()]);
