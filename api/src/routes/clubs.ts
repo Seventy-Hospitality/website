@@ -20,7 +20,7 @@ import {
 } from '@/lib/contexts/clubs';
 import { MAX_EVENT_IMAGE_BYTES, MediaValidationError } from '@/lib/contexts/media';
 import { error, success } from '@/src/lib/responses';
-import { serializeReservation } from '@/src/lib/reservations';
+import { serializeClubActivityReservation } from '@/src/lib/reservations';
 import {
   clubActivityQuerySchema,
   clubInvitationsSchema,
@@ -397,13 +397,15 @@ export async function clubRoutes(app: FastifyInstance) {
 
       try {
         // The clubs service gates membership (404 for outsiders); the
-        // bookings context serves the read.
+        // bookings context serves the read. Club membership is NOT booking
+        // participation, so the feed rides the reduced non-participant
+        // projection, never the detail serialization.
         await clubService.assertMember(req.params.id, memberId(req));
         const reservations = await reservationService.listForClub(req.params.id, parsed.data.filter);
         return success(
           reply,
           reservations.map((reservation) =>
-            serializeReservation(reservation, {
+            serializeClubActivityReservation(reservation, {
               timezone: VENUE_TIMEZONE,
               viewerMemberId: memberId(req),
             }),

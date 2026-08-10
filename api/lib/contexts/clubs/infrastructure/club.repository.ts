@@ -301,40 +301,54 @@ export class ClubRepository {
     });
   }
 
-  /** Withdraw (revoke) pending invitations SENT by a member; returns them. */
+  /** Withdraw (revoke) pending invitations SENT by a member; returns the rows revoked. */
   async withdrawPendingInvitationsBy(
     tx: TransactionContext,
     inviterId: string,
     respondedAt: Date,
   ): Promise<ClubInvitationRecord[]> {
-    const prisma = asPrismaTx(tx);
-    const rows = await prisma.clubInvitation.findMany({
-      where: { inviterId, status: 'pending' },
-    });
-    if (rows.length === 0) return [];
-    await prisma.clubInvitation.updateMany({
-      where: { id: { in: rows.map((row) => row.id) } },
-      data: { status: 'revoked', respondedAt },
-    });
-    return rows as ClubInvitationRecord[];
+    return this.withdrawPending(tx, { inviterId }, respondedAt);
   }
 
-  /** Withdraw (revoke) pending invitations RECEIVED by a member; returns them. */
+  /** Withdraw (revoke) pending invitations RECEIVED by a member; returns the rows revoked. */
   async withdrawPendingInvitationsTo(
     tx: TransactionContext,
     inviteeMemberId: string,
     respondedAt: Date,
   ): Promise<ClubInvitationRecord[]> {
+    return this.withdrawPending(tx, { inviteeMemberId }, respondedAt);
+  }
+
+  /**
+   * Find-then-revoke with a compare-and-set per row: the UPDATE re-checks
+   * status = 'pending' (like transitionInvitation), so an invitation a
+   * concurrent accept just claimed is skipped, never clobbered to revoked.
+   * The race is real: the account-deletion seam only advisory-locks clubs
+   * the member still belongs to, and a pending invite survives in a club
+   * they LEFT, where respond/withdraw would otherwise not serialize. Only
+   * rows actually revoked are returned, so the caller's audit trail matches
+   * what happened.
+   */
+  private async withdrawPending(
+    tx: TransactionContext,
+    scope: { inviterId: string } | { inviteeMemberId: string },
+    respondedAt: Date,
+  ): Promise<ClubInvitationRecord[]> {
     const prisma = asPrismaTx(tx);
     const rows = await prisma.clubInvitation.findMany({
-      where: { inviteeMemberId, status: 'pending' },
+      where: { ...scope, status: 'pending' },
     });
-    if (rows.length === 0) return [];
-    await prisma.clubInvitation.updateMany({
-      where: { id: { in: rows.map((row) => row.id) } },
-      data: { status: 'revoked', respondedAt },
-    });
-    return rows as ClubInvitationRecord[];
+    const revoked: ClubInvitationRecord[] = [];
+    for (const row of rows) {
+      const updated = await prisma.clubInvitation.updateMany({
+        where: { id: row.id, status: 'pending' },
+        data: { status: 'revoked', respondedAt },
+      });
+      if (updated.count > 0) {
+        revoked.push({ ...row, status: 'revoked', respondedAt } as ClubInvitationRecord);
+      }
+    }
+    return revoked;
   }
 
   // ── Invite links ──

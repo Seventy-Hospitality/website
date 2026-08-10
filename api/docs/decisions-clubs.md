@@ -103,6 +103,24 @@ clubs), on top of the settled plan. OPEN-decision recommendations from
     action re-derives outsider/member/owner from `club_members` inside the
     service (IDOR answers: outsider 404, member-on-owner-action 403,
     only-invitee-can-respond 404).
+15. **The activity feed serves a reduced, non-participant projection**
+    (review fix, 2026-08-10). Club membership is not booking participation:
+    `GET /api/clubs/:id/activity` emits per booking only schedule/resource
+    fields, the organizer's identity, a confirmed-attendee count, and the
+    viewer's OWN participation (`myParticipation`). Financials
+    (`amountPaidCents`, `hourlyRateCents`), per-guest RSVP statuses, the
+    invitedBy graph and the roster (which can include direct invitees who
+    are not club members) stay participation-gated behind
+    `GET /api/reservations/:id`, which 404s non-participants; the feed must
+    never serve what the detail endpoint withholds
+    (`serializeClubActivityReservation`).
+16. **Invitation withdrawal is compare-and-set** (review fix, 2026-08-10).
+    The account-deletion seam revokes pending invitations in clubs the
+    member may already have LEFT, which the per-club advisory-lock loop
+    does not cover; each revoke therefore re-checks `status = 'pending'`
+    in the UPDATE itself (like every other invitation transition) and only
+    rows actually revoked are returned/audited, so a concurrently-accepted
+    invite keeps its `accepted` status and membership row.
 
 ## Notification/outbox events for package F
 

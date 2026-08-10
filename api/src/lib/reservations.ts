@@ -104,6 +104,69 @@ export function serializeReservation(
 }
 
 /**
+ * The club activity feed's projection. Its audience is EVERY club member,
+ * not the booking's participants, so it is the NON-participant shape: no
+ * financials (amountPaidCents, hourlyRateCents), no per-guest RSVP status,
+ * no invitedBy graph, and no roster identities beyond the organizer. All of
+ * that is participation-gated on GET /api/reservations/:id (a
+ * non-participant gets a 404), and the feed must not leak what the detail
+ * endpoint refuses to serve. The one viewer-scoped exception is the
+ * caller's OWN participation; participants read the full roster and
+ * financials from the detail endpoint.
+ */
+export function serializeClubActivityReservation(
+  detail: ReservationDetailRecord,
+  options: { timezone: string; viewerMemberId: string },
+) {
+  const startMinutes = zonedMinutesSinceMidnight(detail.startsAt, options.timezone, detail.localDate);
+  const endMinutes = zonedMinutesSinceMidnight(detail.endsAt, options.timezone, detail.localDate);
+
+  const organizer = detail.participants.find((participant) => participant.role === 'organizer');
+  const viewer = detail.participants.find(
+    (participant) => participant.memberId === options.viewerMemberId,
+  );
+  const inviter = viewer?.invitedById
+    ? detail.participants.find((participant) => participant.memberId === viewer.invitedById)
+    : undefined;
+
+  return {
+    id: detail.id,
+    reference: detail.reference,
+    typeCode: detail.resourceType.code,
+    typeName: detail.resourceType.name,
+    resource: { id: detail.resource.id, name: detail.resource.name },
+    date: detail.localDate,
+    startTime: minutesToTimeLabel(startMinutes),
+    endTime: minutesToTimeLabel(endMinutes),
+    startsAt: detail.startsAt.toISOString(),
+    endsAt: detail.endsAt.toISOString(),
+    durationMinutes: endMinutes - startMinutes,
+    status: detail.status,
+    clubId: detail.clubId,
+    seriesId: detail.seriesId,
+    organizer: organizer
+      ? {
+          memberId: organizer.memberId,
+          firstName: organizer.member.firstName,
+          lastName: organizer.member.lastName,
+        }
+      : null,
+    /** Confirmed attendees (organizer included): the feed's "N going". */
+    confirmedCount: detail.participants.filter((participant) => participant.status === 'confirmed')
+      .length,
+    myParticipation: viewer
+      ? {
+          role: viewer.role,
+          status: viewer.status,
+          invitedByName: inviter
+            ? `${inviter.member.firstName} ${inviter.member.lastName}`.trim()
+            : null,
+        }
+      : null,
+  };
+}
+
+/**
  * The admin web's pre-cutover booking shape, served from reservations.
  *
  * The organizer's email is PII: it is included only for the admin surface

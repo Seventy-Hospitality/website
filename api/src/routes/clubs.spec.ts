@@ -462,42 +462,135 @@ describe('club routes', () => {
       expect(mockReservationService.listForClub).not.toHaveBeenCalled();
     });
 
+    function feedParticipant(
+      memberId: string,
+      firstName: string,
+      lastName: string,
+      role: 'organizer' | 'guest',
+      status: string,
+      extra: Record<string, unknown> = {},
+    ) {
+      return {
+        id: `rp_${memberId}`,
+        reservationId: 'rsv_1',
+        memberId,
+        role,
+        status,
+        invitedById: null,
+        viaClubId: null,
+        invitedAt: new Date('2026-08-01T00:00:00Z'),
+        respondedAt: null,
+        member: { id: memberId, firstName, lastName, email: `${memberId}@example.com` },
+        ...extra,
+      };
+    }
+
+    /**
+     * A club-linked booking the signed-in viewer (mem_1) does NOT
+     * participate in: organizer mem_2, a declined direct-invite guest who
+     * is not a club member (mem_3), a pending club-expanded guest (mem_4).
+     */
+    function feedReservation(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'rsv_1',
+        reference: 'BK-001000',
+        resourceTypeId: 'rt_1',
+        resourceId: 'crt_1',
+        organizerId: 'mem_2',
+        clubId: 'clb_1',
+        seriesId: null,
+        startsAt: new Date('2026-09-01T22:00:00.000Z'),
+        endsAt: new Date('2026-09-01T23:00:00.000Z'),
+        localDate: '2026-09-01',
+        status: 'confirmed',
+        hourlyRateCentsSnapshot: 2000,
+        amountPaidCents: 2000,
+        cancelRefundPercent: null,
+        createdByAdminId: null,
+        createdAt: new Date('2026-08-01T00:00:00Z'),
+        updatedAt: new Date('2026-08-01T00:00:00Z'),
+        resourceType: { id: 'rt_1', code: 'badminton_court', name: 'Badminton Court' },
+        resource: { id: 'crt_1', name: 'Court 1' },
+        participants: [
+          feedParticipant('mem_2', 'Bo', 'Li', 'organizer', 'confirmed'),
+          feedParticipant('mem_3', 'Zo', 'Outsider', 'guest', 'declined', { invitedById: 'mem_2' }),
+          feedParticipant('mem_4', 'Vi', 'Club', 'guest', 'pending', {
+            invitedById: 'mem_2',
+            viaClubId: 'clb_1',
+          }),
+        ],
+        payments: [],
+        claim: null,
+        pendingChange: null,
+        ...overrides,
+      };
+    }
+
     it('serves upcoming club-linked reservations by default', async () => {
       signedInAs();
-      mockReservationService.listForClub.mockResolvedValue([
-        {
-          id: 'rsv_1',
-          reference: 'BK-001000',
-          resourceTypeId: 'rt_1',
-          resourceId: 'crt_1',
-          organizerId: 'mem_1',
-          clubId: 'clb_1',
-          seriesId: null,
-          startsAt: new Date('2026-09-01T22:00:00.000Z'),
-          endsAt: new Date('2026-09-01T23:00:00.000Z'),
-          localDate: '2026-09-01',
-          status: 'confirmed',
-          hourlyRateCentsSnapshot: 2000,
-          amountPaidCents: 2000,
-          cancelRefundPercent: null,
-          createdByAdminId: null,
-          createdAt: new Date('2026-08-01T00:00:00Z'),
-          updatedAt: new Date('2026-08-01T00:00:00Z'),
-          resourceType: { id: 'rt_1', code: 'badminton_court', name: 'Badminton Court' },
-          resource: { id: 'crt_1', name: 'Court 1' },
-          participants: [],
-          payments: [],
-          claim: null,
-          pendingChange: null,
-        },
-      ]);
+      mockReservationService.listForClub.mockResolvedValue([feedReservation()]);
 
       const res = await app.inject({ method: 'GET', url: '/api/clubs/clb_1/activity', headers: AUTH });
 
       expect(res.statusCode).toBe(200);
       expect(mockClubService.assertMember).toHaveBeenCalledWith('clb_1', 'mem_1');
       expect(mockReservationService.listForClub).toHaveBeenCalledWith('clb_1', 'upcoming');
-      expect(res.json().data[0]).toMatchObject({ id: 'rsv_1', clubId: 'clb_1' });
+      expect(res.json().data[0]).toMatchObject({
+        id: 'rsv_1',
+        clubId: 'clb_1',
+        organizer: { memberId: 'mem_2', firstName: 'Bo', lastName: 'Li' },
+        confirmedCount: 1,
+        myParticipation: null,
+      });
+    });
+
+    it('never exposes financials, per-guest RSVPs, or the roster to a non-participant club member', async () => {
+      // The viewer (mem_1) is a club member but NOT a participant; the
+      // detail endpoint would 404 them, so the feed must not serve what it
+      // withholds: payment amounts, decline decisions, the invite graph,
+      // or the identities of guests who are not club members.
+      signedInAs();
+      mockReservationService.listForClub.mockResolvedValue([feedReservation()]);
+
+      const res = await app.inject({ method: 'GET', url: '/api/clubs/clb_1/activity', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      const item = res.json().data[0];
+      expect(item.amountPaidCents).toBeUndefined();
+      expect(item.hourlyRateCents).toBeUndefined();
+      expect(item.participants).toBeUndefined();
+      expect(item.pendingChange).toBeUndefined();
+      expect(res.body).not.toContain('declined');
+      expect(res.body).not.toContain('invitedById');
+      expect(res.body).not.toContain('mem_3'); // the non-member direct invitee
+      expect(res.body).not.toContain('Outsider');
+      expect(res.body).not.toContain('@example.com');
+    });
+
+    it("keeps the viewer's OWN participation when they are invited", async () => {
+      signedInAs();
+      mockReservationService.listForClub.mockResolvedValue([
+        feedReservation({
+          participants: [
+            feedParticipant('mem_2', 'Bo', 'Li', 'organizer', 'confirmed'),
+            feedParticipant('mem_1', 'Alice', 'Chen', 'guest', 'pending', {
+              invitedById: 'mem_2',
+              viaClubId: 'clb_1',
+            }),
+          ],
+        }),
+      ]);
+
+      const res = await app.inject({ method: 'GET', url: '/api/clubs/clb_1/activity', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      const item = res.json().data[0];
+      expect(item.myParticipation).toEqual({
+        role: 'guest',
+        status: 'pending',
+        invitedByName: 'Bo Li',
+      });
+      expect(item.participants).toBeUndefined(); // roster still detail-only
     });
 
     it('honors the past filter', async () => {
