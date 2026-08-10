@@ -1,33 +1,29 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   accountLinkingService,
-  bookingService,
   clubEventService,
   memberRepo,
   memberService,
   membershipService,
   planRepo,
+  reservationService,
+  resourceRepo,
+  resourceTypeRepo,
+  VENUE_TIMEZONE,
 } from '@/lib/container';
-import {
-  BookingNotFoundError,
-  BookingInPastError,
-  BookingTooFarInAdvanceError,
-  CancellationDeadlinePassedError,
-  FacilityNotFoundError,
-  InactiveMembershipError,
-  MaxBookingsExceededError,
-  OutsideOperatingHoursError,
-  SlotUnavailableError,
-} from '@/lib/contexts/bookings';
 import { MemberNotFoundError } from '@/lib/contexts/members';
 import { MembershipError, PlanNotFoundError } from '@/lib/contexts/memberships';
 import type { LinkedCredentials, Provider } from '@/lib/contexts/identity';
 import { handleIdentityError } from '@/src/lib/identity-errors';
 import { error, success } from '@/src/lib/responses';
-import { createSelfBookingSchema, linkProviderSchema, meCheckoutSchema } from '@/src/lib/validation';
+import {
+  handleReservationError,
+  serializeLegacyBooking,
+  serializeReservation,
+} from '@/src/lib/reservations';
+import { createSelfBookingSchema, linkProviderSchema, meCheckoutSchema, myReservationsQuerySchema } from '@/src/lib/validation';
 
 type MemberProfile = Awaited<ReturnType<typeof memberService.getById>>;
-type UpcomingBooking = Awaited<ReturnType<typeof bookingService.getMyBookings>>[number];
 type ClubEvent = Awaited<ReturnType<typeof clubEventService.list>>[number];
 
 function serializeMember(member: MemberProfile) {
@@ -51,22 +47,6 @@ function serializeMember(member: MemberProfile) {
           },
         }
       : null,
-  };
-}
-
-function serializeBooking(
-  booking: UpcomingBooking,
-  facilityNames: Map<string, string>,
-) {
-  return {
-    id: booking.id,
-    facilityType: booking.facilityType,
-    facilityId: booking.facilityId,
-    facilityName: facilityNames.get(`${booking.facilityType}:${booking.facilityId}`) ?? booking.facilityId,
-    date: booking.date.toISOString().slice(0, 10),
-    startTime: booking.startTime,
-    endTime: booking.endTime,
-    status: booking.status,
   };
 }
 
@@ -109,34 +89,13 @@ function currentMember(req: FastifyRequest): Promise<MemberProfile> {
   return memberService.getById(memberId(req));
 }
 
-async function getFacilityNames() {
-  const [courts, showers] = await Promise.all([
-    bookingService.listAllCourts(),
-    bookingService.listAllShowers(),
-  ]);
-
-  return new Map<string, string>([
-    ...courts.map((court) => [`court:${court.id}`, court.name] as const),
-    ...showers.map((shower) => [`shower:${shower.id}`, shower.name] as const),
-  ]);
-}
-
 function handleMemberError(reply: FastifyReply, err: unknown) {
   // Only reachable if the profile was deleted between the principal read and
   // the request being served.
   if (err instanceof MemberNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
-  if (err instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
-  if (err instanceof BookingNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
-  if (err instanceof SlotUnavailableError) return error(reply, 'SLOT_UNAVAILABLE', err.message, 409);
-  if (err instanceof OutsideOperatingHoursError) return error(reply, 'OUTSIDE_HOURS', err.message, 422);
-  if (err instanceof MaxBookingsExceededError) return error(reply, 'MAX_BOOKINGS', err.message, 422);
-  if (err instanceof BookingTooFarInAdvanceError) return error(reply, 'TOO_FAR_ADVANCE', err.message, 422);
-  if (err instanceof BookingInPastError) return error(reply, 'BOOKING_IN_PAST', err.message, 422);
-  if (err instanceof CancellationDeadlinePassedError) return error(reply, 'DEADLINE_PASSED', err.message, 422);
-  if (err instanceof InactiveMembershipError) return error(reply, 'INACTIVE_MEMBERSHIP', err.message, 403);
   if (err instanceof PlanNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof MembershipError) return error(reply, 'MEMBERSHIP_ERROR', err.message, 400);
-  throw err;
+  return handleReservationError(reply, err);
 }
 
 export async function meRoutes(app: FastifyInstance) {
@@ -153,37 +112,59 @@ export async function meRoutes(app: FastifyInstance) {
 
   app.get('/home', { config: { policy: 'member' } }, async (req, reply) => {
     try {
-      const [member, events, facilityNames, bookings] = await Promise.all([
+      const [member, events, reservations] = await Promise.all([
         currentMember(req),
         clubEventService.list({ includeInactive: false, includePast: false }),
-        getFacilityNames(),
-        bookingService.getMyBookings(memberId(req)),
+        reservationService.listForMember(memberId(req), 'upcoming'),
       ]);
 
       return success(reply, {
         member: serializeMember(member),
         spotlightEvents: events.slice(0, 6).map(serializeEvent),
-        upcomingBookings: bookings.slice(0, 8).map((booking) => serializeBooking(booking, facilityNames)),
+        upcomingBookings: reservations
+          .slice(0, 8)
+          .map((reservation) => serializeLegacyBooking(reservation, VENUE_TIMEZONE)),
+        upcomingReservations: reservations
+          .slice(0, 8)
+          .map((reservation) =>
+            serializeReservation(reservation, { timezone: VENUE_TIMEZONE, viewerMemberId: memberId(req) }),
+          ),
       });
     } catch (err) {
       return handleMemberError(reply, err);
     }
   });
 
-  // ── Bookings ──
+  // ── Reservations ──
 
-  app.get('/bookings', { config: { policy: 'member' } }, async (req, reply) => {
-    const [facilityNames, bookings] = await Promise.all([
-      getFacilityNames(),
-      bookingService.getMyBookings(memberId(req)),
-    ]);
+  app.get('/reservations', { config: { policy: 'member' } }, async (req, reply) => {
+    const parsed = myReservationsQuerySchema.safeParse(req.query);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
+    const reservations = await reservationService.listForMember(memberId(req), parsed.data.filter);
     return success(
       reply,
-      bookings.map((booking) => serializeBooking(booking, facilityNames)),
+      reservations.map((reservation) =>
+        serializeReservation(reservation, { timezone: VENUE_TIMEZONE, viewerMemberId: memberId(req) }),
+      ),
     );
   });
 
+  // ── Bookings (member-portal compat over the reservation service) ──
+
+  app.get('/bookings', { config: { policy: 'member' } }, async (req, reply) => {
+    const reservations = await reservationService.listForMember(memberId(req), 'upcoming');
+    return success(
+      reply,
+      reservations.map((reservation) => serializeLegacyBooking(reservation, VENUE_TIMEZONE)),
+    );
+  });
+
+  // The portal books one slot on a named facility. The reservation is
+  // created through the standard checkout (pending_payment + hold) and
+  // confirmed through the payment port in the same request.
+  // TODO(package-c): with real Stripe this confirm fails closed until the
+  // portal grows a PaymentSheet; the mobile flow uses /api/reservations.
   app.post('/bookings', { config: { policy: 'active-member' } }, async (req, reply) => {
     const parsed = createSelfBookingSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -191,22 +172,21 @@ export async function meRoutes(app: FastifyInstance) {
     }
 
     try {
-      const booking = parsed.data.facilityType === 'court'
-        ? await bookingService.bookCourt(
-            parsed.data.facilityId,
-            parsed.data.date,
-            parsed.data.startTime,
-            memberId(req),
-          )
-        : await bookingService.bookShower(
-            parsed.data.facilityId,
-            parsed.data.date,
-            parsed.data.startTime,
-            memberId(req),
-          );
+      const resource = await resourceRepo.getById(parsed.data.facilityId);
+      if (!resource) return error(reply, 'NOT_FOUND', `Resource not found: ${parsed.data.facilityId}`, 404);
+      const type = (await resourceTypeRepo.getById(resource.typeId))!;
 
-      const facilityNames = await getFacilityNames();
-      return success(reply, serializeBooking(booking, facilityNames), 201);
+      const created = await reservationService.create({
+        typeCode: type.code,
+        date: parsed.data.date,
+        slots: [parsed.data.startTime],
+        organizerId: memberId(req),
+        resourceId: resource.id,
+      });
+      const confirmed = await reservationService.confirm(created.reservation.id, {
+        memberId: memberId(req),
+      });
+      return success(reply, serializeLegacyBooking(confirmed, VENUE_TIMEZONE), 201);
     } catch (err) {
       return handleMemberError(reply, err);
     }
@@ -214,14 +194,16 @@ export async function meRoutes(app: FastifyInstance) {
 
   // Cancelling is deliberately `member`, not `active-member`: a lapsed member
   // must still be able to release a slot they are holding, and ownership is
-  // checked by the booking service.
+  // checked by the reservation service.
   app.delete<{ Params: { bookingId: string } }>(
     '/bookings/:bookingId',
     { config: { policy: 'member' } },
     async (req, reply) => {
       try {
-        await bookingService.cancel(req.params.bookingId, memberId(req));
-        return success(reply, { cancelled: true });
+        const { refundCents } = await reservationService.cancel(req.params.bookingId, {
+          memberId: memberId(req),
+        });
+        return success(reply, { cancelled: true, refundCents });
       } catch (err) {
         return handleMemberError(reply, err);
       }

@@ -11,20 +11,14 @@ Domain code has ZERO framework dependencies. No Next.js, no Prisma, no Stripe im
 ```
 lib/
 ├── kernel/                       # Shared kernel — DDD primitives (zero deps)
-│   ├── aggregate-root.ts         # AggregateRoot<TState, TEvent> base class
-│   ├── aggregate-repository.ts   # Abstract repository contract
-│   ├── domain-event.ts           # DomainEvent<TType, TData> interface
-│   ├── replay-event-record.ts    # Event replay types
 │   ├── unit-of-work.ts           # Abstract UoW + opaque TransactionContext
-│   ├── version-conflict-error.ts # Optimistic concurrency error
-│   ├── retry-on-conflict.ts      # Retry utility
+│   ├── venue-time.ts             # Venue wall-clock <-> instant math (one IANA zone)
 │   └── index.ts                  # Barrel export
 ├── infrastructure/               # Concrete implementations (Prisma, etc.)
 │   ├── prisma-tx.ts              # Opaque TX ↔ Prisma TX conversion
 │   ├── prisma-unit-of-work.ts    # Concrete UoW backed by Prisma
-│   ├── event-store.ts            # Append events to Event table
-│   ├── event-replay.ts           # Replay events through reducers
-│   ├── event-sourced-repository.ts # Load/save aggregates via events
+│   ├── event-store.ts            # Same-transaction audit log appends
+│   ├── outbox.ts                 # Outbox dispatcher over the audit log
 │   └── index.ts
 ├── contexts/                     # Bounded contexts
 │   ├── members/
@@ -46,6 +40,11 @@ lib/
 │   │   ├── domain/               # Principal, session/linking policies, token logic
 │   │   ├── application/          # Authentication, sessions, account linking
 │   │   └── infrastructure/       # Repos, argon2, JWT, Google/Apple verifiers
+│   ├── bookings/                 # Scheduling/reservations BC (see below)
+│   │   ├── domain/               # Slot math, tiers, participant machine, refund policy
+│   │   ├── application/          # ReservationService, ResourceClaimService
+│   │   └── infrastructure/       # Repositories, stub payment adapter (package C seam)
+│   ├── events/                   # Club events; claims courts via ResourceClaimPort
 │   └── communications/
 │       ├── domain/               # Email templates (pure data)
 │       ├── application/          # NotificationService (what to send)
@@ -118,39 +117,69 @@ Allowed import paths from outside a BC:
 - `@/lib/contexts/{bc}` (main barrel)
 - `@/contexts/{bc}/domain` (domain types only)
 
-## Event Sourcing
+## Audit Log + Transactional Outbox (not event sourcing)
 
-### Event Store
-
-All domain mutations are recorded as events in the `events` table:
+Relational state is the source of truth; aggregates are NOT event-sourced.
+The `events` table serves two purposes:
 
 ```
-Event { seq, streamType, streamId, eventType, data, occurredAt, recordedAt }
+Event { seq, streamType, streamId, eventType, data, occurredAt, recordedAt, actorId, dispatchedAt }
 ```
 
-### Aggregate Lifecycle
+1. **Audit log**: every domain mutation appends its `reservation.*` /
+   identity events via `EventStore.append` INSIDE the same transaction as the
+   mutation, with the acting principal as `actorId`. This yields a complete
+   history feed (and the raw material for the quick-book heuristic) without a
+   second write model.
+2. **Transactional outbox**: rows with `dispatchedAt IS NULL` are pending.
+   The dispatcher (`lib/infrastructure/outbox.ts`, exposed as
+   `POST /api/cron/dispatch-outbox`) selects them with
+   `FOR UPDATE SKIP LOCKED`, hands them to an `OutboxSink` and marks them
+   dispatched in one transaction. The sink is a no-op until notifications
+   land (package F).
 
-1. **Load**: Repository fetches events for stream → replays through reducer → returns hydrated aggregate
-2. **Mutate**: Application service calls domain methods → aggregate applies events internally
-3. **Save**: Repository appends uncommitted events to event store within transaction
-4. **Concurrency**: Version check (last seq) prevents lost updates
+Never use seq-cursor checkpoints for consumers: `seq` is assigned at insert
+but transactions commit out of order, so a cursor past N+1 can permanently
+skip N. Undispatched-row selection has no gap hazard and lets concurrent
+dispatchers share the backlog.
 
-### Reducers
+Why not event sourcing: the one invariant that matters (no overlapping
+claims) is cross-aggregate and lives in a Postgres exclusion constraint;
+every read in the product is an indexed relational query; and per-stream
+optimistic concurrency adds nothing on top of the constraint. The former
+ES kernel (AggregateRoot, EventSourcedAggregateRepository, EventReplay,
+stream_checkpoints) has been deleted; if true ES is ever wanted, the kernel
+first needs a per-stream version column with a
+`(streamType, streamId, version)` unique.
 
-Pure functions that fold events into state. Must handle both legacy and new event types for backwards compatibility:
+## Scheduling (reservations)
 
-```typescript
-function memberReducer(state: Member, event: ReplayEventRecord): Member {
-  switch (event.eventType) {
-    case 'MemberCreated':
-      return { ...state, ...event.data as MemberCreatedData };
-    case 'MemberUpdated':
-      return { ...state, ...event.data as MemberUpdatedData };
-    default:
-      return state;
-  }
-}
-```
+The bookings BC owns facility scheduling:
+
+- **resource_types** carry ALL policy (slot grid, operating hours as minutes
+  from venue-local midnight with the end allowed past 1440, rate, horizon,
+  per-member daily limit, cancellation window, `minTier`); **resources** are
+  the physical units.
+- **slot_claims** is the single physical owner of time on a resource. Member
+  reservations and club-event court blocks share ONE DB-enforced no-overlap
+  invariant, a btree_gist exclusion constraint (raw SQL migration):
+  `EXCLUDE USING gist ("resourceId" WITH =, tstzrange("startsAt","endsAt",'[)') WITH &&) WHERE (status = 'active')`.
+  The repositories map a lost race (SQLSTATE 23P01/40P01) to
+  `SlotUnavailableError`; UPDATEs are checked against other rows only, which
+  gives reschedules self-exclusion for free.
+- **Checkout**: no hold during slot-select/invite. Confirm & pay inserts the
+  reservation as `pending_payment` plus its active claim with a ~12-minute
+  TTL in one transaction (retrying the next candidate resource on a lost
+  race), then creates the PaymentIntent OUTSIDE the transaction through
+  `BookingPaymentPort` (stubbed until package C). The sweeper cron
+  (`/api/cron/expire-holds`) checks the intent before expiring a hold.
+- **Per-member daily limit**: cross-aggregate, so the booking transaction
+  takes `pg_advisory_xact_lock(hashtext(memberId))` before counting.
+- **Time model**: UTC instants (`timestamptz`) + one venue IANA zone
+  (`VENUE_TIMEZONE`); wall-clock math lives in `lib/kernel/venue-time.ts`.
+  A range counts against the local date of its start.
+- **Events BC** claims courts exclusively through `ResourceClaimPort`; it
+  never writes `slot_claims` directly.
 
 ## Dependency Wiring
 
@@ -277,3 +306,10 @@ The stale event-image cleanup job is exposed both ways:
 
 - HTTP: `POST /api/cron/cleanup-event-images`
 - CLI: `npm run job:cleanup-event-images`
+
+Scheduling crons (HTTP only):
+
+- `POST /api/cron/expire-holds` — release stale pending_payment holds
+  (confirming instead when the payment actually succeeded)
+- `POST /api/cron/dispatch-outbox` — hand undispatched audit rows to the
+  outbox sink (a no-op until package F wires notifications)

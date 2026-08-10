@@ -98,5 +98,5 @@ stripe listen --forward-to localhost:3001/api/webhooks/stripe
 
 | Document | Location | Purpose |
 |----------|----------|---------|
-| `api/ARCHITECTURE.md` | API | DDD architecture, layer rules, event sourcing |
+| `api/ARCHITECTURE.md` | API | DDD architecture, layer rules, audit log + outbox, scheduling |
 | `api/DESIGN_SYSTEM.md` | API | UI tokens, typography, spacing, component usage |

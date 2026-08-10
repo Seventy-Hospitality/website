@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 
-const { mockMembershipService, mockMediaService, mockDb, mockMembershipChecker } = vi.hoisted(() => ({
+const { mockMembershipService, mockMediaService, mockDb, mockMembershipChecker, mockReservationService, mockOutboxDispatcher } = vi.hoisted(() => ({
   mockMembershipService: {
     syncFromStripe: vi.fn(),
   },
@@ -19,12 +19,20 @@ const { mockMembershipService, mockMediaService, mockDb, mockMembershipChecker }
   mockMembershipChecker: {
     hasActiveMembership: vi.fn().mockResolvedValue(true),
   },
+  mockReservationService: {
+    expireStaleHolds: vi.fn().mockResolvedValue({ expired: 0, confirmed: 0 }),
+  },
+  mockOutboxDispatcher: {
+    dispatch: vi.fn().mockResolvedValue({ dispatched: 0 }),
+  },
 }));
 
 vi.mock('@/lib/container', () => ({
   membershipService: mockMembershipService,
   mediaService: mockMediaService,
   membershipChecker: mockMembershipChecker,
+  reservationService: mockReservationService,
+  outboxDispatcher: mockOutboxDispatcher,
 }));
 
 vi.mock('@/lib/db', () => ({
@@ -52,6 +60,38 @@ describe('cron routes', () => {
       deletedImageUrls: ['/uploads/event-images/old.png'],
       cutoff: new Date('2026-04-03T12:00:00.000Z'),
     });
+  });
+
+  it('sweeps expired holds behind the cron secret', async () => {
+    mockReservationService.expireStaleHolds.mockResolvedValue({ expired: 2, confirmed: 1 });
+
+    const denied = await app.inject({ method: 'POST', url: '/expire-holds' });
+    expect(denied.statusCode).toBe(401);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/expire-holds',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ expired: 2, confirmed: 1 });
+  });
+
+  it('dispatches the outbox behind the cron secret', async () => {
+    mockOutboxDispatcher.dispatch.mockResolvedValue({ dispatched: 5 });
+
+    const denied = await app.inject({ method: 'POST', url: '/dispatch-outbox' });
+    expect(denied.statusCode).toBe(401);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/dispatch-outbox',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ dispatched: 5 });
   });
 
   it('rejects cleanup requests without the cron secret', async () => {

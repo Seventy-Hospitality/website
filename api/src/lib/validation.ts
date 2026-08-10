@@ -119,35 +119,109 @@ export const membersQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(250).default(20),
 });
 
-// ── Bookings ──
+// ── Scheduling ──
 
+export const dateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+/** "HH:MM" venue wall clock; hours may reach 24+ for past-midnight slots. */
+export const slotLabelSchema = z.string().regex(/^\d{2}:\d{2}$/);
+
+/** Admin compat: create a single-slot booking on a specific resource. */
 export const createBookingSchema = z.object({
   memberId: z.string().min(1),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  startTime: z.string().regex(/^\d{2}:\d{2}$/),
+  date: dateKeySchema,
+  startTime: slotLabelSchema,
 });
 
+/** Member-portal compat: book one slot on a named facility. */
 export const createSelfBookingSchema = z.object({
   facilityType: z.enum(['court', 'shower']),
   facilityId: z.string().min(1),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  startTime: z.string().regex(/^\d{2}:\d{2}$/),
+  date: dateKeySchema,
+  startTime: slotLabelSchema,
 });
 
 export const availabilityQuerySchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  date: dateKeySchema,
+  days: z.coerce.number().int().positive().max(31).optional(),
 });
 
-export const createFacilitySchema = z.object({
-  name: z.string().min(1).max(100),
+export const reservationQuoteSchema = z.object({
+  typeCode: z.string().min(1).max(100),
+  date: dateKeySchema,
+  slots: z.array(slotLabelSchema).min(1).max(48),
+});
+
+export const createReservationSchema = reservationQuoteSchema.extend({
+  invitees: z
+    .object({
+      memberIds: z.array(z.string().min(1)).max(50).optional(),
+      // TODO(package-d): clubIds expand to member ids once clubs exist.
+      clubIds: z.array(z.string().min(1)).max(20).optional(),
+    })
+    .optional(),
+});
+
+export const rescheduleReservationSchema = z.object({
+  date: dateKeySchema,
+  slots: z.array(slotLabelSchema).min(1).max(48),
+});
+
+export const respondReservationSchema = z.object({
+  response: z.enum(['accept', 'decline']),
+});
+
+export const addParticipantsSchema = z.object({
+  memberIds: z.array(z.string().min(1)).min(1).max(50),
+});
+
+export const myReservationsQuerySchema = z.object({
+  filter: z.enum(['upcoming', 'past', 'all']).default('upcoming'),
+});
+
+export const adminReservationsQuerySchema = z.object({
+  date: dateKeySchema.optional(),
+  includeInactive: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((value) => value === 'true'),
+});
+
+export const memberSearchQuerySchema = z.object({
+  q: z.string().trim().min(1).max(100),
+  limit: z.coerce.number().int().positive().max(25).default(10),
+});
+
+export const createResourceTypeSchema = z.object({
+  code: z.string().trim().min(1).max(100).regex(/^[a-z0-9_]+$/),
+  name: z.string().trim().min(1).max(100),
   slotDurationMinutes: z.number().int().positive().optional(),
-  operatingHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-  operatingHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-  maxAdvanceDays: z.number().int().positive().optional(),
-  maxBookingsPerMemberPerDay: z.number().int().positive().optional(),
-  cancellationDeadlineMinutes: z.number().int().min(0).optional(),
+  opStartMinutes: z.number().int().min(0).max(1440),
+  opEndMinutes: z.number().int().min(0).max(2880),
+  hourlyRateCents: z.number().int().min(0),
+  maxAdvanceDays: z.number().int().positive(),
+  maxReservationsPerMemberPerDay: z.number().int().positive(),
+  cancellationDeadlineMinutes: z.number().int().min(0),
+  minTier: z.enum(['member', 'pro']).optional(),
+  active: z.boolean().optional(),
+  displayOrder: z.number().int().min(0).optional(),
 });
 
+export const updateResourceTypeSchema = createResourceTypeSchema.omit({ code: true }).partial();
+
+export const createResourceSchema = z.object({
+  typeId: z.string().min(1),
+  name: z.string().trim().min(1).max(100),
+  active: z.boolean().optional(),
+  displayOrder: z.number().int().min(0).optional(),
+});
+
+export const updateResourceSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  active: z.boolean().optional(),
+  displayOrder: z.number().int().min(0).optional(),
+});
+
+/** Admin compat: legacy court/shower config edits map onto the type. */
 export const updateFacilitySchema = z.object({
   name: z.string().min(1).max(100).optional(),
   slotDurationMinutes: z.number().int().positive().optional(),
@@ -157,6 +231,10 @@ export const updateFacilitySchema = z.object({
   maxBookingsPerMemberPerDay: z.number().int().positive().optional(),
   cancellationDeadlineMinutes: z.number().int().min(0).optional(),
   active: z.boolean().optional(),
+});
+
+export const createFacilitySchema = updateFacilitySchema.extend({
+  name: z.string().min(1).max(100),
 });
 
 // ── Events ──

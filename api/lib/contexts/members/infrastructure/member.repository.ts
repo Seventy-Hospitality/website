@@ -73,6 +73,27 @@ export class MemberRepository {
     return { data: data as unknown as MemberWithRelations[], total, page: params.page, limit: params.limit };
   }
 
+  /**
+   * Member-directory prefix search by name. Members only by construction:
+   * staff live in users, never in this table.
+   */
+  async searchByNamePrefix(query: string, limit: number): Promise<Array<Pick<Member, 'id' | 'firstName' | 'lastName'>>> {
+    const terms = query.split(/\s+/).filter(Boolean);
+    return this.prisma.member.findMany({
+      where: {
+        AND: terms.map((term) => ({
+          OR: [
+            { firstName: { startsWith: term, mode: 'insensitive' } },
+            { lastName: { startsWith: term, mode: 'insensitive' } },
+          ],
+        })),
+      },
+      select: { id: true, firstName: true, lastName: true },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      take: limit,
+    });
+  }
+
   async getById(id: string): Promise<MemberWithRelations | null> {
     const member = await this.prisma.member.findUnique({
       where: { id },

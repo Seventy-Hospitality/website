@@ -29,6 +29,11 @@ export class MemberService {
     return this.repo.list(query);
   }
 
+  /** Member-facing directory search: names only, never emails or staff. */
+  async search(query: string, limit: number) {
+    return this.repo.searchByNamePrefix(query, limit);
+  }
+
   async getById(id: string) {
     const member = await this.repo.getById(id);
     if (!member) throw new MemberNotFoundError(id);

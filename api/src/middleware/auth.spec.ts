@@ -22,10 +22,14 @@ const { mockSessionService, mockMembershipChecker, containerStub } = vi.hoisted(
       memberRepo: {},
       planRepo: {},
       userRepo: {},
-      bookingService: {},
+      reservationService: {},
+      resourceRepo: {},
+      resourceTypeRepo: {},
+      outboxDispatcher: {},
       clubEventService: {},
       mediaService: {},
       stripeGateway: {},
+      VENUE_TIMEZONE: 'America/New_York',
     },
   };
 });
@@ -43,6 +47,7 @@ import { eventRoutes } from '@/src/routes/events';
 import { mediaRoutes } from '@/src/routes/media';
 import { meRoutes } from '@/src/routes/me';
 import { memberRoutes } from '@/src/routes/members';
+import { reservationRoutes } from '@/src/routes/reservations';
 import { stripeRoutes } from '@/src/routes/stripe';
 import { uploadAssetRoutes } from '@/src/routes/uploads';
 import { webhookRoutes } from '@/src/routes/webhooks';
@@ -138,6 +143,7 @@ describe('route policy boot assertion', () => {
       { routes: webhookRoutes, prefix: '/api/webhooks' },
       { routes: cronRoutes, prefix: '/api/cron' },
       { routes: bookingRoutes, prefix: '/api' },
+      { routes: reservationRoutes, prefix: '/api' },
       { routes: eventRoutes, prefix: '/api/events' },
       { routes: mediaRoutes, prefix: '/api/media' },
       { routes: meRoutes, prefix: '/api/me' },

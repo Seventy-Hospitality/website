@@ -4,7 +4,9 @@ import { MemberNotFoundError } from '@/lib/contexts/members';
 
 const {
   mockAccountLinkingService,
-  mockBookingService,
+  mockReservationService,
+  mockResourceRepo,
+  mockResourceTypeRepo,
   mockClubEventService,
   mockMemberRepo,
   mockMemberService,
@@ -18,13 +20,14 @@ const {
     linkProvider: vi.fn(),
     unlinkProvider: vi.fn(),
   },
-  mockBookingService: {
-    getMyBookings: vi.fn().mockResolvedValue([]),
-    listAllCourts: vi.fn().mockResolvedValue([]),
-    listAllShowers: vi.fn().mockResolvedValue([]),
-    bookCourt: vi.fn(),
-    cancel: vi.fn().mockResolvedValue(undefined),
+  mockReservationService: {
+    listForMember: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    confirm: vi.fn(),
+    cancel: vi.fn().mockResolvedValue({ refundCents: 0 }),
   },
+  mockResourceRepo: { getById: vi.fn() },
+  mockResourceTypeRepo: { getById: vi.fn() },
   mockClubEventService: { list: vi.fn().mockResolvedValue([]) },
   mockMemberRepo: { setStripeCustomerId: vi.fn().mockResolvedValue(undefined) },
   mockMemberService: { getById: vi.fn() },
@@ -39,7 +42,9 @@ const {
 
 vi.mock('@/lib/container', () => ({
   accountLinkingService: mockAccountLinkingService,
-  bookingService: mockBookingService,
+  reservationService: mockReservationService,
+  resourceRepo: mockResourceRepo,
+  resourceTypeRepo: mockResourceTypeRepo,
   clubEventService: mockClubEventService,
   memberRepo: mockMemberRepo,
   memberService: mockMemberService,
@@ -47,6 +52,7 @@ vi.mock('@/lib/container', () => ({
   membershipChecker: mockMembershipChecker,
   planRepo: mockPlanRepo,
   sessionService: mockSessionService,
+  VENUE_TIMEZONE: 'America/New_York',
 }));
 
 import { buildTestApp } from '@/src/test/app';
@@ -61,6 +67,47 @@ function fixtureMember(overrides: Record<string, unknown> = {}) {
     phone: null,
     stripeCustomerId: 'cus_1',
     membership: null,
+    ...overrides,
+  };
+}
+
+function fixtureReservation(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'rsv_1',
+    reference: 'BK-001000',
+    resourceTypeId: 'rt_badminton_court',
+    resourceId: 'crt_1',
+    organizerId: 'mem_1',
+    clubId: null,
+    seriesId: null,
+    // 18:00-19:00 America/New_York on 2026-09-01
+    startsAt: new Date('2026-09-01T22:00:00.000Z'),
+    endsAt: new Date('2026-09-01T23:00:00.000Z'),
+    localDate: '2026-09-01',
+    status: 'confirmed',
+    hourlyRateCentsSnapshot: 2000,
+    amountPaidCents: 2000,
+    createdByAdminId: null,
+    createdAt: new Date('2026-08-01T00:00:00Z'),
+    updatedAt: new Date('2026-08-01T00:00:00Z'),
+    resourceType: { id: 'rt_badminton_court', code: 'badminton_court', name: 'Badminton Court' },
+    resource: { id: 'crt_1', name: 'Court 1' },
+    participants: [
+      {
+        id: 'rp_1',
+        reservationId: 'rsv_1',
+        memberId: 'mem_1',
+        role: 'organizer',
+        status: 'confirmed',
+        invitedById: null,
+        viaClubId: null,
+        invitedAt: new Date('2026-08-01T00:00:00Z'),
+        respondedAt: null,
+        member: { id: 'mem_1', firstName: 'Alice', lastName: 'Chen', email: 'alice@example.com' },
+      },
+    ],
+    payments: [],
+    claim: { id: 'clm_1', status: 'active', expiresAt: null },
     ...overrides,
   };
 }
@@ -87,9 +134,8 @@ describe('me routes', () => {
     vi.clearAllMocks();
     mockSessionService.validateAccessToken.mockRejectedValue(new SessionExpiredError());
     mockMembershipChecker.hasActiveMembership.mockResolvedValue(true);
-    mockBookingService.getMyBookings.mockResolvedValue([]);
-    mockBookingService.listAllCourts.mockResolvedValue([]);
-    mockBookingService.listAllShowers.mockResolvedValue([]);
+    mockReservationService.listForMember.mockResolvedValue([]);
+    mockReservationService.cancel.mockResolvedValue({ refundCents: 0 });
     mockClubEventService.list.mockResolvedValue([]);
     mockPlanRepo.list.mockResolvedValue([]);
     app = await buildTestApp({ routes: meRoutes, prefix: '/api/me' });
@@ -130,13 +176,41 @@ describe('me routes', () => {
   });
 
   describe('bookings', () => {
-    it('lists the principal member bookings', async () => {
+    it('lists the principal member reservations in the legacy shape', async () => {
       signedInAs();
+      mockReservationService.listForMember.mockResolvedValue([fixtureReservation()]);
 
       const res = await app.inject({ method: 'GET', url: '/api/me/bookings', headers: AUTH });
 
       expect(res.statusCode).toBe(200);
-      expect(mockBookingService.getMyBookings).toHaveBeenCalledWith('mem_1');
+      expect(mockReservationService.listForMember).toHaveBeenCalledWith('mem_1', 'upcoming');
+      expect(res.json().data[0]).toMatchObject({
+        id: 'rsv_1',
+        facilityType: 'court',
+        facilityName: 'Court 1',
+        date: '2026-09-01',
+        startTime: '18:00',
+        endTime: '19:00',
+        status: 'confirmed',
+      });
+    });
+
+    it('lists reservations with participation status', async () => {
+      signedInAs();
+      mockReservationService.listForMember.mockResolvedValue([fixtureReservation()]);
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/me/reservations?filter=upcoming',
+        headers: AUTH,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data[0]).toMatchObject({
+        reference: 'BK-001000',
+        typeCode: 'badminton_court',
+        myParticipation: { role: 'organizer', status: 'confirmed' },
+      });
     });
 
     it('requires an active membership to book', async () => {
@@ -152,20 +226,20 @@ describe('me routes', () => {
 
       expect(res.statusCode).toBe(403);
       expect(res.json().error.code).toBe('INACTIVE_MEMBERSHIP');
-      expect(mockBookingService.bookCourt).not.toHaveBeenCalled();
+      expect(mockReservationService.create).not.toHaveBeenCalled();
     });
 
-    it('books for the principal member', async () => {
+    it('books for the principal member on the named resource', async () => {
       signedInAs();
-      mockBookingService.bookCourt.mockResolvedValue({
-        id: 'bk_1',
-        facilityType: 'court',
-        facilityId: 'crt_1',
-        date: new Date('2026-09-01T00:00:00Z'),
-        startTime: '18:00',
-        endTime: '19:00',
-        status: 'confirmed',
+      mockResourceRepo.getById.mockResolvedValue({ id: 'crt_1', typeId: 'rt_badminton_court', name: 'Court 1', active: true });
+      mockResourceTypeRepo.getById.mockResolvedValue({ id: 'rt_badminton_court', code: 'badminton_court' });
+      mockReservationService.create.mockResolvedValue({
+        reservation: fixtureReservation({ status: 'pending_payment' }),
+        clientSecret: 'secret',
+        holdExpiresAt: new Date(),
+        totalCents: 1000,
       });
+      mockReservationService.confirm.mockResolvedValue(fixtureReservation());
 
       const res = await app.inject({
         method: 'POST',
@@ -175,7 +249,16 @@ describe('me routes', () => {
       });
 
       expect(res.statusCode).toBe(201);
-      expect(mockBookingService.bookCourt).toHaveBeenCalledWith('crt_1', '2026-09-01', '18:00', 'mem_1');
+      expect(mockReservationService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          typeCode: 'badminton_court',
+          date: '2026-09-01',
+          slots: ['18:00'],
+          organizerId: 'mem_1',
+          resourceId: 'crt_1',
+        }),
+      );
+      expect(mockReservationService.confirm).toHaveBeenCalledWith('rsv_1', { memberId: 'mem_1' });
     });
 
     it('lets a lapsed member cancel their own booking', async () => {
@@ -185,7 +268,7 @@ describe('me routes', () => {
       const res = await app.inject({ method: 'DELETE', url: '/api/me/bookings/bk_1', headers: AUTH });
 
       expect(res.statusCode).toBe(200);
-      expect(mockBookingService.cancel).toHaveBeenCalledWith('bk_1', 'mem_1');
+      expect(mockReservationService.cancel).toHaveBeenCalledWith('bk_1', { memberId: 'mem_1' });
     });
   });
 

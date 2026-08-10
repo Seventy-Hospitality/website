@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { memberService } from '@/lib/container';
-import { createMemberSchema, updateMemberSchema, membersQuerySchema, createNoteSchema } from '@/src/lib/validation';
+import { createMemberSchema, updateMemberSchema, membersQuerySchema, createNoteSchema, memberSearchQuerySchema } from '@/src/lib/validation';
 import { success, error } from '@/src/lib/responses';
 import { MemberNotFoundError, DuplicateEmailError } from '@/lib/contexts/members';
 
@@ -13,6 +13,16 @@ export async function memberRoutes(app: FastifyInstance) {
 
     const result = await memberService.list(parsed.data);
     return success(reply, result);
+  });
+
+  // Member directory search for reservation invites. Members only, never
+  // staff (staff have no row here); names only, no emails leak.
+  app.get('/search', { config: { policy: 'member' } }, async (req, reply) => {
+    const parsed = memberSearchQuerySchema.safeParse(req.query);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    const results = await memberService.search(parsed.data.q, parsed.data.limit);
+    return success(reply, results);
   });
 
   // Get member by ID

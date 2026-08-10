@@ -1,7 +1,7 @@
 import { db } from './db';
 import { PrismaUnitOfWork } from './infrastructure/prisma-unit-of-work';
 import { EventStore } from './infrastructure/event-store';
-import { EventReplay } from './infrastructure/event-replay';
+import { NoopOutboxSink, OutboxDispatcher, OutboxRepository } from './infrastructure/outbox';
 
 // Repositories + infrastructure
 import { MemberRepository } from '@/lib/contexts/members/infrastructure';
@@ -21,7 +21,14 @@ import {
   PrismaMemberDirectory,
 } from '@/lib/contexts/identity/infrastructure';
 import { ResendAdapter } from '@/lib/contexts/communications/infrastructure';
-import { CourtRepository, ShowerRepository, BookingRepository, PrismaMembershipChecker } from '@/lib/contexts/bookings/infrastructure';
+import {
+  ResourceTypeRepository,
+  ResourceRepository,
+  ReservationRepository,
+  SlotClaimRepository,
+  PrismaMembershipChecker,
+  StubBookingPaymentAdapter,
+} from '@/lib/contexts/bookings/infrastructure';
 import { ClubEventRepository } from '@/lib/contexts/events/infrastructure';
 import { LocalMediaStorage, PrismaManagedMediaAssetRepository, S3MediaStorage, SharpEventImageProcessor } from '@/lib/contexts/media/infrastructure';
 
@@ -35,7 +42,7 @@ import {
   MemberClaimService,
 } from '@/lib/contexts/identity/application';
 import { NotificationService } from '@/lib/contexts/communications/application';
-import { BookingService } from '@/lib/contexts/bookings/application';
+import { ReservationService, ResourceClaimService } from '@/lib/contexts/bookings/application';
 import { ClubEventService } from '@/lib/contexts/events/application';
 import { MediaService } from '@/lib/contexts/media/application';
 
@@ -43,7 +50,14 @@ import { MediaService } from '@/lib/contexts/media/application';
 
 export const uow = new PrismaUnitOfWork(db);
 export const eventStore = new EventStore();
-export const eventReplay = new EventReplay(db);
+
+// Audit log doubles as the transactional outbox; the dispatcher marks rows
+// dispatched, and the sink is package F's seam (nothing is sent yet).
+export const outboxDispatcher = new OutboxDispatcher(uow, new OutboxRepository(), new NoopOutboxSink());
+
+// ── Venue ──
+// One venue, one wall clock: every reservation slot lives in this zone.
+export const VENUE_TIMEZONE = process.env.VENUE_TIMEZONE?.trim() || 'America/New_York';
 
 // ── Repositories ──
 
@@ -55,12 +69,17 @@ export const stripeGateway = new StripeGateway(
   process.env.WEB_URL ?? 'http://localhost:5173',
 );
 
-// ── Bookings BC ──
+// ── Scheduling BC ──
 
-export const courtRepo = new CourtRepository(db);
-export const showerRepo = new ShowerRepository(db);
-export const bookingRepo = new BookingRepository(db);
+export const resourceTypeRepo = new ResourceTypeRepository(db);
+export const resourceRepo = new ResourceRepository(db);
+export const slotClaimRepo = new SlotClaimRepository(db);
+export const reservationRepo = new ReservationRepository(db);
 export const membershipChecker = new PrismaMembershipChecker(db);
+// TODO(package-c): billing replaces the stub with the real on-session
+// PaymentIntent adapter; this is the only wiring point.
+export const bookingPaymentPort = new StubBookingPaymentAdapter();
+
 export const clubEventRepo = new ClubEventRepository(db);
 export const managedMediaAssetRepo = new PrismaManagedMediaAssetRepository(db);
 
@@ -100,9 +119,25 @@ export const notificationService = new NotificationService(resendAdapter);
 
 export const memberService = new MemberService(memberRepo);
 export const membershipService = new MembershipService(membershipRepo, planRepo, stripeGateway);
-export const bookingService = new BookingService(courtRepo, showerRepo, bookingRepo, membershipChecker, clubEventRepo, uow);
+export const reservationService = new ReservationService(
+  resourceTypeRepo,
+  resourceRepo,
+  slotClaimRepo,
+  reservationRepo,
+  membershipChecker,
+  bookingPaymentPort,
+  eventStore,
+  uow,
+  { timezone: VENUE_TIMEZONE },
+);
+export const resourceClaimPort = new ResourceClaimService(
+  resourceRepo,
+  slotClaimRepo,
+  reservationService,
+  VENUE_TIMEZONE,
+);
 export const mediaService = new MediaService(mediaStorage, managedMediaAssetRepo, eventImageProcessor);
-export const clubEventService = new ClubEventService(clubEventRepo, bookingRepo, courtRepo, mediaService);
+export const clubEventService = new ClubEventService(clubEventRepo, resourceClaimPort, mediaService, uow);
 
 // ── Identity ──
 

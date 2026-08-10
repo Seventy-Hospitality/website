@@ -1,24 +1,70 @@
-export { type Court } from './court';
-export { type Shower } from './shower';
-export { type Booking, type FacilityType } from './booking';
-export { type MembershipChecker } from './ports';
+export { type MemberTier, type ResourceType, type Resource, tierSatisfies } from './resource';
 export {
-  type TimeSlot,
-  createTimeSlot,
-  timeToMinutes,
-  slotsOverlap,
-  generateAvailableSlots,
-} from './value-objects';
-export { bookingRules } from './booking-rules';
+  type Reservation,
+  type ReservationParticipant,
+  type ReservationPayment,
+  type ReservationStatus,
+  type ParticipantRole,
+  type ParticipantStatus,
+  type ParticipantResponse,
+  type PaymentKind,
+  isActiveReservationStatus,
+  applyParticipantResponse,
+  canManageInvites,
+} from './reservation';
+export {
+  type SlotGridConfig,
+  type InstantRange,
+  type ClaimRange,
+  generateSlotStarts,
+  parseSlotSelection,
+  selectionToRange,
+  rangesOverlap,
+  freeSlotStartsByResource,
+  unionSlotStarts,
+  resourcesFreeForSelection,
+  computeTotalCents,
+} from './slots';
+export {
+  refundPercentFor,
+  computeNetPaidCents,
+  computeRefundCents,
+  computeRescheduleDeltaCents,
+  allocateRefund,
+  type RefundAllocation,
+} from './cancellation-policy';
+export {
+  type MembershipChecker,
+  type BookingPaymentPort,
+  type PaymentIntentHandle,
+  type PaymentStatus,
+  type ResourceClaimPort,
+  type ClaimedResource,
+  type EventClaimConflict,
+  EventClaimConflictError,
+} from './ports';
 export {
   SlotUnavailableError,
   OutsideOperatingHoursError,
-  InvalidSlotDurationError,
-  MaxBookingsExceededError,
-  BookingTooFarInAdvanceError,
-  BookingInPastError,
-  CancellationDeadlinePassedError,
-  BookingNotFoundError,
-  FacilityNotFoundError,
+  InvalidSlotSelectionError,
+  MaxReservationsExceededError,
+  ReservationTooFarInAdvanceError,
+  ReservationInPastError,
+  ReservationNotFoundError,
+  ResourceTypeNotFoundError,
+  ResourceNotFoundError,
+  NotReservationOrganizerError,
+  TierRequiredError,
   InactiveMembershipError,
+  InvalidReservationStatusError,
+  ReservationAlreadyStartedError,
+  InvalidParticipantTransitionError,
+  OrganizerCannotRespondError,
+  ParticipantNotFoundError,
+  CannotRemoveOrganizerError,
+  NotInvitePermittedError,
+  InviteeNotFoundError,
+  PaymentNotCompletedError,
+  HoldExpiredError,
+  InsufficientRefundableBalanceError,
 } from './errors';
