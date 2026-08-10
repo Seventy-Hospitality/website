@@ -43,7 +43,7 @@ api/
 │   ├── contexts/            # Bounded contexts
 │   │   ├── members/         # Member CRUD + admin notes
 │   │   ├── memberships/     # Stripe subscriptions, checkout, portal
-│   │   ├── auth/            # Magic-link, JWT, sessions
+│   │   ├── identity/        # Users, credentials, OAuth identities, sessions, tokens
 │   │   └── communications/  # Email templates, notification delivery
 │   ├── container.ts         # Composition root
 │   └── db.ts                # Prisma singleton

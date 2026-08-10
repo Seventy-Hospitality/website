@@ -42,10 +42,10 @@ lib/
 │   │   ├── domain/               # Membership types, webhook handlers (pure)
 │   │   ├── application/          # Checkout, portal, sync services
 │   │   └── infrastructure/       # Stripe gateway, repositories
-│   ├── auth/
-│   │   ├── domain/               # Session, auth types, token logic
-│   │   ├── application/          # Auth service (magic link, JWT)
-│   │   └── infrastructure/       # JWT, session repo
+│   ├── identity/
+│   │   ├── domain/               # Principal, session/linking policies, token logic
+│   │   ├── application/          # Authentication, sessions, account linking
+│   │   └── infrastructure/       # Repos, argon2, JWT, Google/Apple verifiers
 │   └── communications/
 │       ├── domain/               # Email templates (pure data)
 │       ├── application/          # NotificationService (what to send)

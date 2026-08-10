@@ -20,6 +20,8 @@ const TEMPLATE_IDS: Record<Notification['type'], string> = {
   'welcome': '',
   'payment-failed': '',
   'membership-canceled': '',
+  'email-verification': '',
+  'password-reset': '',
 };
 
 const SUBJECTS: Record<Notification['type'], string> = {
@@ -27,6 +29,8 @@ const SUBJECTS: Record<Notification['type'], string> = {
   'welcome': 'Welcome to Seventy',
   'payment-failed': 'Payment failed — Seventy Membership',
   'membership-canceled': 'Membership cancellation — Seventy',
+  'email-verification': 'Verify your Seventy email',
+  'password-reset': 'Reset your Seventy password',
 };
 
 function getVariables(notification: Notification): Record<string, string> {
@@ -39,6 +43,10 @@ function getVariables(notification: Notification): Record<string, string> {
       return { memberName: notification.memberName };
     case 'membership-canceled':
       return { memberName: notification.memberName, endsAt: notification.endsAt };
+    case 'email-verification':
+      return { verifyUrl: notification.verifyUrl };
+    case 'password-reset':
+      return { resetUrl: notification.resetUrl };
   }
 }
 
@@ -150,6 +158,40 @@ ${content}
 </td></tr>
 <tr><td style="font-size:${EMAIL.fontBody};color:${EMAIL.text};line-height:1.5">
   Hi ${variables.memberName}, your membership has been canceled. You'll have access until ${variables.endsAt}.
+</td></tr>`);
+
+    case 'email-verification':
+      return wrapper(`
+<tr><td style="text-align:center;padding-bottom:24px">
+  <span style="font-size:${EMAIL.fontTitle};font-weight:600;color:${EMAIL.text}">Verify your email</span>
+</td></tr>
+<tr><td style="text-align:center;padding-bottom:32px;font-size:${EMAIL.fontBody};color:${EMAIL.muted};line-height:1.5">
+  Confirm this email address to finish setting up your account. This link expires in 24 hours.
+</td></tr>
+<tr><td style="text-align:center;padding-bottom:32px">
+  <a href="${variables.verifyUrl}" style="display:inline-block;padding:10px 24px;background:${EMAIL.brand};color:#ffffff;font-size:${EMAIL.fontBody};font-weight:500;text-decoration:none;border-radius:${EMAIL.radius}">
+    Verify email
+  </a>
+</td></tr>
+<tr><td style="font-size:12px;color:${EMAIL.muted};line-height:1.4">
+  If you didn't create an account, you can ignore this email.
+</td></tr>`);
+
+    case 'password-reset':
+      return wrapper(`
+<tr><td style="text-align:center;padding-bottom:24px">
+  <span style="font-size:${EMAIL.fontTitle};font-weight:600;color:${EMAIL.text}">Reset your password</span>
+</td></tr>
+<tr><td style="text-align:center;padding-bottom:32px;font-size:${EMAIL.fontBody};color:${EMAIL.muted};line-height:1.5">
+  Click the button below to choose a new password. This link expires in 30 minutes.
+</td></tr>
+<tr><td style="text-align:center;padding-bottom:32px">
+  <a href="${variables.resetUrl}" style="display:inline-block;padding:10px 24px;background:${EMAIL.brand};color:#ffffff;font-size:${EMAIL.fontBody};font-weight:500;text-decoration:none;border-radius:${EMAIL.radius}">
+    Reset password
+  </a>
+</td></tr>
+<tr><td style="font-size:12px;color:${EMAIL.muted};line-height:1.4">
+  If you didn't request this, you can ignore this email and your password will stay the same.
 </td></tr>`);
   }
 }

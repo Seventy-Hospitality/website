@@ -163,7 +163,7 @@ async function main() {
   console.log(`  Memberships: 3 active, 1 annual, 1 past_due, 1 canceling, 1 canceled, 3 none${stripe ? ' (active ones synced to Stripe)' : ''}`);
 
   // ── Admin Notes ──
-  const adminUser = await prisma.user.findFirst({ where: { role: 'admin' } });
+  const adminUser = await prisma.user.findFirst({ where: { staffRole: 'admin' } });
 
   if (adminUser) {
     const notes = [

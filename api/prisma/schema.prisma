@@ -9,19 +9,100 @@ datasource db {
 // ── Identity ──
 
 model User {
-  id    String @id @default(cuid())
-  email String @unique
-  name  String
-  role  String @default("member") // "admin" | "member"
+  id              String    @id @default(cuid())
+  email           String    @unique // normalized: lowercased + trimmed
+  emailVerifiedAt DateTime?
+  name            String
+  staffRole       String? // null | "staff" | "admin"
+  status          String    @default("active") // "active" | "suspended" | "deleted"
+  deletedAt       DateTime?
+  termsAcceptedAt DateTime?
+  termsVersion    String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sessions Session[]
-  member   Member?
-  notes    AdminNote[] @relation("noteAuthor")
+  sessions     Session[] // legacy admin sessions; dropped after cutover
+  credentials  UserCredential[]
+  identities   AuthIdentity[]
+  authSessions AuthSession[]
+  member       Member?
+  notes        AdminNote[]      @relation("noteAuthor")
 
   @@map("users")
+}
+
+// Secrets live in their own table so raw-row serialization of users can
+// never leak a hash.
+model UserCredential {
+  id         String   @id @default(cuid())
+  userId     String
+  type       String // "password" (later "passkey")
+  secretHash String // argon2id PHC string
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@map("user_credentials")
+}
+
+model AuthIdentity {
+  id              String    @id @default(cuid())
+  userId          String
+  provider        String // "google" | "apple"
+  subject         String // provider "sub" — the stable key
+  email           String? // as asserted; informational only
+  emailVerified   Boolean   @default(false)
+  isPrivateRelay  Boolean   @default(false)
+  refreshTokenEnc String? // Apple only: needed for /auth/revoke on delete
+  linkedAt        DateTime  @default(now())
+  lastUsedAt      DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, subject]) // NOT unique on email
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+// One row per device. Refresh tokens are stored hashed and rotated on every
+// use; previousTokenHash keeps a short grace window for network retries.
+model AuthSession {
+  id                String    @id @default(cuid())
+  userId            String
+  client            String // "admin_web" | "member_mobile"
+  refreshTokenHash  String    @unique // sha256
+  previousTokenHash String? // rotation grace window
+  rotatedAt         DateTime?
+  issuedAt          DateTime  @default(now())
+  lastUsedAt        DateTime  @default(now())
+  idleExpiresAt     DateTime
+  absoluteExpiresAt DateTime
+  revokedAt         DateTime?
+  revokedReason     String?
+  deviceName        String?
+  ip                String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@map("auth_sessions")
+}
+
+// All one-time tokens (replaces magic_link_tokens after cutover).
+model AuthToken {
+  id          String    @id @default(cuid())
+  purpose     String // magic_link | email_verification | password_reset | oauth_nonce | email_change
+  identifier  String // email or userId
+  tokenHash   String    @unique
+  bindingHash String? // sha256(device verifier) — PKCE-style device binding
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([purpose, identifier])
+  @@map("auth_tokens")
 }
 
 model Session {

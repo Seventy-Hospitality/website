@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
-import { authService } from '@/lib/container';
-import { NotAuthorizedError, type AuthenticatedUser } from '@/lib/contexts/auth';
+import { NotAuthorizedError, type AuthenticatedUser } from '@/lib/contexts/identity';
+import { authenticateRequest } from '@/src/lib/auth-cookies';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -24,7 +24,9 @@ const DEV_USER: AuthenticatedUser = {
   userId: 'dev_admin',
   sessionId: 'dev_session',
   email: 'dev@seventy.club',
-  role: 'admin',
+  emailVerifiedAt: new Date(),
+  staffRole: 'admin',
+  client: 'admin_web',
 };
 
 export async function authHook(req: FastifyRequest, reply: FastifyReply) {
@@ -36,21 +38,25 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
     return;
   }
 
-  const cookieToken = req.cookies?.seventy_session;
-  const authHeader = req.headers.authorization;
-  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
-  const token = cookieToken ?? bearerToken;
-
-  if (!token) {
-    return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
-  }
-
+  let user: AuthenticatedUser | null;
   try {
-    req.user = await authService.validateSession(token);
+    user = await authenticateRequest(req, reply);
   } catch (e) {
     if (e instanceof NotAuthorizedError) {
       return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Not authorized' } });
     }
-    return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired session' } });
+    throw e;
   }
+
+  if (!user) {
+    return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+  }
+
+  // Stage 1 keeps the pre-existing global admin gate on every guarded route;
+  // the stage 2 policy rewrite replaces it with per-route policies.
+  if (user.staffRole !== 'admin') {
+    return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Not authorized' } });
+  }
+
+  req.user = user;
 }

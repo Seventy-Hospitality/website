@@ -41,6 +41,56 @@ export const sendMagicLinkSchema = z.object({
   redirectTo: z.string().trim().min(1).max(2048).optional(),
 });
 
+// ── Identity ──
+
+export const passwordSchema = z.string().min(8).max(256);
+
+export const signUpSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  email: emailSchema,
+  password: passwordSchema,
+  phone: z.string().trim().max(30).optional(),
+});
+
+export const signInSchema = z.object({
+  email: emailSchema,
+  password: z.string().min(1).max(256),
+});
+
+export const oauthGoogleSchema = z.object({
+  idToken: z.string().min(1),
+  nonce: z.string().min(1).max(512),
+});
+
+export const oauthAppleSchema = z.object({
+  identityToken: z.string().min(1),
+  nonce: z.string().min(1).max(512),
+  authorizationCode: z.string().min(1).optional(),
+  fullName: z
+    .object({
+      givenName: z.string().trim().max(100).optional(),
+      familyName: z.string().trim().max(100).optional(),
+    })
+    .optional(),
+});
+
+export const refreshSchema = z.object({
+  refreshToken: z.string().min(1).optional(),
+});
+
+export const forgotPasswordSchema = z.object({
+  email: emailSchema,
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: passwordSchema,
+});
+
+export const verifyEmailSchema = z.object({
+  token: z.string().min(1),
+});
+
 export const createCheckoutSchema = z.object({
   memberId: z.string().min(1),
   planId: z.string().min(1),

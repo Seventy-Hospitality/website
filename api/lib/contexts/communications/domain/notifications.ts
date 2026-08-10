@@ -31,8 +31,22 @@ export type MembershipCanceledNotification = {
   endsAt: string;
 };
 
+export type EmailVerificationNotification = {
+  type: 'email-verification';
+  to: string;
+  verifyUrl: string;
+};
+
+export type PasswordResetNotification = {
+  type: 'password-reset';
+  to: string;
+  resetUrl: string;
+};
+
 export type Notification =
   | MagicLinkNotification
   | WelcomeNotification
   | PaymentFailedNotification
-  | MembershipCanceledNotification;
+  | MembershipCanceledNotification
+  | EmailVerificationNotification
+  | PasswordResetNotification;
