@@ -30,6 +30,7 @@ function refundData(overrides: Partial<RefundData> = {}): RefundData {
     paymentIntentId: 'pi_1',
     chargeId: 'ch_1',
     reservationId: 'rsv_1',
+    refundKey: null,
     memberId: 'mem_1',
     customerId: 'cus_1',
     invoiceLinked: false,
@@ -95,6 +96,7 @@ function build() {
     handleCapturedPayment: vi.fn().mockResolvedValue('confirmed'),
     reconcileRefundOutcome: vi.fn().mockResolvedValue('reconciled'),
     recordExternalRefund: vi.fn().mockResolvedValue('recorded'),
+    redriveStalePendingRefunds: vi.fn().mockResolvedValue({ reissued: 0, failed: 0 }),
     freezeChargeForDispute: vi.fn().mockResolvedValue(['rsv_1']),
     hasBlockingFinancialState: vi.fn().mockResolvedValue(false),
   };
@@ -256,6 +258,7 @@ describe('refund events', () => {
       stripePaymentIntentId: 'pi_1',
       amountCents: 1000,
       status: 'succeeded',
+      refundKey: null,
       source: 'webhook',
     });
   });

@@ -111,3 +111,49 @@ describe('StripeGateway.verifyWebhookSignature', () => {
     expect(() => gateway.verifyWebhookSignature('{}', 'bad_sig', 'whsec_test')).toThrow();
   });
 });
+
+describe('StripeGateway.listAllSubscriptions', () => {
+  function fakeSub(id: string) {
+    return {
+      id,
+      status: 'active',
+      cancel_at_period_end: false,
+      items: { data: [{ price: { id: 'price_m' }, current_period_end: 1_790_000_000 }] },
+      customer: 'cus_1',
+      metadata: {},
+      schedule: null,
+    };
+  }
+
+  it("stamps every page's snapshots with Stripe's own Date header, never the instance clock", async () => {
+    // The fetch-time ordering guard compares these against webhook applies
+    // stamped from Stripe's clock; a local `new Date()` here would let a
+    // skewed drift instance overwrite newer webhook state.
+    const sweepGateway = new StripeGateway('sk_test_fake', 'http://localhost:5173');
+    const page1Date = 'Mon, 10 Aug 2026 07:30:00 GMT';
+    const page2Date = 'Mon, 10 Aug 2026 07:30:05 GMT';
+    (sweepGateway.client.subscriptions as unknown as { list: unknown }).list = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [fakeSub('sub_1')],
+        has_more: true,
+        lastResponse: { headers: { date: page1Date } },
+      })
+      .mockResolvedValueOnce({
+        data: [fakeSub('sub_2')],
+        has_more: false,
+        lastResponse: { headers: { date: page2Date } },
+      });
+
+    const snapshots = await sweepGateway.listAllSubscriptions();
+
+    expect(snapshots.map((snap) => snap.subscriptionId)).toEqual(['sub_1', 'sub_2']);
+    expect(snapshots[0].fetchedAt).toEqual(new Date(page1Date));
+    expect(snapshots[1].fetchedAt).toEqual(new Date(page2Date));
+    expect(sweepGateway.client.subscriptions.list).toHaveBeenNthCalledWith(2, {
+      status: 'all',
+      limit: 100,
+      starting_after: 'sub_1',
+    });
+  });
+});

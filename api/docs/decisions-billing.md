@@ -249,6 +249,66 @@ follows the critique directly.
 29. `GET /api/me/billing` also returns the full card list (the edit sheet
     needs it); a dedicated list endpoint was not added.
 
+## Review fixes (2026-08-10, post-package-C money review)
+
+30. **Reserved refunds are ADOPTED by `refundKey`, never double-recorded.**
+    The adapter stamps the reserved settlement-row id into the Stripe
+    refund's `metadata.refundKey`; ingestion (webhook + sweep) carries it
+    on `RefundData`, and `recordExternalRefund` stamps the observed
+    `stripeRefundId` onto that row (CAS on NULL) instead of inserting a
+    duplicate. Closes the window between `refunds.create` and
+    `completeRefund` in which our own refund looked external: a crash or a
+    fast inline webhook there used to create a second row,
+    double-decrement `amountPaid` and (in the non-crash race) blow up
+    `completeRefund` on the unique `stripeRefundId`. Adoption also
+    converges a locally-failed row whose `refunds.create` actually went
+    through (flip failed -> succeeded, re-apply the decrement).
+31. **Multi-PI refund batches attempt EVERY allocation; the nightly
+    reconcile re-drives stranded reserved refunds.** `executeReservedRefunds`
+    no longer aborts on the first Stripe failure (which stranded later
+    allocations as pending rows with decremented balance and nothing in
+    flight); each failure is terminalized per-row (failed + restore +
+    staff-alert seam) and the first error rethrown after the batch.
+    `redriveStalePendingRefunds` (new `BookingSettlementPort` member, run
+    by `/api/cron/reconcile-billing` AFTER its refund ingestion sweep)
+    re-executes reserved rows still pending with no `stripeRefundId` after
+    60 minutes under their per-row idempotency keys, so a crash between
+    the reserving commit and the Stripe call can no longer strand money
+    owed to a member (or permanently block account closure via the
+    pending-refund count).
+32. **Orphaned captures on CONFIRMED reservations are refunded, and every
+    best-effort void routes through recovery.** The confirmed-reservation
+    variant of the pay-vs-drop TOCTOU (a superseded/dropped/swept change
+    delta whose on-session intent captured after `dropPendingChange`
+    judged it unpaid) was unrecoverable: `confirm()` no-ops without a
+    pending change and the row sat `failed` while the member stayed
+    charged. `handleCapturedPayment` now acknowledges any captured charge
+    on a confirmed reservation that is not the live pendingChange's charge
+    and refunds it in full (capped at refundable balance so a dispute
+    freeze withholds instead of throwing), and every post-commit
+    `cancelPaymentIntent` goes through `voidOrRecoverIntent`, which
+    dispatches a failed void straight back into `handleCapturedPayment`.
+    The webhook and nightly reconcile drive the same entry point, so the
+    residual race self-heals within a night even if the inline repair
+    misses.
+33. **`resource_missing` NEVER cancels a membership.** The code violated
+    decision 22: the drift orphan re-check routed through
+    `applySubscriptionState`, whose resource_missing branch force-canceled
+    the row — on a test/live key swap that mass-canceled every membership,
+    irreversibly (no-exit-from-canceled guard). Both the listing and the
+    individual retrieve run under the same possibly-swapped key, so the
+    re-check cannot discriminate a swap from a real deletion; a genuinely
+    deleted/canceled subscription still retrieves as `status=canceled` and
+    flows through the guarded apply. The missing branch now alerts and
+    changes nothing; `markCanceledBySubscriptionId` (an unguarded
+    updateMany) is deleted outright.
+34. **The drift sweep stamps `fetchedAt` from Stripe's Date header,
+    per page.** `listAllSubscriptions` paginates by hand and stamps each
+    page from its own response header instead of one local `new Date()`
+    taken before the sweep, restoring decision 5's clock-skew immunity
+    (a skewed instance could otherwise overwrite newer webhook state with
+    a stale sweep snapshot).
+
 ## Validation record (2026-08-10)
 
 Full migration chain (0001_init through 20260810200000_billing) applied to

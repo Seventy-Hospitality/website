@@ -210,11 +210,29 @@ export class StripeGateway implements SubscriptionGateway {
     return this.toSnapshot(sub, fetchedAtOf(sub, before));
   }
 
+  /**
+   * Account-wide sweep. Paginated by hand (not auto-pagination) so every
+   * page's snapshots can carry Stripe's OWN Date header as fetchedAt: the
+   * fetch-time ordering guard must never mix our instance clock with the
+   * webhook appliers' Stripe-header timestamps, or a skewed drift instance
+   * could overwrite newer webhook state with a stale sweep snapshot.
+   */
   async listAllSubscriptions(): Promise<SubscriptionSnapshot[]> {
-    const before = new Date();
     const snapshots: SubscriptionSnapshot[] = [];
-    for await (const sub of this.stripe.subscriptions.list({ status: 'all', limit: 100 })) {
-      snapshots.push(this.toSnapshot(sub, before));
+    let startingAfter: string | undefined;
+    for (;;) {
+      const before = new Date();
+      const page = await this.stripe.subscriptions.list({
+        status: 'all',
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      const fetchedAt = fetchedAtOf(page, before);
+      for (const sub of page.data) {
+        snapshots.push(this.toSnapshot(sub, fetchedAt));
+      }
+      if (!page.has_more || page.data.length === 0) break;
+      startingAfter = page.data[page.data.length - 1].id;
     }
     return snapshots;
   }
@@ -597,6 +615,10 @@ function toRefundData(refund: Stripe.Refund): RefundData {
     paymentIntentId: intent?.id ?? idOf(refund.payment_intent as string | null),
     chargeId: idOf(refund.charge as string | { id: string } | null),
     reservationId: refund.metadata?.reservationId ?? intent?.metadata?.reservationId ?? null,
+    // Our adapter stamps the reserved settlement-row id here at
+    // refunds.create; ingestion uses it to ADOPT the reserved row instead
+    // of double-recording a refund we originated.
+    refundKey: refund.metadata?.refundKey ?? null,
     memberId: refund.metadata?.memberId ?? intent?.metadata?.memberId ?? null,
     customerId: idOf(intent?.customer as string | { id: string } | null | undefined),
     invoiceLinked: Boolean(

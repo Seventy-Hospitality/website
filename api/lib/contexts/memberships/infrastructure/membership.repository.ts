@@ -126,18 +126,6 @@ export class MembershipRepository {
     });
   }
 
-  /**
-   * Force a terminal status when Stripe no longer knows the subscription id
-   * at all (resource_missing). Reported, never silent.
-   */
-  async markCanceledBySubscriptionId(subscriptionId: string, fetchedAt: Date): Promise<boolean> {
-    const updated = await this.prisma.membership.updateMany({
-      where: { stripeSubscriptionId: subscriptionId },
-      data: { status: 'canceled', stripeFetchedAt: fetchedAt },
-    });
-    return updated.count > 0;
-  }
-
   /** Every row with its subscription id (drift sweep bookkeeping). */
   async listAll(): Promise<Array<Pick<Membership, 'id' | 'memberId' | 'stripeSubscriptionId' | 'status'>>> {
     return this.prisma.membership.findMany({

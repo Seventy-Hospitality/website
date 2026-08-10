@@ -200,17 +200,20 @@ export class WebhookService {
           stripePaymentIntentId: refund.paymentIntentId,
           amountCents: refund.amountCents,
           status: outcome === 'canceled' ? 'failed' : outcome,
+          refundKey: refund.refundKey,
           source: 'webhook',
         });
       }
     } else {
-      // Still pending: make sure the settlement record knows it exists
-      // (recordExternalRefund is a no-op for refunds we originated).
+      // Still pending: make sure the settlement record knows it exists. A
+      // refund we originated carries refundKey and is ADOPTED onto its
+      // reserved row (stamping stripeRefundId), never double-recorded.
       await this.bookings.recordExternalRefund({
         stripeRefundId: refund.refundId,
         stripePaymentIntentId: refund.paymentIntentId,
         amountCents: refund.amountCents,
         status: 'pending',
+        refundKey: refund.refundKey,
         source: 'webhook',
       });
     }

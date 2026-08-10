@@ -16,14 +16,27 @@ export interface BookingSettlementPort {
     outcome: 'succeeded' | 'failed' | 'canceled',
     source?: string,
   ): Promise<'reconciled' | 'unknown'>;
-  /** Dashboard-initiated refunds must consume settlement balance too. */
+  /**
+   * Dashboard-initiated refunds must consume settlement balance too. A
+   * refund we originated carries `refundKey` (the reserved settlement row
+   * id from its Stripe metadata) and is ADOPTED onto that row, never
+   * re-inserted.
+   */
   recordExternalRefund(input: {
     stripeRefundId: string;
     stripePaymentIntentId: string | null;
     amountCents: number;
     status: 'pending' | 'succeeded' | 'failed';
+    refundKey?: string | null;
     source?: string;
   }): Promise<'recorded' | 'known' | 'unmatched'>;
+  /**
+   * Crash recovery: re-execute reserved refunds (pending rows with no
+   * stripeRefundId) that never reached Stripe, keyed by their stable
+   * per-row idempotency key. Run from the nightly reconcile AFTER the
+   * refund sweep so anything that DID reach Stripe was already adopted.
+   */
+  redriveStalePendingRefunds(now?: Date): Promise<{ reissued: number; failed: number }>;
   /** charge.dispute.created: freeze the reservation financially. */
   freezeChargeForDispute(stripePaymentIntentId: string, source?: string): Promise<string[]>;
   /** Account-closure blocker: refunds in flight or open disputes. */

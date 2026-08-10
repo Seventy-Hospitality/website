@@ -30,6 +30,14 @@ export interface RefundData {
   chargeId: string | null;
   /** metadata.reservationId (ours) or the intent's metadata (fallback). */
   reservationId: string | null;
+  /**
+   * metadata.refundKey: the reserved reservation_payments row id our
+   * booking adapter stamps at refunds.create. Lets ingestion adopt the
+   * reserved row (stamping its stripeRefundId) instead of inserting a
+   * duplicate when the webhook/sweep observes the refund before phase 2
+   * (completeRefund) recorded it. Null for refunds we did not originate.
+   */
+  refundKey: string | null;
   memberId: string | null;
   customerId: string | null;
   /** True when the refunded charge paid an invoice. */

@@ -252,13 +252,19 @@ export class MembershipService {
   ): Promise<ApplyResult> {
     const snapshot = await this.gateway.getSubscriptionState(subscriptionId);
     if (!snapshot) {
-      // Stripe no longer knows the id at all (deleted test data or a
-      // test/live key swap): terminal locally, loudly.
-      const marked = await this.membershipRepo.markCanceledBySubscriptionId(subscriptionId, new Date());
-      if (marked) {
-        console.error(`[memberships] subscription ${subscriptionId} missing at Stripe; marked canceled`);
-      }
-      return { applied: marked, outcome: 'missing' };
+      // Stripe does not know the id under the CURRENT key. Subscription ids
+      // are mode-scoped, and this retrieve runs under the same key as
+      // everything else, so resource_missing cannot distinguish "genuinely
+      // gone" from a test/live key swap; a swap would make EVERY id miss and
+      // an auto-cancel here would mass-cancel the whole member base with no
+      // way back (the no-exit-from-canceled guard is deliberate). Decision
+      // 22: alert loudly, never write. A truly deleted/canceled
+      // subscription still retrieves as status=canceled and flows through
+      // the normal guarded apply.
+      console.error(
+        `[memberships] subscription ${subscriptionId} missing at Stripe (possible test/live key swap); state NOT changed`,
+      );
+      return { applied: false, outcome: 'missing' };
     }
     return this.applySnapshot(snapshot, options);
   }
@@ -328,9 +334,12 @@ export class MembershipService {
   /**
    * Account-wide drift sweep (replaces the per-member syncFromStripe loop):
    * one subscriptions.list pass applies fresh state everywhere, then local
-   * rows whose subscription never appeared are re-checked individually. A
-   * local row missing from Stripe entirely suggests a test/live key swap:
-   * alerted, never auto-canceled from the list alone.
+   * rows whose subscription never appeared are re-checked individually (a
+   * subscription created mid-sweep still converges). A row missing from
+   * Stripe entirely suggests a test/live key swap: alerted, NEVER
+   * auto-canceled (decision 22) — both the listing and the re-check run
+   * under the same possibly-swapped key, so neither can tell a swap from a
+   * real deletion, and cancel would be irreversible.
    */
   async reconcileSubscriptionDrift(): Promise<{
     checked: number;

@@ -51,6 +51,7 @@ function refundData(overrides: Partial<RefundData> = {}): RefundData {
     paymentIntentId: 'pi_1',
     chargeId: 'ch_1',
     reservationId: 'rsv_1',
+    refundKey: null,
     memberId: 'mem_1',
     customerId: 'cus_1',
     invoiceLinked: false,

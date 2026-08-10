@@ -75,7 +75,6 @@ function mockMembershipRepo(overrides: Record<string, unknown> = {}): Membership
     applySnapshot: vi.fn().mockResolvedValue('updated'),
     setPendingDowngrade: vi.fn(),
     clearPendingDowngrade: vi.fn(),
-    markCanceledBySubscriptionId: vi.fn().mockResolvedValue(false),
     listAll: vi.fn().mockResolvedValue([]),
     ...overrides,
   } as unknown as MembershipRepository;
@@ -424,15 +423,51 @@ describe('MembershipService.reconcileSubscriptionDrift', () => {
         .mockResolvedValue([
           { id: 'ms_x', memberId: 'mem_9', stripeSubscriptionId: 'sub_ghost', status: 'active' },
         ]),
-      markCanceledBySubscriptionId: vi.fn().mockResolvedValue(true),
     });
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const result = await service({ membershipRepo, gateway }).reconcileSubscriptionDrift();
 
     expect(result.checked).toBe(2);
-    expect(result.updated).toBeGreaterThanOrEqual(2);
+    expect(result.updated).toBe(2); // the two listed applies; the orphan applies NOTHING
     expect(result.orphanedLocal).toBe(1);
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('sub_ghost'));
+    errorSpy.mockRestore();
+  });
+
+  it('NEVER cancels on a wholesale-missing account (test/live key swap): alert-only, zero writes (decision 22)', async () => {
+    // A swapped STRIPE_SECRET_KEY makes the listing empty AND every
+    // individual retrieve resource_missing. The sweep must not write.
+    const gateway = mockGateway({
+      listAllSubscriptions: vi.fn().mockResolvedValue([]),
+      getSubscriptionState: vi.fn().mockResolvedValue(null),
+    });
+    const membershipRepo = mockMembershipRepo({
+      listAll: vi.fn().mockResolvedValue([
+        { id: 'ms_1', memberId: 'mem_1', stripeSubscriptionId: 'sub_live_1', status: 'active' },
+        { id: 'ms_2', memberId: 'mem_2', stripeSubscriptionId: 'sub_live_2', status: 'active' },
+      ]),
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await service({ membershipRepo, gateway }).reconcileSubscriptionDrift();
+
+    expect(result.orphanedLocal).toBe(2);
+    expect(result.updated).toBe(0);
+    expect(membershipRepo.applySnapshot).not.toHaveBeenCalled(); // the ONLY write path: untouched
+    errorSpy.mockRestore();
+  });
+});
+
+describe('MembershipService.applySubscriptionState on resource_missing', () => {
+  it('alerts and applies nothing (a canceled subscription still retrieves; only a key swap 404s)', async () => {
+    const gateway = mockGateway({ getSubscriptionState: vi.fn().mockResolvedValue(null) });
+    const membershipRepo = mockMembershipRepo();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await service({ membershipRepo, gateway }).applySubscriptionState('sub_1');
+
+    expect(result).toEqual({ applied: false, outcome: 'missing' });
+    expect(membershipRepo.applySnapshot).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('possible test/live key swap'));
     errorSpy.mockRestore();
   });
 });

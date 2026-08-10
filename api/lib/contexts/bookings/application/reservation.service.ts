@@ -58,6 +58,14 @@ import type { AuditLog } from './ports';
 
 const STREAM_TYPE = 'reservation';
 
+/**
+ * How old a pending, unstamped reserved refund must be before the nightly
+ * re-drive touches it: long enough that no live phase-2 execution can still
+ * be in flight, short enough that Stripe's ~24h idempotency-key window
+ * comfortably covers a re-issue against a call that actually succeeded.
+ */
+const STALE_REFUND_RETRY_MINUTES = 60;
+
 export interface SchedulingConfig {
   /** The venue's IANA timezone; the single wall clock all slots live on. */
   timezone: string;
@@ -560,13 +568,20 @@ export class ReservationService {
   /**
    * The billing context's "this PaymentIntent captured" entry point
    * (payment_intent.succeeded webhook and the nightly reconcile sweep). It
-   * settles through the SAME paths as a client confirm, plus the one case
-   * confirm() cannot reach: a CANCELLED reservation whose charge captured in
-   * the sub-second window after cancel() judged the intent uncaptured (the
-   * pay-vs-drop TOCTOU residual recorded in decisions-scheduling.md item
-   * 20). That orphaned capture is refunded in full; the tier-kept balance of
-   * an ordinary paid cancellation is never touched, because only charge rows
-   * still PENDING can be orphaned.
+   * settles through the SAME paths as a client confirm, plus the two cases
+   * confirm() cannot reach:
+   *
+   * - a CANCELLED reservation whose charge captured in the sub-second
+   *   window after cancel() judged the intent uncaptured (the pay-vs-drop
+   *   TOCTOU residual recorded in decisions-scheduling.md item 20). That
+   *   orphaned capture is refunded at the percent the cancellation applied;
+   *   the tier-kept balance of an ordinary paid cancellation is never
+   *   touched, because only charge rows not yet succeeded can be orphaned.
+   * - a CONFIRMED reservation with a captured charge no live path will ever
+   *   settle: a change delta whose parked change was superseded, dropped or
+   *   swept while its intent captured. The capture is acknowledged and
+   *   refunded IN FULL (the changed time was never delivered); the live
+   *   pendingChange's own charge is excluded — confirm() applies that one.
    */
   async handleCapturedPayment(
     id: string,
@@ -604,6 +619,13 @@ export class ReservationService {
 
     if (detail.status === 'cancelled') {
       return this.refundOrphanedCapture(detail, options);
+    }
+
+    if (detail.status === 'confirmed') {
+      const orphan = await this.refundOrphanedCaptureOnConfirmed(detail, options);
+      if (orphan === 'orphan_refunded') return orphan;
+      // 'none': fall through to confirm(), which applies a live paid
+      // pending change or no-ops idempotently.
     }
 
     try {
@@ -680,15 +702,24 @@ export class ReservationService {
    * settlement record, or a later cancel would allocate against an
    * already-refunded charge and fail at Stripe. Idempotent by
    * stripeRefundId under the reservation lock.
+   *
+   * A refund that DID originate here carries `refundKey` (its reserved
+   * settlement-row id, stamped into Stripe metadata at refunds.create) and
+   * is ADOPTED onto that row instead: until completeRefund stamps the
+   * stripeRefundId, the reserved row is invisible to the id lookup above,
+   * and inserting a second row would double-decrement amountPaid and
+   * double-consume refundable balance for one Stripe refund.
    */
   async recordExternalRefund(input: {
     stripeRefundId: string;
     stripePaymentIntentId: string | null;
     amountCents: number;
     status: 'pending' | 'succeeded' | 'failed';
+    refundKey?: string | null;
     source?: string;
   }): Promise<'recorded' | 'known' | 'unmatched'> {
     if (await this.reservationRepo.findPaymentByStripeRefundId(input.stripeRefundId)) return 'known';
+    if (input.refundKey && (await this.adoptReservedRefund(input.refundKey, input))) return 'known';
     if (!input.stripePaymentIntentId) return 'unmatched';
     const reservationId = await this.reservationRepo.findReservationIdByPaymentIntent(
       input.stripePaymentIntentId,
@@ -726,6 +757,67 @@ export class ReservationService {
   }
 
   /**
+   * Links an externally-observed Stripe refund back to the reserved row it
+   * originated from (refundKey = row id). Stamps the stripeRefundId
+   * (compare-and-set on NULL) and applies the observed outcome:
+   *
+   * - succeeded on a pending row: flip it; the reserve already decremented
+   *   amountPaid, so nothing else moves.
+   * - succeeded on a FAILED row: the refunds.create "failure" was a
+   *   transient that actually went through at Stripe; re-apply the
+   *   decrement the failure handler restored.
+   * - failed on a pending row: same flip-and-restore as
+   *   reconcileRefundOutcome.
+   *
+   * Returns false when refundKey does not resolve to one of our refund
+   * rows (the caller falls through to the external-record path).
+   */
+  private async adoptReservedRefund(
+    refundKey: string,
+    input: {
+      stripeRefundId: string;
+      status: 'pending' | 'succeeded' | 'failed';
+      source?: string;
+    },
+  ): Promise<boolean> {
+    const row = await this.reservationRepo.getPaymentById(refundKey);
+    if (!row || row.kind !== 'refund') return false;
+    if (row.stripeRefundId && row.stripeRefundId !== input.stripeRefundId) return false; // not this refund's row
+
+    await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, row.reservationId);
+      const stamped = await this.reservationRepo.adoptReservedRefund(tx, row.id, input.stripeRefundId);
+      if (input.status === 'succeeded') {
+        const flippedFromPending = await this.reservationRepo.setPaymentStatusIf(tx, row.id, 'pending', 'succeeded');
+        if (
+          !flippedFromPending &&
+          (await this.reservationRepo.setPaymentStatusIf(tx, row.id, 'failed', 'succeeded'))
+        ) {
+          await this.reservationRepo.adjustAmountPaid(tx, row.reservationId, -row.amountCents);
+        }
+      } else if (input.status === 'failed') {
+        if (await this.reservationRepo.setPaymentStatusIf(tx, row.id, 'pending', 'failed')) {
+          await this.reservationRepo.adjustAmountPaid(tx, row.reservationId, row.amountCents);
+        }
+      }
+      if (stamped) {
+        await this.audit.append(tx, {
+          streamType: STREAM_TYPE,
+          streamId: row.reservationId,
+          eventType: 'reservation.reserved_refund_adopted',
+          data: {
+            amountCents: row.amountCents,
+            stripeRefundId: input.stripeRefundId,
+            status: input.status,
+          },
+          source: input.source ?? 'webhook',
+        });
+      }
+    });
+    return true;
+  }
+
+  /**
    * charge.dispute.created: freeze the reservation financially. The disputed
    * charge is excluded from refundable balance (allocateRefund skips it), so
    * every refund-producing path fails closed until staff resolve it.
@@ -759,6 +851,44 @@ export class ReservationService {
     const { pendingRefunds, disputedCharges } =
       await this.reservationRepo.countBlockingFinancialState(memberId);
     return pendingRefunds > 0 || disputedCharges > 0;
+  }
+
+  /**
+   * Crash/abandonment recovery for RESERVED refunds: rows still pending
+   * with no stripeRefundId are money the member is owed that never reached
+   * Stripe (crash between the reserving commit and refunds.create, or a
+   * batch member whose Stripe call failed while others ran). Re-executes
+   * each one under its stable per-row idempotency key; if the original
+   * call actually went through, Stripe returns the SAME refund and
+   * completeRefund converges instead of double-refunding.
+   *
+   * Called from the nightly reconcile AFTER its refund ingestion sweep, so
+   * any refund that exists at Stripe was already adopted and stamped;
+   * what is still unstamped genuinely never left. The age cutoff keeps a
+   * phase-2 execution that is in flight right now out of scope.
+   */
+  async redriveStalePendingRefunds(now: Date = new Date()): Promise<{ reissued: number; failed: number }> {
+    const cutoff = new Date(now.getTime() - STALE_REFUND_RETRY_MINUTES * 60_000);
+    const rows = await this.reservationRepo.listStalePendingRefunds(cutoff);
+    let reissued = 0;
+    let failed = 0;
+    for (const row of rows) {
+      try {
+        await this.executeReservedRefunds(
+          row.reservationId,
+          [{ paymentId: row.id, stripePaymentIntentId: row.stripePaymentIntentId, amountCents: row.amountCents }],
+          undefined,
+          'reconcile',
+        );
+        reissued += 1;
+      } catch (error) {
+        // The row is now marked failed with its balance restored (staff
+        // alert seam); one bad refund must not abort the rest of the pass.
+        failed += 1;
+        console.error(`[bookings] re-drive of reserved refund ${row.id} failed:`, error);
+      }
+    }
+    return { reissued, failed };
   }
 
   /**
@@ -826,6 +956,86 @@ export class ReservationService {
     });
 
     if (reserved.length === 0) return 'already_settled';
+    await this.executeReservedRefunds(detail.id, reserved, undefined, options.source);
+    return 'orphan_refunded';
+  }
+
+  /**
+   * The CONFIRMED-reservation twin of refundOrphanedCapture: a captured
+   * charge whose row is not succeeded and is not the live pendingChange's
+   * charge belongs to a change that was superseded, dropped or swept while
+   * its on-session intent captured (dropPendingChange decides on the DB row
+   * alone; "pending never means uncaptured"). No live path ever settles it
+   * — confirm() no-ops without a pending change — so the capture is
+   * acknowledged (row -> succeeded, paid total up) and refunded IN FULL:
+   * the changed time was never delivered. Refunds are capped at the
+   * refundable balance so a dispute freeze withholds rather than throws.
+   */
+  private async refundOrphanedCaptureOnConfirmed(
+    detail: ReservationDetailRecord,
+    options: { source?: string },
+  ): Promise<'orphan_refunded' | 'none'> {
+    const liveChangeChargeId = detail.pendingChange?.chargePaymentId ?? null;
+    const candidates = detail.payments.filter(
+      (payment) =>
+        payment.kind === 'charge' &&
+        payment.status !== 'succeeded' &&
+        payment.stripePaymentIntentId !== null &&
+        payment.id !== liveChangeChargeId,
+    );
+    if (candidates.length === 0) return 'none'; // the hot path: zero extra port calls
+
+    // Port calls stay OUTSIDE the transaction.
+    const captured = new Map<string, 'pending' | 'failed'>();
+    for (const payment of candidates) {
+      if ((await this.paymentPort.getPaymentStatus(payment.stripePaymentIntentId!)) === 'succeeded') {
+        captured.set(payment.id, payment.status as 'pending' | 'failed');
+      }
+    }
+    if (captured.size === 0) return 'none';
+
+    const reserved = await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, detail.id);
+      const fresh = await this.reservationRepo.getDetail(detail.id, tx);
+      if (!fresh || fresh.status !== 'confirmed') return [] as ReservedRefund[];
+
+      let orphanedCents = 0;
+      let ledger = fresh.payments;
+      for (const payment of fresh.payments) {
+        const priorStatus = captured.get(payment.id);
+        if (!priorStatus) continue;
+        // Re-parked meanwhile: a live change now owns this charge again.
+        if (fresh.pendingChange?.chargePaymentId === payment.id) continue;
+        if (await this.reservationRepo.setPaymentStatusIf(tx, payment.id, priorStatus, 'succeeded')) {
+          await this.reservationRepo.adjustAmountPaid(tx, detail.id, payment.amountCents);
+          orphanedCents += payment.amountCents;
+          ledger = ledger.map((row) =>
+            row.id === payment.id ? { ...row, status: 'succeeded' as const } : row,
+          );
+        }
+      }
+      if (orphanedCents === 0) return [] as ReservedRefund[]; // another path settled it
+
+      const refundCents = Math.min(orphanedCents, computeRefundableCents(ledger));
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: detail.id,
+        eventType: 'reservation.orphaned_capture_refunded',
+        data: {
+          capturedCents: orphanedCents,
+          refundCents,
+          refundPercent: 100,
+          ...(refundCents < orphanedCents
+            ? { withheldDisputedCents: orphanedCents - refundCents }
+            : {}),
+        },
+        source: options.source,
+      });
+      if (refundCents === 0) return [] as ReservedRefund[];
+      return this.reserveRefund(tx, detail.id, ledger, refundCents);
+    });
+
+    if (reserved.length === 0) return 'none';
     await this.executeReservedRefunds(detail.id, reserved, undefined, options.source);
     return 'orphan_refunded';
   }
@@ -938,8 +1148,11 @@ export class ReservationService {
 
     // A parked grow whose delta ALREADY captured must be applied, never
     // dropped: settle it first, then reschedule on top of the fresh state.
-    // (An unpaid one is superseded below and its intent voided; the
-    // sub-second pay-vs-drop race is owned by billing reconciliation.)
+    // (An unpaid one is superseded below and its intent voided through
+    // voidOrRecoverIntent; a delta that captures inside the sub-second
+    // pay-vs-drop window is acknowledged and refunded in full there, or by
+    // the webhook/nightly reconcile driving the same
+    // handleCapturedPayment orphan path.)
     if (detail.pendingChange) {
       const changeCharge = detail.payments.find(
         (payment) => payment.id === detail.pendingChange!.chargePaymentId,
@@ -1083,7 +1296,7 @@ export class ReservationService {
     if (!settled) throw new SlotUnavailableError();
 
     if (settled.replacedIntentId) {
-      await this.paymentPort.cancelPaymentIntent(settled.replacedIntentId).catch(() => {});
+      await this.voidOrRecoverIntent(id, settled.replacedIntentId, 'reschedule');
     }
     await this.executeReservedRefunds(id, settled.reserved, params.actor);
 
@@ -1177,9 +1390,11 @@ export class ReservationService {
     });
 
     if (replacedIntentId) {
-      await this.paymentPort.cancelPaymentIntent(replacedIntentId).catch(() => {});
+      await this.voidOrRecoverIntent(id, replacedIntentId, 'reschedule');
     }
     if (staleQuote) {
+      // The new intent has no charge row and its secret never reached the
+      // client, so a plain void suffices; reconcile owns any residual.
       await this.paymentPort.cancelPaymentIntent(intent.paymentIntentId).catch(() => {});
       throw new ReservationChangedError();
     }
@@ -1454,13 +1669,14 @@ export class ReservationService {
       return { refundCents, reserved, previousStatus: fresh.status, changeIntentToVoid };
     });
 
-    // Void the unpaid intents outside the transaction, best effort; billing
-    // reconciliation (package C) cleans up any miss.
+    // Void the unpaid intents outside the transaction. A void that fails
+    // because the intent captured mid-cancel routes straight back through
+    // the orphaned-capture refund; webhook + reconcile cover any residual.
     if (settlement.previousStatus === 'pending_payment' && holdIntentToVoid) {
-      await this.paymentPort.cancelPaymentIntent(holdIntentToVoid).catch(() => {});
+      await this.voidOrRecoverIntent(id, holdIntentToVoid, 'cancel');
     }
     if (settlement.changeIntentToVoid) {
-      await this.paymentPort.cancelPaymentIntent(settlement.changeIntentToVoid).catch(() => {});
+      await this.voidOrRecoverIntent(id, settlement.changeIntentToVoid, 'cancel');
     }
     await this.executeReservedRefunds(id, settlement.reserved, actor);
     return { refundCents: settlement.refundCents };
@@ -1647,7 +1863,7 @@ export class ReservationService {
       });
       if (!didExpire) continue;
       if (charge?.stripePaymentIntentId) {
-        await this.paymentPort.cancelPaymentIntent(charge.stripePaymentIntentId).catch(() => {});
+        await this.voidOrRecoverIntent(hold.id, charge.stripePaymentIntentId, source);
       }
       expired += 1;
     }
@@ -1705,7 +1921,7 @@ export class ReservationService {
       });
       if (!cleared) continue;
       if (charge?.stripePaymentIntentId) {
-        await this.paymentPort.cancelPaymentIntent(charge.stripePaymentIntentId).catch(() => {});
+        await this.voidOrRecoverIntent(detail.id, charge.stripePaymentIntentId, 'sweeper');
       }
       changesExpired += 1;
     }
@@ -1887,9 +2103,15 @@ export class ReservationService {
 
   /**
    * Phase 2: execute reserved refunds at Stripe, then mark each row
-   * succeeded. A Stripe failure marks the row failed and restores the paid
-   * total so the ledger matches reality; billing reconciliation (package C,
-   * with per-row idempotency keys) re-issues or reconciles it.
+   * succeeded. Every allocation is ATTEMPTED even when an earlier one
+   * fails: the allocations are independent Stripe calls, and aborting the
+   * batch would strand the untouched rows as pending-with-decremented-
+   * balance owed to the member with nothing in flight. A failed allocation
+   * is marked failed with its amount restored (staff alert seam,
+   * TODO(package-f)); the first error is rethrown after the batch so a
+   * webhook caller still 500s and retries. Rows a crash leaves pending are
+   * re-driven by the nightly reconcile (redriveStalePendingRefunds) under
+   * the same per-row idempotency keys.
    */
   private async executeReservedRefunds(
     reservationId: string,
@@ -1897,6 +2119,7 @@ export class ReservationService {
     actorId?: string,
     source?: string,
   ): Promise<void> {
+    let firstError: unknown = null;
     for (const refund of reserved) {
       let refundId: string;
       try {
@@ -1924,7 +2147,8 @@ export class ReservationService {
             source,
           });
         });
-        throw error;
+        firstError ??= error;
+        continue;
       }
       await this.uow.execute(async (tx) => {
         await this.reservationRepo.completeRefund(tx, refund.paymentId, refundId);
@@ -1938,12 +2162,49 @@ export class ReservationService {
         });
       });
     }
+    if (firstError) throw firstError;
+  }
+
+  /**
+   * Best-effort void of a superseded or abandoned intent, with the
+   * pay-vs-drop TOCTOU closed: Stripe refuses to cancel a captured intent,
+   * and "pending never means uncaptured", so a cancel failure is routed
+   * straight back through handleCapturedPayment, which settles or refunds
+   * the capture (orphan paths for cancelled, expired AND confirmed
+   * reservations). A transient miss here converges anyway: the
+   * payment_intent.succeeded webhook and the nightly reconcile drive the
+   * same entry point.
+   */
+  private async voidOrRecoverIntent(
+    reservationId: string,
+    intentId: string,
+    source?: string,
+  ): Promise<void> {
+    try {
+      await this.paymentPort.cancelPaymentIntent(intentId);
+      return;
+    } catch {
+      // Possibly captured; fall through to the settlement entry point.
+    }
+    try {
+      const row = await this.reservationRepo.findChargeByPaymentIntent(undefined, reservationId, intentId);
+      if (!row) return;
+      await this.handleCapturedPayment(reservationId, {
+        source: source ?? 'void_recovery',
+        intent: { paymentIntentId: intentId, amountCents: row.amountCents },
+      });
+    } catch {
+      // Webhook + nightly reconcile converge on the same entry point.
+    }
   }
 
   /**
    * Drops a parked pending change inside the caller's transaction, marking
    * its unpaid charge failed. Returns the intent id to void post-commit, or
-   * null when there was nothing to drop.
+   * null when there was nothing to drop. The DB row alone cannot prove the
+   * intent is uncaptured, so the post-commit void MUST go through
+   * voidOrRecoverIntent (a captured delta is then acknowledged and
+   * refunded instead of stranded).
    */
   private async dropPendingChange(
     tx: TransactionContext,

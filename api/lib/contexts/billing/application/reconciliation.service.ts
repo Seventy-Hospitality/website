@@ -17,6 +17,8 @@ export interface ReconcileResult {
   invoices: number;
   refunds: number;
   settlementsTriggered: number;
+  /** Reserved refunds that never reached Stripe, re-issued this run. */
+  refundsReissued: number;
   unmatched: number;
   dedupeRowsPruned: number;
 }
@@ -46,6 +48,7 @@ export class ReconciliationService {
       invoices: 0,
       refunds: 0,
       settlementsTriggered: 0,
+      refundsReissued: 0,
       unmatched: 0,
       dedupeRowsPruned: 0,
     };
@@ -119,12 +122,22 @@ export class ReconciliationService {
               stripePaymentIntentId: refund.paymentIntentId,
               amountCents: refund.amountCents,
               status: outcome === 'canceled' ? 'failed' : outcome,
+              refundKey: refund.refundKey,
               source: 'reconcile',
             });
           }
         }
       }
     }
+
+    // Reserved refunds that never reached Stripe (crash between the
+    // reserving commit and the refunds.create, or a batch member abandoned
+    // by an earlier failure). This MUST run after the refund sweep above:
+    // any refund that DID reach Stripe in the window has just been adopted
+    // and stamped, so what remains pending-without-refundId genuinely never
+    // left, and re-issuing under the per-row idempotency key is safe.
+    const redrive = await this.bookings.redriveStalePendingRefunds(now);
+    result.refundsReissued = redrive.reissued;
 
     result.dedupeRowsPruned = await this.webhookEvents.deleteOlderThan(
       new Date(now.getTime() - DEDUPE_RETENTION_DAYS * 24 * 3600_000),

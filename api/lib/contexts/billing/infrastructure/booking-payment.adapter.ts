@@ -106,7 +106,10 @@ export class StripeBookingPaymentAdapter implements BookingPaymentPort {
         payment_intent: input.paymentIntentId,
         amount: input.amountCents,
         reason: 'requested_by_customer',
-        metadata: { reservationId: input.reservationId, source: 'seventy' },
+        // refundKey (the reserved settlement row id) rides on the refund
+        // object so webhook/reconcile ingestion can ADOPT the reserved row
+        // if it observes this refund before completeRefund stamps its id.
+        metadata: { reservationId: input.reservationId, refundKey: input.refundKey, source: 'seventy' },
         expand: ['payment_intent'],
       },
       // The reserved settlement row's id: stable across crash-retries,
@@ -171,6 +174,7 @@ export class StripeBookingPaymentAdapter implements BookingPaymentPort {
           paymentIntentId: intent?.id ?? (typeof refund.payment_intent === 'string' ? refund.payment_intent : null),
           chargeId: typeof refund.charge === 'string' ? refund.charge : refund.charge?.id ?? null,
           reservationId,
+          refundKey: refund.metadata?.refundKey ?? null,
           memberId,
           customerId: null,
           invoiceLinked: false,

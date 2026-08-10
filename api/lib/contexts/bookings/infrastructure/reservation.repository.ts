@@ -490,6 +490,50 @@ export class ReservationRepository {
     }) as unknown as ReservationPayment | null;
   }
 
+  /** Payment row by primary key (refund adoption resolves refundKey = id). */
+  async getPaymentById(paymentId: string, tx?: TransactionContext): Promise<ReservationPayment | null> {
+    return this.db(tx).reservationPayment.findUnique({
+      where: { id: paymentId },
+    }) as unknown as ReservationPayment | null;
+  }
+
+  /**
+   * Stamp an externally-observed Stripe refund id onto the reserved row it
+   * originated from (refundKey = row id). Compare-and-set on the id still
+   * being NULL: false means completeRefund (or a concurrent adopter)
+   * already stamped it, and by construction of the per-row idempotency key
+   * it can only ever be the SAME refund id.
+   */
+  async adoptReservedRefund(
+    tx: TransactionContext,
+    paymentId: string,
+    stripeRefundId: string,
+  ): Promise<boolean> {
+    const updated = await asPrismaTx(tx).reservationPayment.updateMany({
+      where: { id: paymentId, kind: 'refund', stripeRefundId: null },
+      data: { stripeRefundId },
+    });
+    return updated.count > 0;
+  }
+
+  /**
+   * Reserved refunds that never reached Stripe: still pending, no
+   * stripeRefundId, old enough that no phase-2 execution is plausibly in
+   * flight. The nightly reconcile re-drives them (idempotency key = row id).
+   */
+  async listStalePendingRefunds(olderThan: Date): Promise<ReservationPayment[]> {
+    return this.prisma.reservationPayment.findMany({
+      where: {
+        kind: 'refund',
+        status: 'pending',
+        stripeRefundId: null,
+        stripePaymentIntentId: { not: null },
+        createdAt: { lt: olderThan },
+      },
+      orderBy: { createdAt: 'asc' },
+    }) as unknown as ReservationPayment[];
+  }
+
   /**
    * Financial freeze (charge.dispute.created): stamp the disputed charge so
    * the allocator excludes it from refundable balance. Returns the frozen
