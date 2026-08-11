@@ -6,13 +6,22 @@ export type OneTimeTokenPurpose =
   | 'magic_link'
   | 'email_verification'
   | 'password_reset'
-  | 'oauth_nonce';
+  | 'oauth_nonce'
+  // Step-up re-auth for destructive actions (account deletion). Its own
+  // purpose on purpose: a magic-link token is minted by an unauthenticated
+  // endpoint whose meaning is "hand the holder a session", and reusing it
+  // as deletion proof would let any valid magic link for ANY account
+  // satisfy step-up. Reauth tokens are identifier = userId and
+  // bindingHash = sha256(sessionId), so they are subject- and
+  // session-bound.
+  | 'reauth';
 
 export const TOKEN_TTL_MINUTES: Record<OneTimeTokenPurpose, number> = {
   magic_link: 15,
   email_verification: 60 * 24,
   password_reset: 30,
   oauth_nonce: 10,
+  reauth: 10,
 };
 
 export interface OneTimeToken {

@@ -54,7 +54,7 @@ export interface MemberBillingDirectory {
     lastName: string;
     stripeCustomerId: string | null;
   } | null>;
-  findByStripeCustomerId(stripeCustomerId: string): Promise<{ id: string } | null>;
+  findByStripeCustomerId(stripeCustomerId: string): Promise<{ id: string; deletedAt: Date | null } | null>;
   setStripeCustomerId(id: string, stripeCustomerId: string): Promise<void>;
 }
 

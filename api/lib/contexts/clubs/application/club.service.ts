@@ -103,6 +103,8 @@ export interface AccountDeletionClubsSummary {
   deletedClubIds: string[];
   withdrawnSentInvitations: number;
   withdrawnReceivedInvitations: number;
+  /** Clubs whose live share links minted by the member were revoked. */
+  revokedInviteLinkClubIds: string[];
 }
 
 /**
@@ -676,6 +678,7 @@ export class ClubService {
         deletedClubIds: [],
         withdrawnSentInvitations: 0,
         withdrawnReceivedInvitations: 0,
+        revokedInviteLinkClubIds: [],
       };
       const now = new Date();
       const memberships = await this.repo.listMembershipsForMember(memberId, tx); // sorted by clubId
@@ -753,6 +756,21 @@ export class ClubService {
       }
       result.withdrawnSentInvitations = withdrawnSent.length;
       result.withdrawnReceivedInvitations = withdrawnReceived.length;
+
+      // Share links outlive their creator's membership: kill every live
+      // link the member minted so nobody keeps joining through a deleted
+      // member's QR code.
+      const linkClubIds = await this.repo.revokeInviteLinksCreatedBy(tx, memberId, now);
+      for (const clubId of linkClubIds) {
+        await this.audit.append(tx, {
+          streamType: STREAM_TYPE,
+          streamId: clubId,
+          eventType: 'club.invite_links_revoked',
+          data: { createdByMemberId: memberId, reason: 'account_deletion' },
+          actorId,
+        });
+      }
+      result.revokedInviteLinkClubIds = linkClubIds;
 
       return result;
     });

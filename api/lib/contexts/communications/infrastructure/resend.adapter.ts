@@ -22,6 +22,7 @@ const TEMPLATE_IDS: Record<Notification['type'], string> = {
   'membership-canceled': '',
   'email-verification': '',
   'password-reset': '',
+  'account-reauth': '',
 };
 
 const SUBJECTS: Record<Notification['type'], string> = {
@@ -31,6 +32,7 @@ const SUBJECTS: Record<Notification['type'], string> = {
   'membership-canceled': 'Membership cancellation — Seventy',
   'email-verification': 'Verify your Seventy email',
   'password-reset': 'Reset your Seventy password',
+  'account-reauth': 'Confirm it\'s you — Seventy account deletion',
 };
 
 function getVariables(notification: Notification): Record<string, string> {
@@ -47,6 +49,8 @@ function getVariables(notification: Notification): Record<string, string> {
       return { verifyUrl: notification.verifyUrl };
     case 'password-reset':
       return { resetUrl: notification.resetUrl };
+    case 'account-reauth':
+      return { token: notification.token };
   }
 }
 
@@ -192,6 +196,23 @@ ${content}
 </td></tr>
 <tr><td style="font-size:12px;color:${EMAIL.muted};line-height:1.4">
   If you didn't request this, you can ignore this email and your password will stay the same.
+</td></tr>`);
+
+    case 'account-reauth':
+      return wrapper(`
+<tr><td style="text-align:center;padding-bottom:24px">
+  <span style="font-size:${EMAIL.fontTitle};font-weight:600;color:${EMAIL.text}">Confirm it's you</span>
+</td></tr>
+<tr><td style="text-align:center;padding-bottom:24px;font-size:${EMAIL.fontBody};color:${EMAIL.muted};line-height:1.5">
+  You asked to delete your Seventy account. Enter this confirmation code in the app to continue. It expires in 10 minutes. Deleting your account cannot be undone.
+</td></tr>
+<tr><td style="text-align:center;padding-bottom:32px">
+  <span style="display:inline-block;padding:10px 24px;background:${EMAIL.surface};color:${EMAIL.text};font-size:${EMAIL.fontTitle};font-weight:600;letter-spacing:1px;border-radius:${EMAIL.radius};font-family:monospace">
+    ${variables.token}
+  </span>
+</td></tr>
+<tr><td style="font-size:12px;color:${EMAIL.muted};line-height:1.4">
+  If you didn't request this, someone may have access to your account: change your password and sign out of all devices.
 </td></tr>`);
   }
 }

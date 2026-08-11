@@ -380,3 +380,15 @@ export const idVerificationReviewSchema = z.object({
 export const idVerificationQueueQuerySchema = z.object({
   status: z.enum(['not_submitted', 'submitted', 'verified', 'rejected']).default('submitted'),
 });
+
+// Step-up proof for DELETE /api/me: exactly one of password, a fresh OAuth
+// assertion, or an emailed re-auth token. Absent entirely = the client is
+// probing (the 403 lists acceptable methods) or resuming an existing
+// deletion request.
+export const deleteAccountSchema = z.object({
+  password: z.string().min(1).max(256).optional(),
+  provider: z.enum(['google', 'apple']).optional(),
+  idToken: z.string().min(1).optional(),
+  nonce: z.string().min(1).max(200).optional(),
+  reauthToken: z.string().min(1).max(200).optional(),
+});

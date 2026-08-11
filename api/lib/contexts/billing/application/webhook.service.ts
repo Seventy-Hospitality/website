@@ -239,6 +239,9 @@ export class WebhookService {
     if (!pm.customerId) return;
     const member = await this.members.findByStripeCustomerId(pm.customerId);
     if (!member) return; // not one of ours (or the mirror lags the member)
+    // A payment_method.attached racing account closure must not resurrect
+    // a mirror row for a deleted member (their PMs were just detached).
+    if (member.deletedAt) return;
     await this.paymentMethods.upsertFromStripe(member.id, pm);
   }
 

@@ -410,6 +410,29 @@ export class ClubRepository {
   }
 
   /**
+   * Account-deletion seam: kill every live share link the departing member
+   * minted, in ANY club (a link outlives its creator's membership and
+   * would keep granting access). Returns the affected club ids.
+   */
+  async revokeInviteLinksCreatedBy(
+    tx: TransactionContext,
+    memberId: string,
+    revokedAt: Date,
+  ): Promise<string[]> {
+    const prisma = asPrismaTx(tx);
+    const rows = await prisma.clubInviteLink.findMany({
+      where: { createdById: memberId, revokedAt: null },
+      select: { id: true, clubId: true },
+    });
+    if (rows.length === 0) return [];
+    await prisma.clubInviteLink.updateMany({
+      where: { id: { in: rows.map((row) => row.id) } },
+      data: { revokedAt },
+    });
+    return [...new Set(rows.map((row) => row.clubId))];
+  }
+
+  /**
    * Consume one use, re-checking revocation/expiry/exhaustion INSIDE the
    * update (useCount < maxUses is a column-to-column comparison Prisma
    * cannot express). 0 rows = the link died between read and consume.

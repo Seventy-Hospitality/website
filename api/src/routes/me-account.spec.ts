@@ -9,6 +9,8 @@ const {
   mockSettingsService,
   mockMembershipChecker,
   mockSessionService,
+  mockStepUpService,
+  mockDeletionService,
 } = vi.hoisted(() => ({
   mockAvatarService: { updateAvatar: vi.fn(), removeAvatar: vi.fn() },
   mockQrService: { issue: vi.fn(), verify: vi.fn() },
@@ -20,6 +22,12 @@ const {
   },
   mockMembershipChecker: { hasActiveMembership: vi.fn().mockResolvedValue(true) },
   mockSessionService: { validateAccessToken: vi.fn(), refresh: vi.fn() },
+  mockStepUpService: {
+    verify: vi.fn(),
+    acceptableMethods: vi.fn().mockResolvedValue(['password', 'reauth_email']),
+    sendReauthEmail: vi.fn(),
+  },
+  mockDeletionService: { getForUser: vi.fn(), request: vi.fn(), resumeDue: vi.fn() },
 }));
 
 vi.mock('@/lib/container', () => ({
@@ -28,9 +36,13 @@ vi.mock('@/lib/container', () => ({
   notificationSettingsService: mockSettingsService,
   membershipChecker: mockMembershipChecker,
   sessionService: mockSessionService,
+  stepUpService: mockStepUpService,
+  accountDeletionService: mockDeletionService,
 }));
 
 import { buildTestApp } from '@/src/test/app';
+import { StepUpFailedError } from '@/lib/contexts/identity';
+import { AccountClosureBlockedError } from '@/lib/contexts/billing';
 import { meAccountRoutes } from './me-account';
 
 const AUTH = { authorization: 'Bearer access_jwt' } as const;
@@ -256,5 +268,218 @@ describe('me-account routes', () => {
 describe('QR token errors surface as QrTokenError', () => {
   it('exposes the failure reason', () => {
     expect(new QrTokenError('expired').reason).toBe('expired');
+  });
+});
+
+describe('DELETE /api/me (account deletion)', () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockSessionService.validateAccessToken.mockRejectedValue(new SessionExpiredError());
+    mockStepUpService.acceptableMethods.mockResolvedValue(['password', 'reauth_email']);
+    mockDeletionService.getForUser.mockResolvedValue(null);
+    mockDeletionService.request.mockResolvedValue({ status: 'completed', requestId: 'del_1' });
+    app = await buildTestApp({ routes: meAccountRoutes, prefix: '/api/me' });
+  });
+
+  afterEach(() => app.close());
+
+  it('requires a session', async () => {
+    const res = await app.inject({ method: 'DELETE', url: '/api/me' });
+    expect(res.statusCode).toBe(401);
+    expect(mockDeletionService.request).not.toHaveBeenCalled();
+  });
+
+  it('is available to accounts WITHOUT a member profile (authenticated policy)', async () => {
+    signedInAs({ memberId: null });
+    mockStepUpService.verify.mockResolvedValue('password');
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/me',
+      headers: AUTH,
+      payload: { password: 'hunter2' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(mockDeletionService.request).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'usr_1', memberId: null }),
+    );
+  });
+
+  it('403s STEP_UP_REQUIRED (with the acceptable methods) when no proof is given', async () => {
+    signedInAs();
+    const res = await app.inject({ method: 'DELETE', url: '/api/me', headers: AUTH, payload: {} });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('STEP_UP_REQUIRED');
+    expect(res.json().error.details.acceptableMethods).toEqual(['password', 'reauth_email']);
+    expect(mockDeletionService.request).not.toHaveBeenCalled();
+  });
+
+  it('403s STEP_UP_FAILED on a wrong proof and never starts the pipeline', async () => {
+    signedInAs();
+    mockStepUpService.verify.mockRejectedValue(new StepUpFailedError());
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/me',
+      headers: AUTH,
+      payload: { password: 'wrong' },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('STEP_UP_FAILED');
+    expect(mockDeletionService.request).not.toHaveBeenCalled();
+  });
+
+  it('verifies the proof and starts the pipeline with the principal identity', async () => {
+    signedInAs();
+    mockStepUpService.verify.mockResolvedValue('password');
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/me',
+      headers: AUTH,
+      payload: { password: 'hunter2' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(mockStepUpService.verify).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'usr_1', sessionId: 'ses_1' }),
+      { kind: 'password', password: 'hunter2' },
+    );
+    expect(mockDeletionService.request).toHaveBeenCalledWith({
+      userId: 'usr_1',
+      memberId: 'mem_1',
+      sessionId: 'ses_1',
+      email: 'alice@example.com',
+      stepUpMethod: 'password',
+      client: 'member_mobile',
+      ip: expect.any(String),
+    });
+    expect(res.json().data.status).toBe('completed');
+  });
+
+  it('accepts an OAuth assertion proof', async () => {
+    signedInAs();
+    mockStepUpService.verify.mockResolvedValue('oauth');
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/me',
+      headers: AUTH,
+      payload: { provider: 'apple', idToken: 'idt', nonce: 'n1' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(mockStepUpService.verify).toHaveBeenCalledWith(
+      expect.anything(),
+      { kind: 'oauth', provider: 'apple', idToken: 'idt', nonce: 'n1' },
+    );
+  });
+
+  it('resumes an existing request WITHOUT new proof', async () => {
+    signedInAs();
+    mockDeletionService.getForUser.mockResolvedValue({ id: 'del_1', stepUpMethod: 'oauth' });
+    mockDeletionService.request.mockResolvedValue({ status: 'failed', requestId: 'del_1' });
+
+    const res = await app.inject({ method: 'DELETE', url: '/api/me', headers: AUTH, payload: {} });
+
+    expect(res.statusCode).toBe(202);
+    expect(mockStepUpService.verify).not.toHaveBeenCalled();
+    expect(res.json().data.status).toBe('failed');
+  });
+
+  it('409s DELETION_BLOCKED with the reasons when billing blocks at entry', async () => {
+    signedInAs();
+    mockStepUpService.verify.mockResolvedValue('password');
+    mockDeletionService.request.mockRejectedValue(new AccountClosureBlockedError(['a refund in flight']));
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/me',
+      headers: AUTH,
+      payload: { password: 'hunter2' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('DELETION_BLOCKED');
+    expect(res.json().error.details.reasons).toEqual(['a refund in flight']);
+  });
+
+  it('409s when the pipeline reports blocked mid-run', async () => {
+    signedInAs();
+    mockStepUpService.verify.mockResolvedValue('password');
+    mockDeletionService.request.mockResolvedValue({
+      status: 'blocked',
+      requestId: 'del_1',
+      blockedReasons: ['an open payment dispute'],
+    });
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/me',
+      headers: AUTH,
+      payload: { password: 'hunter2' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.details.reasons).toEqual(['an open payment dispute']);
+  });
+
+  it('rate-limits repeated attempts per user (guessing oracle)', async () => {
+    signedInAs();
+    mockStepUpService.verify.mockRejectedValue(new StepUpFailedError());
+
+    let lastStatus = 0;
+    for (let i = 0; i < 6; i++) {
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/api/me',
+        headers: AUTH,
+        payload: { password: `guess-${i}` },
+      });
+      lastStatus = res.statusCode;
+    }
+    expect(lastStatus).toBe(429);
+  });
+});
+
+describe('POST /api/me/reauth-email', () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockSessionService.validateAccessToken.mockRejectedValue(new SessionExpiredError());
+    app = await buildTestApp({ routes: meAccountRoutes, prefix: '/api/me' });
+  });
+
+  afterEach(() => app.close());
+
+  it('requires a session', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/me/reauth-email' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('mints the session-bound re-auth token for the principal', async () => {
+    signedInAs();
+    const res = await app.inject({ method: 'POST', url: '/api/me/reauth-email', headers: AUTH });
+
+    expect(res.statusCode).toBe(202);
+    expect(mockStepUpService.sendReauthEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'usr_1', sessionId: 'ses_1' }),
+    );
+  });
+
+  it('is tightly rate-limited per user (email bomb)', async () => {
+    signedInAs();
+    let lastStatus = 0;
+    for (let i = 0; i < 4; i++) {
+      const res = await app.inject({ method: 'POST', url: '/api/me/reauth-email', headers: AUTH });
+      lastStatus = res.statusCode;
+    }
+    expect(lastStatus).toBe(429);
   });
 });

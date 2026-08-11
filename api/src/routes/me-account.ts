@@ -1,16 +1,37 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
+  accountDeletionService,
   memberAvatarService,
   memberQrService,
   notificationSettingsService,
+  stepUpService,
 } from '@/lib/container';
+import { AccountClosureBlockedError } from '@/lib/contexts/billing';
+import { StepUpFailedError, type StepUpProof } from '@/lib/contexts/identity';
 import { MEDIA_USAGE_SPECS, MediaValidationError } from '@/lib/contexts/media';
 import { MemberNotFoundError } from '@/lib/contexts/members';
 import { error, success } from '@/src/lib/responses';
-import { registerDeviceSchema, updatePreferencesSchema } from '@/src/lib/validation';
+import { perUserRateLimit } from '@/src/lib/user-rate-limit';
+import { deleteAccountSchema, registerDeviceSchema, updatePreferencesSchema } from '@/src/lib/validation';
 
 function memberId(req: FastifyRequest): string {
   return req.principal!.memberId!;
+}
+
+/** Maps the request body to exactly one step-up proof, favoring password. */
+function toStepUpProof(body: {
+  password?: string;
+  provider?: 'google' | 'apple';
+  idToken?: string;
+  nonce?: string;
+  reauthToken?: string;
+}): StepUpProof | null {
+  if (body.password) return { kind: 'password', password: body.password };
+  if (body.provider && body.idToken && body.nonce) {
+    return { kind: 'oauth', provider: body.provider, idToken: body.idToken, nonce: body.nonce };
+  }
+  if (body.reauthToken) return { kind: 'reauth_email', token: body.reauthToken };
+  return null;
 }
 
 /**
@@ -101,6 +122,91 @@ export async function meAccountRoutes(app: FastifyInstance) {
       // Idempotent: unregistering an unknown (or someone else's) token is
       // indistinguishable from an already-removed one.
       return success(reply, { removed });
+    },
+  );
+
+  // ── Account deletion (step-up gated, resumable saga) ──
+
+  // Emails a single-use re-auth code (subject- and session-bound): the
+  // step-up path for accounts with neither a password nor a reachable
+  // OAuth provider. Tightly limited per USER (an email bomb otherwise).
+  app.post(
+    '/reauth-email',
+    {
+      config: { policy: 'authenticated' },
+      preHandler: perUserRateLimit(3, 15 * 60_000),
+    },
+    async (req, reply) => {
+      await stepUpService.sendReauthEmail(req.principal!);
+      return success(reply, { sent: true }, 202);
+    },
+  );
+
+  // Policy `authenticated`, not `member`: an account that never finished
+  // onboarding must still be deletable. Step-up proof is required to START
+  // a deletion; an existing request resumes without new proof (its
+  // creation already carried it, and later steps revoke the credentials
+  // the proof would need). Rate-limited per USER: the password branch is
+  // an online guessing oracle against a known account.
+  app.delete(
+    '/',
+    {
+      config: { policy: 'authenticated' },
+      preHandler: perUserRateLimit(5, 15 * 60_000),
+    },
+    async (req, reply) => {
+      const principal = req.principal!;
+      const existing = await accountDeletionService.getForUser(principal.userId);
+
+      let stepUpMethod = existing?.stepUpMethod;
+      if (!existing) {
+        const parsed = deleteAccountSchema.safeParse(req.body ?? {});
+        if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+        const proof = toStepUpProof(parsed.data);
+        if (!proof) {
+          return error(
+            reply,
+            'STEP_UP_REQUIRED',
+            'Confirm your identity to delete this account',
+            403,
+            { acceptableMethods: await stepUpService.acceptableMethods(principal.userId) },
+          );
+        }
+        try {
+          stepUpMethod = await stepUpService.verify(principal, proof);
+        } catch (err) {
+          if (err instanceof StepUpFailedError) {
+            return error(reply, 'STEP_UP_FAILED', 'Re-authentication failed', 403);
+          }
+          throw err;
+        }
+      }
+
+      try {
+        const outcome = await accountDeletionService.request({
+          userId: principal.userId,
+          memberId: principal.memberId,
+          sessionId: principal.sessionId,
+          email: principal.email,
+          stepUpMethod: stepUpMethod!,
+          client: principal.client,
+          ip: req.ip,
+        });
+        if (outcome.status === 'blocked') {
+          return error(reply, 'DELETION_BLOCKED', 'Account deletion is blocked', 409, {
+            reasons: outcome.blockedReasons ?? [],
+          });
+        }
+        // completed | failed (retry scheduled) | in_progress: the client
+        // signs out locally either way; the saga finishes server-side.
+        return success(reply, { status: outcome.status }, 202);
+      } catch (err) {
+        if (err instanceof AccountClosureBlockedError) {
+          return error(reply, 'DELETION_BLOCKED', err.message, 409, { reasons: err.reasons });
+        }
+        throw err;
+      }
     },
   );
 

@@ -43,10 +43,18 @@ export type PasswordResetNotification = {
   resetUrl: string;
 };
 
+export type AccountReauthNotification = {
+  type: 'account-reauth';
+  to: string;
+  /** Single-use confirmation code the member enters to confirm deletion. */
+  token: string;
+};
+
 export type Notification =
   | MagicLinkNotification
   | WelcomeNotification
   | PaymentFailedNotification
   | MembershipCanceledNotification
   | EmailVerificationNotification
-  | PasswordResetNotification;
+  | PasswordResetNotification
+  | AccountReauthNotification;

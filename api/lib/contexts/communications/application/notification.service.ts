@@ -31,4 +31,9 @@ export class NotificationService {
   async sendPasswordReset(to: string, resetUrl: string): Promise<void> {
     await this.sender.send({ type: 'password-reset', to, resetUrl });
   }
+
+  /** Step-up re-auth code for destructive account actions (deletion). */
+  async sendAccountReauth(to: string, token: string): Promise<void> {
+    await this.sender.send({ type: 'account-reauth', to, token });
+  }
 }

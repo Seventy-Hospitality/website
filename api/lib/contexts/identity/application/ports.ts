@@ -25,6 +25,12 @@ export interface FederatedIdTokenVerifier {
 export interface AppleAuthGateway {
   isConfigured(): boolean;
   exchangeCode(authorizationCode: string): Promise<{ refreshToken: string | null }>;
+  /**
+   * Revokes the stored refresh token (required before account deletion for
+   * apps offering Sign in with Apple). An already-revoked token
+   * (invalid_grant) counts as success; transient failures throw.
+   */
+  revoke(refreshToken: string): Promise<void>;
 }
 
 /** Reversible encryption for provider refresh tokens at rest. */

@@ -3,6 +3,10 @@ export {
   SessionService,
   AccountLinkingService,
   MemberClaimService,
+  StepUpService,
+  StepUpRequiredError,
+  StepUpFailedError,
+  AccountErasureService,
   toPrincipal,
   type IssuedSession,
   type SessionMeta,
@@ -11,6 +15,9 @@ export {
   type AppleSignInInput,
   type LinkProviderInput,
   type LinkedCredentials,
+  type StepUpMethod,
+  type StepUpProof,
+  type AppleRevokeOutcome,
 } from './application';
 export {
   UserRepository,

@@ -3,6 +3,7 @@ import { IdentityConfigError } from '../domain';
 import type { AppleAuthGateway } from '../application/ports';
 
 const APPLE_TOKEN_URL = 'https://appleid.apple.com/auth/token';
+const APPLE_REVOKE_URL = 'https://appleid.apple.com/auth/revoke';
 const APPLE_AUDIENCE = 'https://appleid.apple.com';
 
 export interface AppleSecretConfig {
@@ -62,5 +63,35 @@ export class AppleTokenGateway implements AppleAuthGateway {
 
     const body = (await response.json()) as { refresh_token?: string };
     return { refreshToken: body.refresh_token ?? null };
+  }
+
+  /**
+   * /auth/revoke ahead of account deletion. Apple answers 200 for a
+   * successful revoke; a 400 invalid_grant means the token was already
+   * dead, which is the outcome we wanted.
+   */
+  async revoke(refreshToken: string): Promise<void> {
+    if (!this.isConfigured()) {
+      throw new IdentityConfigError('Apple client-secret signing (APPLE_TEAM_ID/KEY_ID/PRIVATE_KEY) is not configured');
+    }
+
+    const clientSecret = await generateAppleClientSecret(this.config as Required<AppleSecretConfig>);
+    const response = await fetch(APPLE_REVOKE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        token: refreshToken,
+        token_type_hint: 'refresh_token',
+        client_id: this.config.bundleId!,
+        client_secret: clientSecret,
+      }),
+    });
+
+    if (response.ok) return;
+    if (response.status === 400) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      if (body.error === 'invalid_grant') return; // already revoked
+    }
+    throw new Error(`Apple token revocation failed with status ${response.status}`);
   }
 }

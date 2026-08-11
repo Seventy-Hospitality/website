@@ -26,6 +26,7 @@ function user(overrides: Partial<IdentityUser> = {}): IdentityUser {
     staffRole: null,
     status: 'active',
     emailVerifiedAt: null,
+    deletionRequestedAt: null,
     termsAcceptedAt: null,
     termsVersion: null,
     memberId: null,
@@ -272,6 +273,15 @@ describe('AuthenticationService', () => {
 
     it('rejects a suspended account after password verification', async () => {
       const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user({ status: 'suspended' })) });
+      const { service } = createService({ users, credentials: mockCredentials('$argon2id$stored') });
+
+      await expect(service.signIn('alice@example.com', 'pw', 'member_mobile')).rejects.toThrow(
+        AccountUnavailableError,
+      );
+    });
+
+    it('rejects a deleted account even if a credential somehow survived', async () => {
+      const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user({ status: 'deleted' })) });
       const { service } = createService({ users, credentials: mockCredentials('$argon2id$stored') });
 
       await expect(service.signIn('alice@example.com', 'pw', 'member_mobile')).rejects.toThrow(

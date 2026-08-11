@@ -1,5 +1,5 @@
 import { SessionService, toPrincipal } from './session.service';
-import { hashToken, REFRESH_ROTATION_GRACE_MS, SessionExpiredError, InvalidTokenError, NotAuthorizedError } from '../domain';
+import { hashToken, REFRESH_ROTATION_GRACE_MS, SessionExpiredError, InvalidTokenError, NotAuthorizedError, AccountUnavailableError } from '../domain';
 import type { AuthSessionRepository, AuthSessionRecord } from '../infrastructure/auth-session.repository';
 import type { UserRepository, IdentityUser } from '../infrastructure/user.repository';
 import type { JwtService } from '../infrastructure/jwt.service';
@@ -20,6 +20,7 @@ function user(overrides: Partial<IdentityUser> = {}): IdentityUser {
     staffRole: null,
     status: 'active',
     emailVerifiedAt: new Date('2026-08-01T00:00:00Z'),
+    deletionRequestedAt: null,
     termsAcceptedAt: null,
     termsVersion: null,
     memberId: null,
@@ -346,6 +347,7 @@ describe('SessionService', () => {
         staffRole: 'admin',
         memberId: 'mem_1',
         client: 'member_mobile',
+        deletionRequestedAt: null,
       });
       expect(sessionRepo.touch).toHaveBeenCalledWith('ses_1');
     });
@@ -372,12 +374,14 @@ describe('SessionService', () => {
       await expect(service.validateAccessToken('access_jwt')).rejects.toThrow(SessionExpiredError);
     });
 
-    it('rejects a suspended or deleted account', async () => {
+    it('rejects a suspended account as 403-shaped and a deleted one as 401-shaped', async () => {
       const { service } = withValidToken({ user: user({ status: 'suspended' }) });
       await expect(service.validateAccessToken('access_jwt')).rejects.toThrow(NotAuthorizedError);
 
+      // Deleted is AccountUnavailableError: the client must purge its
+      // tokens for good rather than treat it as a permission problem.
       const { service: deleted } = withValidToken({ user: user({ status: 'deleted' }) });
-      await expect(deleted.validateAccessToken('access_jwt')).rejects.toThrow(NotAuthorizedError);
+      await expect(deleted.validateAccessToken('access_jwt')).rejects.toThrow(AccountUnavailableError);
     });
   });
 
@@ -415,6 +419,7 @@ describe('toPrincipal', () => {
       staffRole: 'admin',
       memberId: 'mem_1',
       client: 'admin_web',
+      deletionRequestedAt: null,
     });
   });
 

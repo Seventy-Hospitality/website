@@ -7,6 +7,7 @@ import {
   sessionExpiries,
   extendedIdleExpiry,
   isWithinRotationGrace,
+  AccountUnavailableError,
   InvalidTokenError,
   SessionExpiredError,
   NotAuthorizedError,
@@ -56,6 +57,7 @@ export function toPrincipal(source: {
     staffRole: toStaffRole(source.user.staffRole),
     memberId: source.user.memberId,
     client: source.client,
+    deletionRequestedAt: source.user.deletionRequestedAt,
   };
 }
 
@@ -233,6 +235,9 @@ export class SessionService {
     }
     void this.sessionRepo.touch(found.session.id);
 
+    // Deleted is 401-shaped (the client must purge its tokens; the account
+    // is gone for good), suspended stays 403-shaped.
+    if (found.user.status === 'deleted') throw new AccountUnavailableError();
     if (found.user.status !== 'active') throw new NotAuthorizedError();
 
     return toPrincipal({
@@ -263,6 +268,7 @@ export class SessionService {
     const user = await this.userRepo.findById(session.userId);
     if (!user || user.status !== 'active') {
       await this.sessionRepo.revoke(session.id, 'account_unavailable');
+      if (user?.status === 'deleted') throw new AccountUnavailableError();
       throw new NotAuthorizedError();
     }
     return user;

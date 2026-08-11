@@ -9,6 +9,7 @@ export interface IdentityUser {
   staffRole: string | null;
   status: string;
   emailVerifiedAt: Date | null;
+  deletionRequestedAt: Date | null;
   termsAcceptedAt: Date | null;
   termsVersion: string | null;
   /**
@@ -36,6 +37,7 @@ export const USER_SELECT = {
   staffRole: true,
   status: true,
   emailVerifiedAt: true,
+  deletionRequestedAt: true,
   termsAcceptedAt: true,
   termsVersion: true,
   createdAt: true,
@@ -100,6 +102,30 @@ export class UserRepository {
     await this.client(tx).user.updateMany({
       where: { id, emailVerifiedAt: null },
       data: { emailVerifiedAt: when },
+    });
+  }
+
+  /**
+   * Stamps the deletion freeze (never cleared; there is no undo). The auth
+   * ladder reads it per request, so every device is frozen instantly.
+   */
+  async markDeletionRequested(id: string, when: Date, tx?: TransactionContext): Promise<void> {
+    await this.client(tx).user.updateMany({
+      where: { id, deletionRequestedAt: null },
+      data: { deletionRequestedAt: when },
+    });
+  }
+
+  /**
+   * Soft-deletes the account: status flips (every auth path checks it),
+   * the email is tombstoned to free the unique index for a future
+   * re-signup, and the row survives (audit trail, note authorship).
+   * Idempotent.
+   */
+  async tombstoneForDeletion(id: string, when: Date, tx?: TransactionContext): Promise<void> {
+    await this.client(tx).user.updateMany({
+      where: { id, status: { not: 'deleted' } },
+      data: { status: 'deleted', deletedAt: when, email: `deleted+${id}@invalid` },
     });
   }
 

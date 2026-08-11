@@ -8,6 +8,14 @@ export {
   type LinkedCredentials,
 } from './account-linking.service';
 export { MemberClaimService, splitFullName } from './member-claiming';
+export {
+  StepUpService,
+  StepUpRequiredError,
+  StepUpFailedError,
+  type StepUpMethod,
+  type StepUpProof,
+} from './step-up.service';
+export { AccountErasureService, type AppleRevokeOutcome } from './account-erasure.service';
 export type {
   PasswordHasher,
   FederatedIdTokenVerifier,

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  accountDeletionService,
   mediaService,
   membershipService,
   outboxDispatcher,
@@ -62,6 +63,20 @@ export async function cronRoutes(app: FastifyInstance) {
     config: { policy: 'cron' },
     handler: async (_req, reply) => {
       const result = await membershipService.reconcileSubscriptionDrift();
+      return reply.send(result);
+    },
+  });
+
+  // Re-drives incomplete account-deletion sagas: after the pipeline has
+  // revoked the user's credentials they cannot retry through DELETE
+  // /api/me, so a mid-pipeline Stripe/Apple failure resumes here (leases
+  // prevent a user retry and the cron racing the same request).
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/resume-deletions',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await accountDeletionService.resumeDue();
       return reply.send(result);
     },
   });

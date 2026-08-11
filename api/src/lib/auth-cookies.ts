@@ -4,6 +4,7 @@ import {
   ACCESS_COOKIE_NAME,
   REFRESH_COOKIE_NAME,
   LEGACY_SESSION_COOKIE_NAME,
+  AccountUnavailableError,
   NotAuthorizedError,
   toPrincipal,
   type IssuedSession,
@@ -54,7 +55,7 @@ export async function authenticateFromCookies(
     try {
       return await sessionService.validateAccessToken(accessToken);
     } catch (err) {
-      if (err instanceof NotAuthorizedError) throw err;
+      if (err instanceof NotAuthorizedError || err instanceof AccountUnavailableError) throw err;
       // Expired or invalid access token: fall through to the refresh cookie.
     }
   }
@@ -67,7 +68,7 @@ export async function authenticateFromCookies(
     setSessionCookies(reply, issued);
     return toPrincipal(issued);
   } catch (err) {
-    if (err instanceof NotAuthorizedError) throw err;
+    if (err instanceof NotAuthorizedError || err instanceof AccountUnavailableError) throw err;
     return null;
   }
 }
@@ -83,7 +84,7 @@ export async function authenticateRequest(
     try {
       return await sessionService.validateAccessToken(bearer);
     } catch (err) {
-      if (err instanceof NotAuthorizedError) throw err;
+      if (err instanceof NotAuthorizedError || err instanceof AccountUnavailableError) throw err;
       return null;
     }
   }

@@ -56,7 +56,11 @@ import {
   SessionService,
   AccountLinkingService,
   MemberClaimService,
+  StepUpService,
+  AccountErasureService,
 } from '@/lib/contexts/identity/application';
+import { AccountDeletionService } from '@/lib/contexts/account/application';
+import { DeletionRequestRepository } from '@/lib/contexts/account/infrastructure';
 import { NotificationService, NotificationSettingsService } from '@/lib/contexts/communications/application';
 import { ReservationService, ResourceClaimService } from '@/lib/contexts/bookings/application';
 import { ClubEventService } from '@/lib/contexts/events/application';
@@ -364,6 +368,55 @@ export const accountLinkingService = new AccountLinkingService(
   secretCipher,
   memberClaimService,
   sessionService,
+  eventStore,
+  uow,
+);
+
+// Step-up re-auth for destructive actions (account deletion).
+export const stepUpService = new StepUpService(
+  credentialRepo,
+  authIdentityRepo,
+  authTokenRepo,
+  passwordHasher,
+  { google: googleVerifier, apple: appleVerifier },
+  notificationService,
+);
+
+// The identity side of account deletion (quiesce, Apple revoke, credential
+// erasure, user tombstone), consumed by the account context's saga.
+export const accountErasureService = new AccountErasureService(
+  userRepo,
+  credentialRepo,
+  authIdentityRepo,
+  authTokenRepo,
+  sessionService,
+  appleGateway,
+  secretCipher,
+  eventStore,
+  uow,
+);
+
+// ── Account BC (the deletion saga; constructed last, it consumes every
+// other context through its ports) ──
+
+export const accountDeletionService = new AccountDeletionService(
+  new DeletionRequestRepository(db),
+  billingService,
+  reservationService,
+  clubService,
+  accountErasureService,
+  {
+    getMemberNumber: async (memberId: string) => {
+      const member = await memberRepo.getById(memberId);
+      return member?.memberNumber ?? null;
+    },
+    scrubMember: async (memberId: string) => {
+      const { previousAvatarUrl } = await memberService.scrubForAccountDeletion(memberId);
+      await mediaService.deleteAsset(previousAvatarUrl, { expectUsage: 'avatar' });
+    },
+    purgeIdVerification: (memberId: string) => idVerificationService.purgeForMember(memberId),
+  },
+  notificationSettingsService,
   eventStore,
   uow,
 );

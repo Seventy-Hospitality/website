@@ -19,4 +19,10 @@ export interface Principal {
   staffRole: StaffRole | null;
   memberId: string | null;
   client: Client;
+  /**
+   * Set (never cleared) once the account-deletion pipeline has started:
+   * the auth ladder freezes every policy above `authenticated` for this
+   * user, so a half-deleted account cannot book, pay or create anything.
+   */
+  deletionRequestedAt: Date | null;
 }

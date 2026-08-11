@@ -30,6 +30,7 @@ function user(overrides: Partial<IdentityUser> = {}): IdentityUser {
     staffRole: null,
     status: 'active',
     emailVerifiedAt: new Date('2026-08-01T00:00:00Z'),
+    deletionRequestedAt: null,
     termsAcceptedAt: null,
     termsVersion: null,
     memberId: null,
@@ -116,6 +117,7 @@ function mockGateway(configured = false): AppleAuthGateway {
   return {
     isConfigured: vi.fn().mockReturnValue(configured),
     exchangeCode: vi.fn().mockResolvedValue({ refreshToken: 'apple_refresh' }),
+    revoke: vi.fn().mockResolvedValue(undefined),
   };
 }
 

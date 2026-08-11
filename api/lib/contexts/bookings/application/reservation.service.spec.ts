@@ -1881,3 +1881,136 @@ describe('ReservationService dispute freeze', () => {
     expect(await service.hasBlockingFinancialState('mem_1')).toBe(true);
   });
 });
+
+describe('account-deletion seams', () => {
+  const NOW = new Date('2026-09-01T12:00:00Z');
+
+  function upcomingRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'rsv_1',
+      organizerId: 'mem_1',
+      status: 'confirmed',
+      startsAt: new Date('2026-09-02T18:00:00Z'),
+      endsAt: new Date('2026-09-02T19:00:00Z'),
+      participants: [
+        { id: 'rp_1', memberId: 'mem_1', role: 'organizer', status: 'confirmed' },
+      ],
+      ...overrides,
+    };
+  }
+
+  describe('cancelFutureReservationsForMember', () => {
+    it('cancels only FUTURE reservations the member organizes, at policy refund', async () => {
+      const reservationRepo = mockReservationRepo();
+      (reservationRepo.listForMember as ReturnType<typeof vi.fn>).mockResolvedValue([
+        upcomingRow(), // future, organizer -> cancelled
+        upcomingRow({ id: 'rsv_guest', organizerId: 'mem_other' }), // guest -> skipped
+        upcomingRow({
+          id: 'rsv_running',
+          startsAt: new Date('2026-09-01T11:00:00Z'), // already under way -> left alone
+        }),
+      ]);
+      const { service } = buildService({ reservationRepo });
+      const cancel = vi
+        .spyOn(service, 'cancel')
+        .mockResolvedValue({ refundCents: 1500 });
+
+      const result = await service.cancelFutureReservationsForMember('mem_1', 'mem_1', NOW);
+
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledWith('rsv_1', { memberId: 'mem_1', actorId: 'mem_1', now: NOW });
+      expect(result).toEqual({ cancelled: 1, refundCents: 1500 });
+    });
+
+    it('treats already-cancelled/raced rows as done (resumable re-run)', async () => {
+      const reservationRepo = mockReservationRepo();
+      (reservationRepo.listForMember as ReturnType<typeof vi.fn>).mockResolvedValue([
+        upcomingRow(),
+        upcomingRow({ id: 'rsv_2' }),
+      ]);
+      const { service } = buildService({ reservationRepo });
+      vi.spyOn(service, 'cancel')
+        .mockRejectedValueOnce(new InvalidReservationStatusError('cancelled', 'pending_payment or confirmed'))
+        .mockResolvedValueOnce({ refundCents: 0 });
+
+      const result = await service.cancelFutureReservationsForMember('mem_1', 'mem_1', NOW);
+      expect(result).toEqual({ cancelled: 1, refundCents: 0 });
+    });
+
+    it('propagates a real failure (Stripe down) so the pipeline can retry', async () => {
+      const reservationRepo = mockReservationRepo();
+      (reservationRepo.listForMember as ReturnType<typeof vi.fn>).mockResolvedValue([upcomingRow()]);
+      const { service } = buildService({ reservationRepo });
+      vi.spyOn(service, 'cancel').mockRejectedValue(new Error('stripe unavailable'));
+
+      await expect(service.cancelFutureReservationsForMember('mem_1', 'mem_1', NOW)).rejects.toThrow(
+        'stripe unavailable',
+      );
+    });
+  });
+
+  describe('releaseParticipationsForMember', () => {
+    it('declines pending and withdraws confirmed guest participations', async () => {
+      const reservationRepo = mockReservationRepo();
+      (reservationRepo.listForMember as ReturnType<typeof vi.fn>).mockResolvedValue([
+        upcomingRow({
+          id: 'rsv_g1',
+          organizerId: 'mem_other',
+          participants: [{ id: 'rp_2', memberId: 'mem_1', role: 'guest', status: 'pending' }],
+        }),
+        upcomingRow({
+          id: 'rsv_g2',
+          organizerId: 'mem_other',
+          participants: [{ id: 'rp_3', memberId: 'mem_1', role: 'guest', status: 'confirmed' }],
+        }),
+        upcomingRow({ id: 'rsv_own' }), // organizer row: not a participation to release
+        upcomingRow({
+          id: 'rsv_declined',
+          organizerId: 'mem_other',
+          participants: [{ id: 'rp_4', memberId: 'mem_1', role: 'guest', status: 'declined' }],
+        }),
+      ]);
+      const { service } = buildService({ reservationRepo });
+      const respond = vi.spyOn(service, 'respond').mockResolvedValue({ status: 'declined' });
+
+      const result = await service.releaseParticipationsForMember('mem_1', 'mem_1', NOW);
+
+      expect(respond).toHaveBeenCalledTimes(2);
+      expect(respond).toHaveBeenCalledWith('rsv_g1', 'mem_1', 'decline', 'mem_1');
+      expect(respond).toHaveBeenCalledWith('rsv_g2', 'mem_1', 'decline', 'mem_1');
+      expect(result).toEqual({ released: 2 });
+    });
+
+    it('tolerates a reservation resolving between list and respond', async () => {
+      const reservationRepo = mockReservationRepo();
+      (reservationRepo.listForMember as ReturnType<typeof vi.fn>).mockResolvedValue([
+        upcomingRow({
+          id: 'rsv_g1',
+          organizerId: 'mem_other',
+          participants: [{ id: 'rp_2', memberId: 'mem_1', role: 'guest', status: 'pending' }],
+        }),
+      ]);
+      const { service } = buildService({ reservationRepo });
+      vi.spyOn(service, 'respond').mockRejectedValue(new ReservationNotFoundError('rsv_g1'));
+
+      expect(await service.releaseParticipationsForMember('mem_1', 'mem_1', NOW)).toEqual({ released: 0 });
+    });
+  });
+
+  describe('getLifetimeActivityStats', () => {
+    it('aggregates repo rows through the court-family definition', async () => {
+      const reservationRepo = mockReservationRepo();
+      (reservationRepo as any).aggregateLifetimeStatsForMember = vi.fn().mockResolvedValue([
+        { typeCode: 'badminton_court', count: 4, minutes: 240 },
+        { typeCode: 'tennis_simulator', count: 2, minutes: 120 },
+      ]);
+      const { service } = buildService({ reservationRepo });
+
+      expect(await service.getLifetimeActivityStats('mem_1')).toEqual({
+        courtsBooked: 4,
+        badmintonMinutes: 240,
+        tennisMinutes: 0,
+      });
+    });
+  });
+});

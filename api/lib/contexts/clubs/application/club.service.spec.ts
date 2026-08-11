@@ -92,6 +92,7 @@ function mockRepo(): ClubRepository {
     acceptPendingInvitationFor: vi.fn(),
     withdrawPendingInvitationsBy: vi.fn().mockResolvedValue([]),
     withdrawPendingInvitationsTo: vi.fn().mockResolvedValue([]),
+    revokeInviteLinksCreatedBy: vi.fn().mockResolvedValue([]),
     createInviteLink: vi.fn().mockResolvedValue(linkRecord()),
     findInviteLinkByTokenHash: vi.fn().mockResolvedValue(null),
     revokeActiveInviteLinks: vi.fn().mockResolvedValue([]),
@@ -672,6 +673,25 @@ describe('ClubService.releaseMemberForAccountDeletion (package E seam)', () => {
     expect(auditEventTypes(audit)).toEqual([
       'club.invitation_withdrawn',
       'club.invitation_withdrawn',
+    ]);
+  });
+
+  it('revokes every live share link the member minted (in any club) and audits it', async () => {
+    const repo = mockRepo();
+    (repo.revokeInviteLinksCreatedBy as ReturnType<typeof vi.fn>).mockResolvedValue(['clb_1', 'clb_2']);
+    const { service, audit } = buildService({ repo });
+
+    const summary = await service.releaseMemberForAccountDeletion('mem_gone');
+
+    expect(repo.revokeInviteLinksCreatedBy).toHaveBeenCalledWith(
+      expect.anything(),
+      'mem_gone',
+      expect.any(Date),
+    );
+    expect(summary.revokedInviteLinkClubIds).toEqual(['clb_1', 'clb_2']);
+    expect(auditEventTypes(audit)).toEqual([
+      'club.invite_links_revoked',
+      'club.invite_links_revoked',
     ]);
   });
 });

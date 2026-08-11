@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
-import { NotAuthorizedError, SessionExpiredError } from '@/lib/contexts/identity';
+import { AccountUnavailableError, NotAuthorizedError, SessionExpiredError } from '@/lib/contexts/identity';
 
 const { mockSessionService, mockMembershipChecker, containerStub } = vi.hoisted(() => {
   const mockSessionService = { validateAccessToken: vi.fn(), refresh: vi.fn() };
@@ -28,6 +28,21 @@ const { mockSessionService, mockMembershipChecker, containerStub } = vi.hoisted(
       outboxDispatcher: {},
       clubEventService: {},
       mediaService: {},
+      memberAvatarService: {},
+      memberQrService: {},
+      notificationSettingsService: {},
+      idVerificationService: {},
+      stepUpService: {},
+      accountDeletionService: {},
+      accountErasureService: {},
+      billingService: {},
+      paymentService: {},
+      reconciliationService: {},
+      clubService: {},
+      membershipRepo: {},
+      transactionRepo: {},
+      paymentMethodRepo: {},
+      webhookService: {},
       stripeGateway: {},
       VENUE_TIMEZONE: 'America/New_York',
     },
@@ -46,6 +61,9 @@ import { cronRoutes } from '@/src/routes/cron';
 import { eventRoutes } from '@/src/routes/events';
 import { mediaRoutes } from '@/src/routes/media';
 import { meRoutes } from '@/src/routes/me';
+import { meAccountRoutes } from '@/src/routes/me-account';
+import { idVerificationReviewRoutes, meIdVerificationRoutes } from '@/src/routes/id-verification';
+import { qrRoutes } from '@/src/routes/qr';
 import { memberRoutes } from '@/src/routes/members';
 import { reservationRoutes } from '@/src/routes/reservations';
 import { stripeRoutes } from '@/src/routes/stripe';
@@ -61,6 +79,7 @@ function principal(overrides: Record<string, unknown> = {}) {
     staffRole: null,
     memberId: null,
     client: 'member_mobile',
+    deletionRequestedAt: null,
     ...overrides,
   };
 }
@@ -147,6 +166,10 @@ describe('route policy boot assertion', () => {
       { routes: eventRoutes, prefix: '/api/events' },
       { routes: mediaRoutes, prefix: '/api/media' },
       { routes: meRoutes, prefix: '/api/me' },
+      { routes: meAccountRoutes, prefix: '/api/me' },
+      { routes: meIdVerificationRoutes, prefix: '/api/me' },
+      { routes: idVerificationReviewRoutes, prefix: '/api' },
+      { routes: qrRoutes, prefix: '/api/qr' },
       { routes: adminRoutes, prefix: '/api/admin' },
       { routes: uploadAssetRoutes, prefix: '/uploads' },
     );
@@ -214,6 +237,38 @@ describe('policy enforcement', () => {
     const res = await callAs('member', { memberId: 'mem_1' });
     expect(res.statusCode).toBe(200);
     expect(mockMembershipChecker.hasActiveMembership).not.toHaveBeenCalled();
+  });
+
+  it('maps a deleted account to a distinct 401 so clients purge tokens', async () => {
+    mockSessionService.validateAccessToken.mockRejectedValue(new AccountUnavailableError());
+    const res = await app.inject({
+      method: 'GET',
+      url: '/authenticated',
+      headers: { authorization: 'Bearer access_jwt' },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error.code).toBe('ACCOUNT_UNAVAILABLE');
+  });
+
+  describe('deletion freeze', () => {
+    it('refuses every policy above `authenticated` once deletion has started', async () => {
+      for (const policy of ['member', 'active-member', 'staff', 'admin'] as Policy[]) {
+        const res = await callAs(policy, {
+          memberId: 'mem_1',
+          staffRole: 'admin',
+          deletionRequestedAt: new Date('2026-08-11T12:00:00Z'),
+        });
+        expect(res.statusCode, policy).toBe(409);
+        expect(res.json().error.code, policy).toBe('DELETION_IN_PROGRESS');
+      }
+    });
+
+    it('keeps `authenticated` working so the DELETE retry path survives', async () => {
+      const res = await callAs('authenticated', {
+        deletionRequestedAt: new Date('2026-08-11T12:00:00Z'),
+      });
+      expect(res.statusCode).toBe(200);
+    });
   });
 
   it('gates active-member routes on the membership status', async () => {

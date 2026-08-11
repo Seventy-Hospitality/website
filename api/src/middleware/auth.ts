@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyReply, FastifyRequest, RouteOptions } from 'fastify';
 import { membershipChecker } from '@/lib/container';
-import { NotAuthorizedError, type Principal } from '@/lib/contexts/identity';
+import { AccountUnavailableError, NotAuthorizedError, type Principal } from '@/lib/contexts/identity';
 import { authenticateRequest } from '@/src/lib/auth-cookies';
 import { error } from '@/src/lib/responses';
 
@@ -61,6 +61,7 @@ const DEV_PRINCIPAL: Principal = {
   staffRole: 'admin',
   memberId: 'dev_member',
   client: 'admin_web',
+  deletionRequestedAt: null,
 };
 
 /**
@@ -116,12 +117,25 @@ export async function authHook(req: FastifyRequest, reply: FastifyReply) {
   try {
     principal = await authenticateRequest(req, reply);
   } catch (e) {
+    // Deleted account: 401 with a distinct code so the client purges its
+    // tokens for good; suspended stays a plain 403.
+    if (e instanceof AccountUnavailableError) {
+      return error(reply, 'ACCOUNT_UNAVAILABLE', 'This account is not available', 401);
+    }
     if (e instanceof NotAuthorizedError) return forbidden(reply);
     throw e;
   }
 
   if (!principal) {
     return error(reply, 'UNAUTHORIZED', 'Authentication required', 401);
+  }
+
+  // Deletion freeze: once the pipeline has started, everything above bare
+  // authentication is refused, so a half-deleted account cannot book, pay
+  // or create anything while the saga completes (the DELETE endpoint
+  // itself is policy `authenticated` and keeps working for retries).
+  if (principal.deletionRequestedAt && policy !== 'authenticated') {
+    return error(reply, 'DELETION_IN_PROGRESS', 'This account is being deleted', 409);
   }
 
   switch (policy) {
