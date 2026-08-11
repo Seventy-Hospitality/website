@@ -474,24 +474,46 @@ model ReservationPendingChange {
 
 // The Weekly badge: local wall time + weekday, materialized into concrete
 // reservations by cron inside the horizon (skip + notify on collision).
+// Creation is admin-only (plan OPEN decision 8), so createdByAdminId is
+// always known; materialized occurrences are comp reservations carrying it.
 model ReservationSeries {
-  id              String  @id @default(cuid())
-  organizerId     String
-  resourceTypeId  String
-  weekday         Int // 0 = Sunday .. 6 = Saturday, venue-local
-  startTimeLocal  String // "HH:MM" venue wall clock
-  durationMinutes Int
-  active          Boolean @default(true)
+  id               String  @id @default(cuid())
+  organizerId      String
+  resourceTypeId   String
+  weekday          Int // 0 = Sunday .. 6 = Saturday, venue-local
+  startTimeLocal   String // "HH:MM" venue wall clock
+  durationMinutes  Int
+  active           Boolean @default(true)
+  createdByAdminId String
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organizer    Member        @relation(fields: [organizerId], references: [id])
-  resourceType ResourceType  @relation(fields: [resourceTypeId], references: [id])
+  organizer    Member                  @relation(fields: [organizerId], references: [id])
+  resourceType ResourceType            @relation(fields: [resourceTypeId], references: [id])
   reservations Reservation[]
+  skips        ReservationSeriesSkip[]
 
   @@index([organizerId, active])
   @@map("reservation_series")
+}
+
+// One row per series occurrence the materializer could NOT create (slot
+// collision, daily limit, lapsed membership). The unique key makes the
+// skip-and-notify decision idempotent: the organizer is told exactly once
+// per missed occurrence, and later cron passes never re-attempt a date a
+// human already knows about (never silently shifted, per the plan).
+model ReservationSeriesSkip {
+  id        String   @id @default(cuid())
+  seriesId  String
+  localDate String // venue-local "YYYY-MM-DD" of the missed occurrence
+  reason    String // "slot_unavailable" | "daily_limit" | "membership_inactive"
+  createdAt DateTime @default(now())
+
+  series ReservationSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([seriesId, localDate])
+  @@map("reservation_series_skips")
 }
 
 // ── Billing ──
@@ -737,6 +759,51 @@ model Device {
 
   @@index([memberId])
   @@map("devices")
+}
+
+// ── Notification delivery (package F) ──
+
+// The delivered-notifications ledger: one row per (outbox event, recipient,
+// channel) delivery attempt, owned by the communications BC. The unique key
+// is the idempotency guard the outbox consumer claims BEFORE sending, so a
+// redelivered event row (dispatcher retry, concurrent dispatchers, a batch
+// that failed halfway) can never double-send anything already marked sent,
+// while a claim that never reached "sent" is retried, not dropped.
+// recipient is a member id, or the literal "staff" for staff alerts.
+// Deliberately no FK: delivery bookkeeping must never constrain (or be
+// cascaded away by) domain rows.
+model DeliveredNotification {
+  id        String    @id @default(cuid())
+  eventSeq  Int
+  recipient String
+  channel   String // "email" | "push"
+  status    String    @default("pending") // "pending" | "sent"
+  attempts  Int       @default(1)
+  lastError String?
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  @@unique([eventSeq, recipient, channel])
+  @@map("delivered_notifications")
+}
+
+// Reminder-sent markers for the booking-reminder cron: at most one reminder
+// per (reservation, member), claimed before sending exactly like the
+// delivery ledger. A marker that never reached "sent" (every channel
+// failed) is retried on the next cron pass; "sent" means at least one
+// channel delivered. No FK for the same reason as above.
+model BookingReminder {
+  id            String    @id @default(cuid())
+  reservationId String
+  memberId      String
+  status        String    @default("pending") // "pending" | "sent"
+  attempts      Int       @default(1)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  sentAt        DateTime?
+
+  @@unique([reservationId, memberId])
+  @@map("booking_reminders")
 }
 
 // Government-ID verification, owned by the members BC. One row per member
