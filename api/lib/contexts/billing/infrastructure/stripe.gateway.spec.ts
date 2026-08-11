@@ -1,4 +1,4 @@
-import type Stripe from 'stripe';
+import Stripe from 'stripe';
 import { StripeGateway } from './stripe.gateway';
 
 const gateway = new StripeGateway('sk_test_fake', 'http://localhost:5173');
@@ -109,6 +109,71 @@ describe('StripeGateway.mapWebhookEvent', () => {
 describe('StripeGateway.verifyWebhookSignature', () => {
   it('rejects an invalid signature', () => {
     expect(() => gateway.verifyWebhookSignature('{}', 'bad_sig', 'whsec_test')).toThrow();
+  });
+});
+
+describe('StripeGateway.cancelSubscriptionNow', () => {
+  function subWithStatus(status: string) {
+    return {
+      id: 'sub_1',
+      status,
+      cancel_at_period_end: false,
+      items: { data: [{ price: { id: 'price_m' }, current_period_end: 1_790_000_000 }] },
+      customer: 'cus_1',
+      metadata: {},
+      schedule: null,
+      lastResponse: { headers: { date: 'Mon, 10 Aug 2026 07:30:00 GMT' } },
+    };
+  }
+
+  function invalidRequestError(message: string) {
+    return new Stripe.errors.StripeInvalidRequestError({
+      message,
+      type: 'invalid_request_error',
+    } as never);
+  }
+
+  it('treats an already-canceled subscription as success (idempotent retry in the webhook-lag window)', async () => {
+    // The deletion pipeline's close_billing gates on the LOCAL membership
+    // status, which flips only when subscription.deleted lands; a retry
+    // inside that lag re-cancels an already-canceled subscription and must
+    // not fail the step.
+    const g = new StripeGateway('sk_test_fake', 'http://localhost:5173');
+    (g.client.subscriptions as unknown as { cancel: unknown }).cancel = vi
+      .fn()
+      .mockRejectedValue(invalidRequestError('A canceled subscription can only update its cancellation_details.'));
+    (g.client.subscriptions as unknown as { retrieve: unknown }).retrieve = vi
+      .fn()
+      .mockResolvedValue(subWithStatus('canceled'));
+
+    const snapshot = await g.cancelSubscriptionNow('sub_1');
+
+    expect(snapshot.status).toBe('canceled');
+    expect(snapshot.subscriptionId).toBe('sub_1');
+  });
+
+  it('rethrows when the subscription is not actually terminal', async () => {
+    const g = new StripeGateway('sk_test_fake', 'http://localhost:5173');
+    (g.client.subscriptions as unknown as { cancel: unknown }).cancel = vi
+      .fn()
+      .mockRejectedValue(invalidRequestError('Some other invalid request.'));
+    (g.client.subscriptions as unknown as { retrieve: unknown }).retrieve = vi
+      .fn()
+      .mockResolvedValue(subWithStatus('active'));
+
+    await expect(g.cancelSubscriptionNow('sub_1')).rejects.toThrow('Some other invalid request');
+  });
+
+  it('rethrows when the subscription id is unknown (retrieve misses too)', async () => {
+    const g = new StripeGateway('sk_test_fake', 'http://localhost:5173');
+    (g.client.subscriptions as unknown as { cancel: unknown }).cancel = vi
+      .fn()
+      .mockRejectedValue(invalidRequestError('No such subscription: sub_1'));
+    (g.client.subscriptions as unknown as { retrieve: unknown }).retrieve = vi
+      .fn()
+      .mockRejectedValue(invalidRequestError('No such subscription: sub_1'));
+
+    await expect(g.cancelSubscriptionNow('sub_1')).rejects.toThrow('No such subscription');
   });
 });
 

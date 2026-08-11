@@ -38,8 +38,25 @@ export interface DeletionOutcome {
   blockedReasons?: string[];
 }
 
-/** Lease TTL: a run killed mid-flight is re-drivable after this window. */
+/**
+ * Lease TTL: a run killed mid-flight is re-drivable after this window.
+ * Every completed step renews it (heartbeat), so the budget applies per
+ * step, not per pipeline; a run that loses the lease anyway abandons on
+ * its next write (every write is compare-and-set on lockedBy).
+ */
 const LEASE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Internal control flow: this worker's lease expired mid-run and another
+ * worker claimed it. Abandon without recording anything — the thief owns
+ * the row now, and steps are idempotent so it re-driving our tail is safe.
+ */
+class DeletionLeaseLostError extends Error {
+  constructor() {
+    super('Deletion lease lost to another worker');
+    this.name = 'DeletionLeaseLostError';
+  }
+}
 
 /**
  * The resumable account-deletion saga. One request per user; every step is
@@ -100,15 +117,13 @@ export class AccountDeletionService {
         request = await this.repo.findByUserId(input.userId);
         if (!request) throw err;
       }
-
-      // Quiesce: freeze-stamp + revoke every OTHER session + kill push
-      // channels. The driving session survives for retries; the auth
-      // ladder now refuses everything above `authenticated`.
-      await this.identity.quiesce(input.userId, input.sessionId);
-      if (input.memberId) await this.notifications.purgeForMember(input.memberId);
     }
 
-    return this.run(request);
+    // The freeze (quiesce) is the pipeline's FIRST step, not creation-only
+    // code: a request that persisted but never quiesced (transient error
+    // between create and freeze) re-applies it on every resume path before
+    // anything destructive runs. The driving session survives for retries.
+    return this.run(request, input.sessionId);
   }
 
   /** Cron entry: re-drives due requests (expired leases included). */
@@ -125,7 +140,10 @@ export class AccountDeletionService {
     return summary;
   }
 
-  private async run(request: DeletionRequestRecord): Promise<DeletionOutcome> {
+  private async run(
+    request: DeletionRequestRecord,
+    exceptSessionId?: string,
+  ): Promise<DeletionOutcome> {
     if (request.status === 'completed') {
       return { status: 'completed', requestId: request.id };
     }
@@ -133,10 +151,16 @@ export class AccountDeletionService {
       return { status: 'blocked', requestId: request.id, blockedReasons: request.blockedReasons };
     }
 
-    if (!(await this.repo.claimLease(request.id, this.workerId, LEASE_TTL_MS))) {
+    // Claim + re-read in one repository call: the claimed record is the
+    // ONLY snapshot this run drives from. Seeding from the caller's
+    // pre-claim read would let a worker that claimed an expired lease
+    // re-run steps the previous holder had since persisted.
+    const claimed = await this.repo.claimLease(request.id, this.workerId, LEASE_TTL_MS);
+    if (!claimed) {
       // Another worker is driving it right now.
       return { status: 'in_progress', requestId: request.id };
     }
+    request = claimed;
 
     const steps: StepsMap = { ...request.steps };
     try {
@@ -144,31 +168,58 @@ export class AccountDeletionService {
         if (steps[step]?.completedAt) continue;
 
         try {
-          const result = await this.executeStep(step, request, steps);
+          const result = await this.executeStep(step, request, steps, exceptSessionId);
           steps[step] = {
             ...steps[step],
             completedAt: new Date().toISOString(),
             result: result ?? undefined,
           };
-          // finalize persists its own completion inside its transaction.
-          if (step !== 'finalize') await this.repo.saveStepCompleted(request.id, steps);
+          // finalize persists its own completion inside its transaction;
+          // every other save doubles as the lease heartbeat.
+          if (step !== 'finalize') await this.persistStepCompleted(request.id, steps);
         } catch (err) {
+          if (err instanceof DeletionLeaseLostError) throw err;
           return await this.handleStepFailure(request, steps, step, err);
         }
       }
       return { status: 'completed', requestId: request.id };
+    } catch (err) {
+      if (err instanceof DeletionLeaseLostError) {
+        // The lease expired mid-run and another worker took over. Abandon
+        // without writing: the thief owns every subsequent write, and the
+        // compare-and-set guards guarantee only ITS finalize can commit
+        // the terminal account.deleted event.
+        return { status: 'in_progress', requestId: request.id };
+      }
+      throw err;
     } finally {
       await this.repo.releaseLease(request.id, this.workerId).catch(() => {});
     }
+  }
+
+  /** Lease-guarded step save; throws DeletionLeaseLostError when stolen. */
+  private async persistStepCompleted(requestId: string, steps: StepsMap): Promise<void> {
+    const applied = await this.repo.saveStepCompleted(requestId, this.workerId, steps, LEASE_TTL_MS);
+    if (!applied) throw new DeletionLeaseLostError();
   }
 
   private async executeStep(
     step: DeletionStep,
     request: DeletionRequestRecord,
     steps: StepsMap,
+    exceptSessionId?: string,
   ): Promise<unknown> {
     const memberId = request.memberId;
     switch (step) {
+      case 'quiesce':
+        // Freeze-stamp + revoke every OTHER session + kill push channels,
+        // idempotently, before anything destructive. A user retry passes
+        // its driving session (which survives); a cron resume passes none,
+        // so a request that never managed to quiesce freezes every device.
+        await this.identity.quiesce(request.userId, exceptSessionId);
+        if (!memberId) return null;
+        return this.notifications.purgeForMember(memberId);
+
       case 'cancel_reservations':
         if (!memberId) return { skipped: 'no member profile' };
         return this.reservations.cancelFutureReservationsForMember(memberId, memberId);
@@ -226,7 +277,11 @@ export class AccountDeletionService {
             },
             actorId: request.requestedByUserId,
           });
-          await this.repo.completeInTx(tx, request.id, steps, when);
+          // Compare-and-set on the lease INSIDE the same transaction: a
+          // stolen lease rolls the event above back too, so two workers
+          // racing the tail can never double-emit account.deleted.
+          const applied = await this.repo.completeInTx(tx, request.id, this.workerId, steps, when);
+          if (!applied) throw new DeletionLeaseLostError();
         });
         return null;
       }
@@ -259,7 +314,11 @@ export class AccountDeletionService {
       const reasons = isAccountClosureBlocked(err)
         ? (err as { reasons: string[] }).reasons
         : [`retry limit reached at step ${step}: ${message}`];
-      await this.repo.markBlocked(request.id, reasons, steps);
+      if (!(await this.repo.markBlocked(request.id, this.workerId, reasons, steps))) {
+        // Lease stolen while handling the failure: the thief drives (and
+        // will hit the same block itself if it is real).
+        return { status: 'in_progress', requestId: request.id };
+      }
       await this.uow.execute(async (tx) => {
         await this.audit.append(tx, {
           streamType: 'user',
@@ -273,12 +332,14 @@ export class AccountDeletionService {
     }
 
     const attempts = request.attempts + 1;
-    await this.repo.recordFailure(
+    const applied = await this.repo.recordFailure(
       request.id,
+      this.workerId,
       steps,
       attempts,
       new Date(Date.now() + nextAttemptDelayMs(attempts)),
     );
+    if (!applied) return { status: 'in_progress', requestId: request.id };
     return { status: 'failed', requestId: request.id };
   }
 }

@@ -5,6 +5,12 @@
 // are separate from pure-DB steps because they are the units of retry.
 
 export const DELETION_STEPS = [
+  // (a) Freeze before destruction: stamp users.deletionRequestedAt, revoke
+  // every other session, delete push devices. A pipeline step (not
+  // creation-only code) so EVERY entry path re-applies it: a request row
+  // that persisted moments before the quiesce write failed must never
+  // drive the erasure against a live, unfrozen account.
+  'quiesce',
   // (b) Cancel the member's own FUTURE reservations at the tier refund
   // policy (Stripe refunds), then decline their guest participations on
   // other members' bookings (pure DB).
@@ -35,8 +41,10 @@ export const DELETION_STEPS = [
 
 export type DeletionStep = (typeof DELETION_STEPS)[number];
 
-/** Bumped whenever the step list changes shape (in-flight rows keep theirs). */
-export const DELETION_STEPS_VERSION = 1;
+/** Bumped whenever the step list changes shape (in-flight rows keep theirs;
+ *  the run loop always executes the CURRENT list, and quiesce is idempotent,
+ *  so v1 rows pick the quiesce step up on their next resume). */
+export const DELETION_STEPS_VERSION = 2;
 
 export type DeletionRequestStatus = 'in_progress' | 'failed' | 'blocked' | 'completed';
 

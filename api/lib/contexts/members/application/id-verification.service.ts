@@ -62,11 +62,23 @@ export class IdVerificationService {
   /** Upload or replace the photo (allowed until submitted / after rejection). */
   async uploadPhoto(memberId: string, upload: UploadedImage): Promise<IdVerificationStatusView> {
     const existing = await this.repo.getOrCreate(memberId);
+    // Fast pre-check for the friendly error; the WRITE below is what
+    // actually enforces the freeze (this read is not transactional).
     assertCanUploadPhoto(existing.status);
 
     const { storagePath } = await this.photos.uploadIdPhoto(upload);
     await this.photos.attachToMember(storagePath, memberId);
-    await this.repo.setPhoto(memberId, storagePath);
+    const applied = await this.repo.setPhoto(memberId, storagePath);
+    if (!applied) {
+      // The row raced into submitted/verified while the upload ran (a
+      // concurrent submit — the frozen row keeps the photo staff are
+      // reviewing) or was purged. Discard the just-uploaded asset so no
+      // orphaned government-ID photo outlives the lost race.
+      await this.photos.deleteIdPhoto(storagePath);
+      const fresh = await this.repo.getByMemberId(memberId);
+      if (fresh) assertCanUploadPhoto(fresh.status); // throws the precise state error
+      throw new IdVerificationStateError('Your ID photo could not be saved; try again');
+    }
     if (existing.imageAssetRef && existing.imageAssetRef !== storagePath) {
       await this.photos.deleteIdPhoto(existing.imageAssetRef);
     }

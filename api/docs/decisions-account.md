@@ -108,6 +108,11 @@ lifetime (9). "Claim Clutch session stats" is parked and not built.
     submit requires a photo; skip records skippedAt without changing
     status; review is a compare-and-set on status=submitted (two staff
     racing produce one decision) with a member-visible rejection note.
+    The photo WRITE is compare-and-set too (uploadable states only): an
+    upload whose slow normalize raced a concurrent submit loses cleanly,
+    the just-uploaded asset is discarded, and the under-review photo
+    survives untouched — the freeze holds under concurrency, not just on
+    the pre-read.
 18. **Short retention**: the deciding transaction nulls the photo pointer
     and the object is deleted after commit; replacement deletes the old
     asset; account deletion purges photo and row. `purgedAt` on
@@ -134,16 +139,21 @@ lifetime (9). "Claim Clutch session stats" is parked and not built.
     /api/me and POST /api/me/reauth-email are rate-limited per USER
     (5/15min and 3/15min): the password branch is an online guessing
     oracle an IP-keyed limit cannot contain.
-20. **Quiesce before destruction.** Creating the request freeze-stamps
-    users.deletionRequestedAt (never cleared; no undo), revokes every
-    OTHER session and deletes push devices. The auth ladder answers 409
-    DELETION_IN_PROGRESS for every policy above `authenticated`, read
-    fresh per request, so a half-deleted account cannot book, pay or
-    create anything on any device while the saga completes. The driving
-    session survives for retries.
+20. **Quiesce before destruction, on every entry.** The freeze — stamp
+    users.deletionRequestedAt (never cleared; no undo), revoke every
+    OTHER session, delete push devices — is the pipeline's FIRST step,
+    not creation-only code: a request row that persisted moments before a
+    transient quiesce failure re-applies the freeze on every resume path
+    (user retry or cron) before anything destructive runs. The auth
+    ladder answers 409 DELETION_IN_PROGRESS for every policy above
+    `authenticated`, read fresh per request, so a half-deleted account
+    cannot book, pay or create anything on any device while the saga
+    completes. A user retry spares its driving session; a cron resume
+    spares none (nobody is driving).
 21. **Steps** (deletion_requests.steps json: completedAt/attempts/
     lastError/result per step; the result payloads feed the final event
     and are the only record once the rows are scrubbed):
+    quiesce (decision 20) ->
     cancel_reservations (organizer, startsAt strictly future, tier refund
     policy, in-progress reservations left alone, re-listed every run so
     re-runs converge) -> release_participations (guest pending/confirmed
@@ -183,18 +193,45 @@ lifetime (9). "Claim Clutch session stats" is parked and not built.
     session lives; after erase_credentials only POST
     /api/cron/resume-deletions can finish the job (it selects due
     requests, exponential backoff 1m..6h). A lockedBy/lockedUntil lease
-    (5 min TTL) keeps a user retry and the cron from driving one request
-    concurrently; a crashed run resumes after the lease expires. 20 total
-    attempts flip the request to `blocked` with an alert. The finalize
-    step commits the `account.deleted` outbox event (package F's consumer)
-    in the SAME transaction as status='completed', so a deletion is never
-    announced unfinished. No 30-day undo.
+    (5 min TTL, renewed by every completed step, so the TTL budgets a
+    step, never the whole pipeline) keeps a user retry and the cron from
+    driving one request concurrently; a crashed run resumes after the
+    lease expires. Every subsequent write (step save, failure, blocked,
+    completion) is compare-and-set on lockedBy, and a claim answers the
+    freshly-leased row: a worker whose expired lease was stolen mid-run
+    abandons on its next write instead of double-driving from a stale
+    snapshot. 20 total attempts flip the request to `blocked` with an
+    alert. The finalize step commits the `account.deleted` outbox event
+    (package F's consumer) in the SAME transaction as status='completed',
+    with the lease CAS inside that transaction — a deletion is never
+    announced unfinished, and never announced twice. No 30-day undo.
 26. **Post-deletion money keeps moving deliberately**: the ledger is
     memberId-without-FK by design, late captures on cancelled bookings
     still refund through the orphan path, and subscription webhooks from
     the pipeline's own cancel resolve via the kept stripeCustomerId. The
     one guard added: payment_method.attached racing the closure does not
     resurrect a mirror row for a deleted member.
+
+## Post-review hardening (2026-08-11)
+
+29. **A completed deletion request sheds its PII.** deletion_requests
+    keeps the row for provenance (decision 21), but emailAtRequest exists
+    solely for the erase_credentials step (magic links key on email) and
+    ip for request provenance; the finalize transaction scrubs both
+    (email to '', ip to null), so the retained row of an erased account
+    carries no plaintext email or IP the tombstones scrubbed everywhere
+    else. memberNumberAtRequest and timestamps remain the human-readable
+    provenance. Blocked/failed rows keep the email — a later resume still
+    needs it to burn magic-link tokens.
+
+30. **cancelSubscriptionNow is idempotent at the gateway.** Its callers
+    gate on the LOCAL membership status, which flips only when the
+    customer.subscription.deleted webhook lands; a retry inside that lag
+    window (deletion-pipeline resume, crash re-run) legitimately
+    re-cancels an already-terminal subscription. The gateway answers the
+    live snapshot instead of surfacing Stripe's 400 (mirroring
+    releaseSchedule's already-terminal handling); genuinely non-terminal
+    errors still throw.
 
 ## Structure
 

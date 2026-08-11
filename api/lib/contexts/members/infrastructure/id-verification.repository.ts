@@ -59,8 +59,19 @@ export class IdVerificationRepository {
     }) as Promise<IdVerificationRecord>;
   }
 
-  async setPhoto(memberId: string, imageAssetRef: string, tx?: TransactionContext): Promise<void> {
-    await this.client(tx).idVerification.update({ where: { memberId }, data: { imageAssetRef } });
+  /**
+   * Compare-and-set photo write: only a row still in an uploadable state
+   * accepts a (re)placement, so a slow upload that raced a concurrent
+   * submit can never swap the photo out from under a submitted/verified
+   * row. 0 rows = lost the race (or the row was purged); the caller must
+   * discard the just-uploaded asset.
+   */
+  async setPhoto(memberId: string, imageAssetRef: string, tx?: TransactionContext): Promise<boolean> {
+    const result = await this.client(tx).idVerification.updateMany({
+      where: { memberId, status: { in: ['not_submitted', 'rejected'] } },
+      data: { imageAssetRef },
+    });
+    return result.count === 1;
   }
 
   async recordSkip(memberId: string, when: Date, tx?: TransactionContext): Promise<void> {

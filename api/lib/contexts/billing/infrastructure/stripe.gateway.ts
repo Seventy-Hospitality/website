@@ -204,10 +204,28 @@ export class StripeGateway implements SubscriptionGateway {
     return this.toSnapshot(sub, fetchedAtOf(sub, before));
   }
 
+  /**
+   * Idempotent: cancelling an already-terminal subscription answers its
+   * live snapshot instead of Stripe's 400. Callers gate on the LOCAL
+   * membership status, which flips only when the subscription.deleted
+   * webhook lands, so a retry inside that lag window (account-deletion
+   * resume, crash re-run) legitimately re-cancels a subscription Stripe
+   * already terminated.
+   */
   async cancelSubscriptionNow(subscriptionId: string): Promise<SubscriptionSnapshot> {
     const before = new Date();
-    const sub = await this.stripe.subscriptions.cancel(subscriptionId);
-    return this.toSnapshot(sub, fetchedAtOf(sub, before));
+    try {
+      const sub = await this.stripe.subscriptions.cancel(subscriptionId);
+      return this.toSnapshot(sub, fetchedAtOf(sub, before));
+    } catch (err) {
+      if (err instanceof Stripe.errors.StripeInvalidRequestError) {
+        const sub = await this.stripe.subscriptions.retrieve(subscriptionId).catch(() => null);
+        if (sub && (sub.status === 'canceled' || sub.status === 'incomplete_expired')) {
+          return this.toSnapshot(sub, fetchedAtOf(sub, before));
+        }
+      }
+      throw err;
+    }
   }
 
   /**

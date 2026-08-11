@@ -25,7 +25,7 @@ function mockRepo(): IdVerificationRepository {
   return {
     getByMemberId: vi.fn().mockResolvedValue(null),
     getOrCreate: vi.fn().mockResolvedValue(record()),
-    setPhoto: vi.fn(),
+    setPhoto: vi.fn().mockResolvedValue(true),
     recordSkip: vi.fn(),
     transitionToSubmitted: vi.fn().mockResolvedValue(true),
     applyReview: vi.fn().mockResolvedValue(true),
@@ -92,6 +92,51 @@ describe('IdVerificationService.uploadPhoto', () => {
 
     await expect(service.uploadPhoto('mem_1', UPLOAD)).rejects.toThrow(IdVerificationStateError);
     expect(photos.uploadIdPhoto).not.toHaveBeenCalled();
+  });
+
+  it('a row that raced into submitted mid-upload keeps its photo; the new asset is discarded', async () => {
+    // The pre-read passed the gate, then a concurrent submit froze the row
+    // while the slow normalize ran. The CAS write loses; the under-review
+    // photo must survive untouched and the fresh upload must not linger.
+    const repo = mockRepo();
+    (repo.getOrCreate as ReturnType<typeof vi.fn>).mockResolvedValue(
+      record({ imageAssetRef: 'private/id-photos/oldphoto1234567890ab.webp' }),
+    );
+    (repo.setPhoto as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    (repo.getByMemberId as ReturnType<typeof vi.fn>).mockResolvedValue(
+      record({ status: 'submitted', imageAssetRef: 'private/id-photos/oldphoto1234567890ab.webp' }),
+    );
+    const { service, photos } = build({ repo });
+
+    await expect(service.uploadPhoto('mem_1', UPLOAD)).rejects.toThrow('under review');
+    // Only the just-uploaded asset was discarded; the submitted photo stays.
+    expect(photos.deleteIdPhoto).toHaveBeenCalledTimes(1);
+    expect(photos.deleteIdPhoto).toHaveBeenCalledWith('private/id-photos/newphoto123456789012.webp');
+  });
+
+  it('a row that raced into verified mid-upload does not retain the new government-ID photo', async () => {
+    // Stronger interleaving: submit AND approve both landed during the
+    // upload. Without the discard, photo B would linger indefinitely on a
+    // verified row (short-retention guarantee broken).
+    const repo = mockRepo();
+    (repo.setPhoto as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    (repo.getByMemberId as ReturnType<typeof vi.fn>).mockResolvedValue(
+      record({ status: 'verified', imageAssetRef: null }),
+    );
+    const { service, photos } = build({ repo });
+
+    await expect(service.uploadPhoto('mem_1', UPLOAD)).rejects.toThrow('already verified');
+    expect(photos.deleteIdPhoto).toHaveBeenCalledWith('private/id-photos/newphoto123456789012.webp');
+  });
+
+  it('a row purged mid-upload (account deletion) discards the asset with a retryable error', async () => {
+    const repo = mockRepo();
+    (repo.setPhoto as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    (repo.getByMemberId as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    const { service, photos } = build({ repo });
+
+    await expect(service.uploadPhoto('mem_1', UPLOAD)).rejects.toThrow('could not be saved');
+    expect(photos.deleteIdPhoto).toHaveBeenCalledWith('private/id-photos/newphoto123456789012.webp');
   });
 });
 

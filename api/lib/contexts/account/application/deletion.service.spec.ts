@@ -45,7 +45,12 @@ function requestRecord(overrides: Partial<DeletionRequestRecord> = {}): Deletion
   };
 }
 
-/** In-memory repository double faithful to the persistence contract. */
+/**
+ * In-memory repository double faithful to the persistence contract:
+ * claimLease answers the freshly-leased record, and every later write is
+ * compare-and-set on lockedBy (a stolen lease makes the loser's writes
+ * answer false, exactly like the CAS updateMany in the real repository).
+ */
 function fakeRepo(existing: DeletionRequestRecord | null = null) {
   let row = existing;
   const repo = {
@@ -55,22 +60,49 @@ function fakeRepo(existing: DeletionRequestRecord | null = null) {
       row = requestRecord({ ...input, id: 'del_1', steps: {} });
       return row!;
     }),
-    claimLease: vi.fn(async () => true),
-    releaseLease: vi.fn(async () => {}),
-    saveStepCompleted: vi.fn(async (_id: string, steps: any) => {
-      row = { ...row!, steps: structuredClone(steps) };
+    claimLease: vi.fn(async (_id: string, workerId: string, ttlMs: number, now: Date = new Date()) => {
+      if (!row || (row.status !== 'in_progress' && row.status !== 'failed')) return null;
+      if (row.lockedUntil && row.lockedUntil > now) return null;
+      row = { ...row, lockedBy: workerId, lockedUntil: new Date(now.getTime() + ttlMs), status: 'in_progress' };
+      return row;
     }),
-    recordFailure: vi.fn(async (_id: string, steps: any, attempts: number, nextAttemptAt: Date) => {
-      row = { ...row!, steps: structuredClone(steps), attempts, nextAttemptAt, status: 'failed' };
+    releaseLease: vi.fn(async (_id: string, workerId: string) => {
+      if (row?.lockedBy === workerId) row = { ...row, lockedBy: null, lockedUntil: null };
     }),
-    markBlocked: vi.fn(async (_id: string, reasons: string[], steps: any) => {
-      row = { ...row!, status: 'blocked', blockedReasons: reasons, steps: structuredClone(steps) };
+    saveStepCompleted: vi.fn(async (_id: string, workerId: string, steps: any, ttlMs: number) => {
+      if (row?.lockedBy !== workerId) return false;
+      row = { ...row, steps: structuredClone(steps), lockedUntil: new Date(Date.now() + ttlMs) };
+      return true;
     }),
-    completeInTx: vi.fn(async (_tx: unknown, _id: string, steps: any, when: Date) => {
-      row = { ...row!, status: 'completed', completedAt: when, steps: structuredClone(steps) };
+    recordFailure: vi.fn(async (_id: string, workerId: string, steps: any, attempts: number, nextAttemptAt: Date) => {
+      if (row?.lockedBy !== workerId) return false;
+      row = { ...row, steps: structuredClone(steps), attempts, nextAttemptAt, status: 'failed', lockedBy: null, lockedUntil: null };
+      return true;
+    }),
+    markBlocked: vi.fn(async (_id: string, workerId: string, reasons: string[], steps: any) => {
+      if (row?.lockedBy !== workerId) return false;
+      row = { ...row, status: 'blocked', blockedReasons: reasons, steps: structuredClone(steps), lockedBy: null, lockedUntil: null };
+      return true;
+    }),
+    completeInTx: vi.fn(async (_tx: unknown, _id: string, workerId: string, steps: any, when: Date) => {
+      if (row?.lockedBy !== workerId || row.status === 'completed') return false;
+      row = {
+        ...row,
+        status: 'completed',
+        completedAt: when,
+        steps: structuredClone(steps),
+        lockedBy: null,
+        lockedUntil: null,
+        emailAtRequest: '',
+        ip: null,
+      };
+      return true;
     }),
     listDue: vi.fn(async () => (row && (row.status === 'in_progress' || row.status === 'failed') ? [row] : [])),
     current: () => row,
+    seed: (r: DeletionRequestRecord) => {
+      row = r;
+    },
   };
   return repo;
 }
@@ -133,7 +165,7 @@ const INPUT = {
 };
 
 describe('AccountDeletionService happy path', () => {
-  it('gates on assertClosable, quiesces, runs every step in order, finalizes atomically', async () => {
+  it('gates on assertClosable, quiesces first, runs every step in order, finalizes atomically', async () => {
     const repo = fakeRepo();
     const { service, ports, audit } = build(repo);
     const calls: string[] = [];
@@ -183,8 +215,11 @@ describe('AccountDeletionService happy path', () => {
       'scrub_member',
       'purge_id_verification',
     ]);
-    // The other-sessions revocation carried the driving session exception.
+    // The other-sessions revocation carried the driving session exception,
+    // threaded through the run into the quiesce STEP.
     expect(ports.identity.quiesce).toHaveBeenCalledWith('usr_1', 'ses_1');
+    // The freeze also killed the push channels.
+    expect(ports.notifications.purgeForMember).toHaveBeenCalledWith('mem_1');
     // Credentials were erased with the PRE-tombstone email.
     expect(ports.identity.eraseCredentials).toHaveBeenCalledWith('usr_1', 'alice@example.com');
     // The outbox event and completion committed together (finalize step).
@@ -212,6 +247,8 @@ describe('AccountDeletionService happy path', () => {
     expect(ports.billing.closeBillingForMember).not.toHaveBeenCalled();
     expect(ports.reservations.cancelFutureReservationsForMember).not.toHaveBeenCalled();
     expect(ports.clubs.releaseMemberForAccountDeletion).not.toHaveBeenCalled();
+    expect(ports.notifications.purgeForMember).not.toHaveBeenCalled();
+    expect(ports.identity.quiesce).toHaveBeenCalledWith('usr_1', 'ses_1');
     expect(ports.identity.eraseCredentials).toHaveBeenCalled();
     expect(ports.identity.tombstoneUser).toHaveBeenCalled();
   });
@@ -270,7 +307,7 @@ describe('AccountDeletionService resumability', () => {
     // The resume did NOT re-run the entry gate: the pipeline's own pending
     // refunds must not wedge it.
     expect(ports.billing.assertClosable).toHaveBeenCalledTimes(1);
-    // Quiesce ran once, at creation.
+    // Quiesce ran once: a completed step is never re-executed.
     expect(ports.identity.quiesce).toHaveBeenCalledTimes(1);
   });
 
@@ -332,20 +369,54 @@ describe('AccountDeletionService concurrency and idempotence', () => {
     expect(ports.billing.closeBillingForMember).not.toHaveBeenCalled();
   });
 
-  it('an existing request resumes WITHOUT re-verifying step-up or re-quiescing', async () => {
-    const repo = fakeRepo(requestRecord());
+  it('an existing already-quiesced request resumes WITHOUT re-verifying step-up or re-quiescing', async () => {
+    const repo = fakeRepo(
+      requestRecord({ steps: { quiesce: { completedAt: '2026-08-11T12:00:01.000Z' } } }),
+    );
     const { service, ports } = build(repo);
 
     const outcome = await service.request(INPUT);
 
     expect(outcome.status).toBe('completed');
-    expect(ports.identity.quiesce).not.toHaveBeenCalled(); // creation-only
+    expect(ports.identity.quiesce).not.toHaveBeenCalled(); // completed step
     expect(ports.billing.assertClosable).not.toHaveBeenCalled();
+  });
+
+  it('a request that persisted but never quiesced re-applies the freeze on a user retry, before anything destructive', async () => {
+    // The regression: create succeeded, the quiesce write then failed
+    // transiently. The retry must freeze the account FIRST — never drive
+    // the erasure against live, unfrozen sessions.
+    const repo = fakeRepo(requestRecord({ steps: {} }));
+    const ports = mockPorts();
+    const calls: string[] = [];
+    ports.identity.quiesce.mockImplementation(async () => void calls.push('quiesce'));
+    ports.reservations.cancelFutureReservationsForMember.mockImplementation(async () => {
+      calls.push('cancel_reservations');
+      return { cancelled: 0, refundCents: 0 };
+    });
+    const { service } = build(repo, ports);
+
+    const outcome = await service.request(INPUT);
+
+    expect(outcome.status).toBe('completed');
+    expect(calls.slice(0, 2)).toEqual(['quiesce', 'cancel_reservations']);
+    // The retry's driving session survived the freeze.
+    expect(ports.identity.quiesce).toHaveBeenCalledWith('usr_1', 'ses_1');
+  });
+
+  it('the cron resume also re-applies a missed freeze (no session spared)', async () => {
+    const repo = fakeRepo(requestRecord({ status: 'failed', steps: {} }));
+    const { service, ports } = build(repo);
+
+    const summary = await service.resumeDue();
+
+    expect(summary.completed).toBe(1);
+    expect(ports.identity.quiesce).toHaveBeenCalledWith('usr_1', undefined);
   });
 
   it('a lease held by another worker yields in_progress without touching steps', async () => {
     const repo = fakeRepo(requestRecord());
-    repo.claimLease.mockResolvedValue(false);
+    repo.claimLease.mockResolvedValue(null);
     const { service, ports } = build(repo);
 
     const outcome = await service.request(INPUT);
@@ -354,13 +425,101 @@ describe('AccountDeletionService concurrency and idempotence', () => {
     expect(ports.reservations.cancelFutureReservationsForMember).not.toHaveBeenCalled();
   });
 
+  it('drives from the claimed snapshot, not the caller pre-claim read (stale-steps window)', async () => {
+    // The cron read the row, then the previous holder persisted two more
+    // steps before the lease expired. The new worker must resume from the
+    // FRESH steps the claim answers, not re-run the stale tail.
+    const stale = requestRecord({ steps: { quiesce: { completedAt: '2026-08-11T12:00:01.000Z' } } });
+    const repo = fakeRepo(
+      requestRecord({
+        steps: {
+          quiesce: { completedAt: '2026-08-11T12:00:01.000Z' },
+          cancel_reservations: { completedAt: '2026-08-11T12:00:02.000Z' },
+          release_participations: { completedAt: '2026-08-11T12:00:03.000Z' },
+        },
+      }),
+    );
+    repo.findByUserId.mockResolvedValue(stale);
+    const { service, ports } = build(repo);
+
+    const outcome = await service.request(INPUT);
+
+    expect(outcome.status).toBe('completed');
+    expect(ports.reservations.cancelFutureReservationsForMember).not.toHaveBeenCalled();
+    expect(ports.reservations.releaseParticipationsForMember).not.toHaveBeenCalled();
+  });
+
+  it('abandons the run on a stolen lease instead of writing from the loser', async () => {
+    const repo = fakeRepo(requestRecord({ steps: { quiesce: { completedAt: '2026-08-11T12:00:01.000Z' } } }));
+    // The lease expires mid-step and another worker re-claims: the CAS
+    // step-save answers false for this worker.
+    repo.saveStepCompleted.mockResolvedValue(false);
+    const { service, ports } = build(repo);
+
+    const outcome = await service.request(INPUT);
+
+    expect(outcome.status).toBe('in_progress');
+    // No failure bookkeeping, no finalize: the thief owns every write now.
+    expect(repo.recordFailure).not.toHaveBeenCalled();
+    expect(repo.completeInTx).not.toHaveBeenCalled();
+    // The loser got exactly one step in before noticing.
+    expect(ports.reservations.cancelFutureReservationsForMember).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stolen lease at finalize rolls the account.deleted event back with the completion (single emit)', async () => {
+    const repo = fakeRepo(requestRecord());
+    repo.completeInTx.mockResolvedValue(false);
+    const { service, audit, uow } = build(repo);
+
+    const outcome = await service.request(INPUT);
+
+    expect(outcome.status).toBe('in_progress');
+    expect(repo.current()?.status).not.toBe('completed');
+    // The append and the failed CAS ran inside the SAME uow transaction,
+    // so the real database rolls the event back with it.
+    const finalizeTx = (uow.execute as ReturnType<typeof vi.fn>).mock.results.at(-1);
+    await expect(finalizeTx!.value).rejects.toThrow('Deletion lease lost');
+    expect(audit.append).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      eventType: 'account.deleted',
+    }));
+  });
+
+  it('every completed step renews the lease (heartbeat), keyed to this worker', async () => {
+    const repo = fakeRepo(requestRecord());
+    const { service } = build(repo);
+
+    await service.request(INPUT);
+
+    const workerId = repo.claimLease.mock.calls[0][1];
+    expect(repo.saveStepCompleted).toHaveBeenCalled();
+    for (const call of repo.saveStepCompleted.mock.calls) {
+      expect(call[1]).toBe(workerId);
+      expect(call[3]).toBeGreaterThan(0); // TTL renewal rides every save
+    }
+  });
+
+  it('scrubs the request row PII (emailAtRequest, ip) at completion', async () => {
+    const repo = fakeRepo();
+    const { service } = build(repo);
+
+    const outcome = await service.request({ ...INPUT, ip: '1.2.3.4' });
+
+    expect(outcome.status).toBe('completed');
+    // The retained provenance row no longer carries the erased account's
+    // plaintext email or request IP (the tombstones scrubbed them
+    // everywhere else); memberNumber provenance survives.
+    expect(repo.current()?.emailAtRequest).toBe('');
+    expect(repo.current()?.ip).toBeNull();
+    expect(repo.current()?.memberNumberAtRequest).toBe('A12345');
+  });
+
   it('two racing creations adopt the winner row via the unique userId', async () => {
     const repo = fakeRepo();
     const winner = requestRecord();
-    repo.create.mockRejectedValue({ code: 'P2002' });
-    repo.findByUserId
-      .mockResolvedValueOnce(null) // initial lookup: nothing yet
-      .mockResolvedValue(winner); // post-conflict re-read
+    repo.create.mockImplementation(async () => {
+      repo.seed(winner); // the other device's insert landed first
+      throw Object.assign(new Error('unique constraint'), { code: 'P2002' });
+    });
     const { service } = build(repo);
 
     const outcome = await service.request(INPUT);

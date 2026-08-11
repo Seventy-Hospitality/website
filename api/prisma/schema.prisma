@@ -766,9 +766,13 @@ model IdVerification {
 // steps is a map of step name -> { completedAt, attempts, lastError,
 // result } so a mid-pipeline Stripe failure retries exactly where it
 // stopped. lockedBy/lockedUntil lease a run so a user retry and the resume
-// cron can never drive the same request concurrently. Snapshot fields
-// (emailAtRequest, memberNumberAtRequest) are the only human-readable
-// provenance once the member row is scrubbed.
+// cron can never drive the same request concurrently; every write is
+// compare-and-set on lockedBy and each completed step renews the lease.
+// Snapshot fields: memberNumberAtRequest is the only human-readable
+// provenance once the member row is scrubbed; emailAtRequest exists for
+// the erase_credentials step (magic links key on email) and is scrubbed —
+// along with ip — when the request completes, so no plaintext PII of an
+// erased account survives on the retained row.
 model DeletionRequest {
   id                    String    @id @default(cuid())
   userId                String    @unique
