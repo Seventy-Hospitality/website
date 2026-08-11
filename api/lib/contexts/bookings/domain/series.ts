@@ -1,16 +1,12 @@
-import { addDaysToDateKey, wallTimeToUtc, zonedDateKey } from '@/lib/kernel';
+import { addDaysToDateKey, wallTimeToUtc, weekdayOfDateKey, zonedDateKey } from '@/lib/kernel';
 
 // ── Weekly recurrence math (pure) ──
 // A series is a venue-local weekday + wall-clock start time. Occurrences
 // are the matching venue-local dates inside the booking horizon whose
 // start instant is still in the future.
 
-/** Calendar weekday (0 = Sunday) of a venue-local "YYYY-MM-DD" date key. */
-export function weekdayOfDateKey(dateKey: string): number {
-  // The weekday of a local date is a property of the date itself; anchoring
-  // at UTC noon dodges every timezone/DST edge.
-  return new Date(`${dateKey}T12:00:00Z`).getUTCDay();
-}
+// Kernel venue-time math, re-exported for series consumers.
+export { weekdayOfDateKey };
 
 export interface SeriesOccurrenceQuery {
   /** 0 = Sunday .. 6 = Saturday, venue-local. */

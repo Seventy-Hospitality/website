@@ -79,6 +79,8 @@ import { ReservationService, ResourceClaimService, SeriesService } from '@/lib/c
 import { ClubEventService } from '@/lib/contexts/events/application';
 import { ClubService } from '@/lib/contexts/clubs/application';
 import { MediaService } from '@/lib/contexts/media/application';
+import { HomeService } from '@/lib/contexts/home';
+import { TierRequiredError, ResourceTypeNotFoundError } from '@/lib/contexts/bookings';
 
 // ── Infrastructure singletons ──
 
@@ -370,6 +372,56 @@ export const notificationDispatchService = new NotificationDispatchService(
 // undispatched rows to the notification consumer and marks only the
 // delivered ones dispatched (failed ones stay pending and retry).
 export const outboxDispatcher = new OutboxDispatcher(uow, new OutboxRepository(), notificationDispatchService);
+
+// ── Home read context (package F) ──
+// Pure composition: the home screen's facts come from the other contexts
+// through these narrow port adapters (public services/barrels only), always
+// keyed by the caller's own member id.
+export const homeService = new HomeService(
+  {
+    getProfile: async (memberId: string) => {
+      const member = await memberRepo.getById(memberId);
+      return member && !member.deletedAt
+        ? { id: member.id, firstName: member.firstName, displayName: member.displayName ?? null }
+        : null;
+    },
+  },
+  {
+    listUpcomingForMember: (memberId: string) => reservationService.listForMember(memberId, 'upcoming'),
+    listRecentConfirmedHistory: (memberId: string) => reservationService.listRecentConfirmedHistory(memberId),
+    listAmenitiesForMember: async (memberId: string) =>
+      (await reservationService.listResourceTypesForMember(memberId)).map((type) => ({
+        code: type.code,
+        name: type.name,
+        hourlyRateCents: type.hourlyRateCents,
+        locked: type.locked,
+        resourceCount: type.resourceCount,
+        slotDurationMinutes: type.slotDurationMinutes,
+        maxAdvanceDays: type.maxAdvanceDays,
+      })),
+    listAvailableStarts: async (memberId: string, typeCode: string, date: string) => {
+      try {
+        const [day] = await reservationService.getAvailability({ typeCode, startDate: date, days: 1, memberId });
+        return day?.slots.map((slot) => slot.start) ?? [];
+      } catch (error) {
+        // A tier-locked or retired type simply has nothing to offer here.
+        if (error instanceof TierRequiredError || error instanceof ResourceTypeNotFoundError) return [];
+        throw error;
+      }
+    },
+    fitsSingleResource: async (memberId: string, typeCode: string, date: string, slots: string[]) => {
+      try {
+        await reservationService.quote({ typeCode, date, slots, memberId });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  },
+  { listPendingInvitations: (memberId: string) => clubService.listMyInvitations(memberId) },
+  { listUpcoming: () => clubEventService.list({ includeInactive: false, includePast: false }) },
+  VENUE_TIMEZONE,
+);
 
 // Booking reminders (cron, hourly): confirmed reservations starting within
 // the next 24h, one reminder per (reservation, member) ever, channels per

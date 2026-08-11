@@ -143,6 +143,33 @@ export class ReservationRepository {
     return records.map(toDetail);
   }
 
+  /**
+   * Recent PAST confirmed bookings the member organized (the quick-book
+   * habit source), newest first.
+   */
+  async listRecentConfirmedAsOrganizer(
+    memberId: string,
+    since: Date,
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ localDate: string; startsAt: Date; endsAt: Date; resourceType: { code: string } }>> {
+    return this.prisma.reservation.findMany({
+      where: {
+        organizerId: memberId,
+        status: 'confirmed',
+        startsAt: { gte: since, lt: now },
+      },
+      select: {
+        localDate: true,
+        startsAt: true,
+        endsAt: true,
+        resourceType: { select: { code: true } },
+      },
+      orderBy: { startsAt: 'desc' },
+      take: limit,
+    });
+  }
+
   /** Confirmed reservations starting inside [from, to): the reminder read. */
   async listConfirmedStartingBetween(from: Date, to: Date): Promise<ReservationDetailRecord[]> {
     const records = await this.prisma.reservation.findMany({

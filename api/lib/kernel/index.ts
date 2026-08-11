@@ -26,6 +26,7 @@ export {
   wallTimeToUtc,
   zonedMinutesSinceMidnight,
   addDaysToDateKey,
+  weekdayOfDateKey,
   minutesToTimeLabel,
   timeLabelToMinutes,
 } from './venue-time';

@@ -100,6 +100,7 @@ export function serializeReservation(
             invitedByName: inviter
               ? `${inviter.member.firstName} ${inviter.member.lastName}`.trim()
               : null,
+            invitedByFirstName: inviter?.member.firstName ?? null,
           },
         }
       : {}),

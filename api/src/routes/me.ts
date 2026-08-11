@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   accountLinkingService,
   clubEventService,
+  homeService,
   memberRepo,
   memberService,
   membershipService,
@@ -141,26 +142,50 @@ export async function meRoutes(app: FastifyInstance) {
     }
   });
 
+  // The home aggregation (package F): one payload with greeting, upcoming
+  // reservations (viewer participation + Weekly badge), pending invitations
+  // rendered distinctly, pending club invitations, spotlight events, the
+  // quick-book suggestion, and the empty-state amenity summary. Everything
+  // is keyed on the principal's member id; composition lives in the home
+  // context's HomeService. The legacy member/upcomingBookings keys stay for
+  // the existing clients.
   app.get('/home', { config: { policy: 'member' } }, async (req, reply) => {
+    const rawTz = (req.query as Record<string, unknown> | undefined)?.tz;
     try {
-      const [member, events, reservations] = await Promise.all([
+      const [member, home] = await Promise.all([
         currentMember(req),
-        clubEventService.list({ includeInactive: false, includePast: false }),
-        reservationService.listForMember(memberId(req), 'upcoming'),
+        homeService.getHome(memberId(req), {
+          timezone: typeof rawTz === 'string' ? rawTz : null,
+        }),
       ]);
+
+      const serialize = (reservation: (typeof home.upcomingReservations)[number]) =>
+        serializeReservation(reservation, { timezone: VENUE_TIMEZONE, viewerMemberId: memberId(req) });
 
       return success(reply, {
         member: serializeMember(member),
-        spotlightEvents: events.slice(0, 6).map(serializeEvent),
-        upcomingBookings: reservations
+        greeting: home.greeting,
+        spotlightEvents: home.spotlightEvents.slice(0, 6).map(serializeEvent),
+        upcomingReservations: home.upcomingReservations.slice(0, 8).map(serialize),
+        // Distinct list: the viewer's participation is pending and the card
+        // renders inline Accept/Decline (myParticipation carries the
+        // inviter's first name; POST /api/reservations/:id/respond answers).
+        pendingInvitations: home.pendingInvitations.slice(0, 8).map(serialize),
+        clubInvitations: home.clubInvitations.map((invitation) => ({
+          id: invitation.id,
+          club: invitation.club,
+          invitedBy: invitation.invitedBy,
+          createdAt: invitation.createdAt.toISOString(),
+        })),
+        quickBook: home.quickBook,
+        // Present ONLY in the empty state (nothing upcoming, no invites).
+        amenities: home.emptyStateAmenities,
+        // Legacy member-portal shape (superset list, as before).
+        upcomingBookings: [...home.upcomingReservations, ...home.pendingInvitations]
+          .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
           .slice(0, 8)
           .map((reservation) =>
             serializeLegacyBooking(reservation, VENUE_TIMEZONE, { viewerMemberId: memberId(req) }),
-          ),
-        upcomingReservations: reservations
-          .slice(0, 8)
-          .map((reservation) =>
-            serializeReservation(reservation, { timezone: VENUE_TIMEZONE, viewerMemberId: memberId(req) }),
           ),
       });
     } catch (err) {

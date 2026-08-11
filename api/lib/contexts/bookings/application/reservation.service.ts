@@ -1210,6 +1210,26 @@ export class ReservationService {
   }
 
   /**
+   * Quick-book habit source (home context, via port): the member's PAST
+   * confirmed bookings as organizer from the last 90 days (cap 50), newest
+   * first, as venue wall-clock entries.
+   */
+  async listRecentConfirmedHistory(memberId: string, now: Date = new Date()) {
+    const since = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const rows = await this.reservationRepo.listRecentConfirmedAsOrganizer(memberId, since, now, 50);
+    return rows.map((row) => {
+      const startMinutes = zonedMinutesSinceMidnight(row.startsAt, this.timezone, row.localDate);
+      const endMinutes = zonedMinutesSinceMidnight(row.endsAt, this.timezone, row.localDate);
+      return {
+        typeCode: row.resourceType.code,
+        localDate: row.localDate,
+        startMinutes,
+        durationMinutes: endMinutes - startMinutes,
+      };
+    });
+  }
+
+  /**
    * Club-linked reservations (the club's group-activity feed). The CALLER
    * must have established club membership first; the clubs context gates
    * that at the route seam.

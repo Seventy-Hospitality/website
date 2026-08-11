@@ -8,6 +8,7 @@ const {
   mockResourceRepo,
   mockResourceTypeRepo,
   mockClubEventService,
+  mockHomeService,
   mockMemberRepo,
   mockMemberService,
   mockMembershipService,
@@ -32,6 +33,7 @@ const {
   mockResourceRepo: { getById: vi.fn() },
   mockResourceTypeRepo: { getById: vi.fn() },
   mockClubEventService: { list: vi.fn().mockResolvedValue([]) },
+  mockHomeService: { getHome: vi.fn() },
   mockMemberRepo: { setStripeCustomerId: vi.fn().mockResolvedValue(undefined) },
   mockMemberService: { getById: vi.fn(), updateDisplayName: vi.fn() },
   mockMembershipService: {
@@ -49,6 +51,7 @@ vi.mock('@/lib/container', () => ({
   resourceRepo: mockResourceRepo,
   resourceTypeRepo: mockResourceTypeRepo,
   clubEventService: mockClubEventService,
+  homeService: mockHomeService,
   memberRepo: mockMemberRepo,
   memberService: mockMemberService,
   membershipService: mockMembershipService,
@@ -75,6 +78,19 @@ function fixtureMember(overrides: Record<string, unknown> = {}) {
     createdAt: new Date('2025-01-15T00:00:00Z'),
     stripeCustomerId: 'cus_1',
     membership: null,
+    ...overrides,
+  };
+}
+
+function fixtureHome(overrides: Record<string, unknown> = {}) {
+  return {
+    greeting: { firstName: 'Alice', timeOfDay: 'evening', timezone: 'America/New_York' },
+    upcomingReservations: [],
+    pendingInvitations: [],
+    clubInvitations: [],
+    spotlightEvents: [],
+    quickBook: null,
+    emptyStateAmenities: null,
     ...overrides,
   };
 }
@@ -145,6 +161,7 @@ describe('me routes', () => {
     mockReservationService.listForMember.mockResolvedValue([]);
     mockReservationService.cancel.mockResolvedValue({ refundCents: 0 });
     mockClubEventService.list.mockResolvedValue([]);
+    mockHomeService.getHome.mockResolvedValue(fixtureHome());
     mockPlanRepo.list.mockResolvedValue([]);
     app = await buildTestApp({ routes: meRoutes, prefix: '/api/me' });
   });
@@ -274,6 +291,7 @@ describe('me routes', () => {
       expect(bookings.json().data[0].member.email).toBeNull();
       expect(bookings.json().data[0].member.firstName).toBe('Alice');
 
+      mockHomeService.getHome.mockResolvedValue(fixtureHome({ upcomingReservations: [fixtureReservation()] }));
       const home = await app.inject({ method: 'GET', url: '/api/me/home', headers: AUTH });
       expect(home.statusCode).toBe(200);
       expect(home.json().data.upcomingBookings[0].member.email).toBeNull();
@@ -522,6 +540,148 @@ describe('me routes', () => {
     it('requires a session', async () => {
       const res = await app.inject({ method: 'GET', url: '/api/me/auth-identities' });
       expect(res.statusCode).toBe(401);
+    });
+  });
+
+  describe('home aggregation (package F)', () => {
+    it('aggregates through the home service, keyed on the principal member id', async () => {
+      signedInAs();
+      mockMemberService.getById.mockResolvedValue(fixtureMember());
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/home?tz=Asia/Hong_Kong', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockHomeService.getHome).toHaveBeenCalledWith('mem_1', { timezone: 'Asia/Hong_Kong' });
+      expect(res.json().data.greeting).toEqual({
+        firstName: 'Alice',
+        timeOfDay: 'evening',
+        timezone: 'America/New_York',
+      });
+    });
+
+    it('serves upcoming reservations with participation status and the Weekly badge', async () => {
+      signedInAs();
+      mockMemberService.getById.mockResolvedValue(fixtureMember());
+      mockHomeService.getHome.mockResolvedValue(
+        fixtureHome({ upcomingReservations: [fixtureReservation({ seriesId: 'ser_1' })] }),
+      );
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/home', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.upcomingReservations[0]).toMatchObject({
+        reference: 'BK-001000',
+        weekly: true,
+        myParticipation: { role: 'organizer', status: 'confirmed' },
+      });
+    });
+
+    it('renders pending invitations distinctly with the inviter first name for inline accept/decline', async () => {
+      signedInAs({ memberId: 'mem_2' });
+      mockMemberService.getById.mockResolvedValue(fixtureMember({ id: 'mem_2', email: 'guest@example.com' }));
+      const invited = fixtureReservation({
+        id: 'rsv_inv',
+        participants: [
+          {
+            id: 'rp_1',
+            reservationId: 'rsv_inv',
+            memberId: 'mem_1',
+            role: 'organizer',
+            status: 'confirmed',
+            invitedById: null,
+            viaClubId: null,
+            invitedAt: new Date('2026-08-01T00:00:00Z'),
+            respondedAt: null,
+            member: { id: 'mem_1', firstName: 'Alice', lastName: 'Chen', email: 'alice@example.com' },
+          },
+          {
+            id: 'rp_2',
+            reservationId: 'rsv_inv',
+            memberId: 'mem_2',
+            role: 'guest',
+            status: 'pending',
+            invitedById: 'mem_1',
+            viaClubId: null,
+            invitedAt: new Date('2026-08-02T00:00:00Z'),
+            respondedAt: null,
+            member: { id: 'mem_2', firstName: 'Gary', lastName: 'Guest', email: 'guest@example.com' },
+          },
+        ],
+      });
+      mockHomeService.getHome.mockResolvedValue(fixtureHome({ pendingInvitations: [invited] }));
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/home', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      const [invitation] = res.json().data.pendingInvitations;
+      expect(invitation).toMatchObject({
+        id: 'rsv_inv',
+        myParticipation: {
+          role: 'guest',
+          status: 'pending',
+          invitedByFirstName: 'Alice',
+        },
+      });
+      expect(res.json().data.upcomingReservations).toEqual([]);
+    });
+
+    it('passes through club invitations, the quick-book suggestion and the empty-state amenities', async () => {
+      signedInAs();
+      mockMemberService.getById.mockResolvedValue(fixtureMember());
+      mockHomeService.getHome.mockResolvedValue(
+        fixtureHome({
+          clubInvitations: [
+            {
+              id: 'inv_1',
+              club: { id: 'club_1', name: 'Smashers', description: null, coverImageUrl: null, memberCount: 4 },
+              invitedBy: { memberId: 'mem_9', firstName: 'Olivia', lastName: 'Ong' },
+              createdAt: new Date('2026-08-20T00:00:00Z'),
+            },
+          ],
+          quickBook: {
+            typeCode: 'badminton_court',
+            typeName: 'Badminton Court',
+            date: '2026-09-03',
+            startTime: '18:00',
+            endTime: '19:00',
+            durationMinutes: 60,
+            hourlyRateCents: 2000,
+            reason: 'You often book Badminton Court on Thursdays around 18:00',
+          },
+          emptyStateAmenities: [
+            {
+              typeCode: 'badminton_court',
+              typeName: 'Badminton Court',
+              hourlyRateCents: 2000,
+              resourceCount: 3,
+              availableSlotsToday: 12,
+              locked: false,
+            },
+          ],
+        }),
+      );
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/home', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      const data = res.json().data;
+      expect(data.clubInvitations).toEqual([
+        expect.objectContaining({
+          id: 'inv_1',
+          club: expect.objectContaining({ name: 'Smashers' }),
+          invitedBy: expect.objectContaining({ firstName: 'Olivia' }),
+          createdAt: '2026-08-20T00:00:00.000Z',
+        }),
+      ]);
+      expect(data.quickBook).toMatchObject({ typeCode: 'badminton_court', reason: expect.stringContaining('Thursdays') });
+      expect(data.amenities).toEqual([expect.objectContaining({ typeCode: 'badminton_court', availableSlotsToday: 12 })]);
+    });
+
+    it('requires a member profile (403 before the aggregation runs)', async () => {
+      signedInAs({ memberId: null });
+      const res = await app.inject({ method: 'GET', url: '/api/me/home', headers: AUTH });
+      expect(res.statusCode).toBe(403);
+      expect(mockHomeService.getHome).not.toHaveBeenCalled();
     });
   });
 });

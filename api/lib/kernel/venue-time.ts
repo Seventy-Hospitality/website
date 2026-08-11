@@ -109,6 +109,15 @@ export function zonedMinutesSinceMidnight(value: Date, timeZone: string, anchorD
   return Math.round((wallMs - anchorMs) / 60_000);
 }
 
+/**
+ * Calendar weekday (0 = Sunday) of a venue-local "YYYY-MM-DD" date key. The
+ * weekday of a local date is a property of the date itself; anchoring at
+ * UTC noon dodges every timezone/DST edge.
+ */
+export function weekdayOfDateKey(dateKey: string): number {
+  return new Date(`${dateKey}T12:00:00Z`).getUTCDay();
+}
+
 /** "YYYY-MM-DD" plus N days, on the proleptic calendar (no zone involved). */
 export function addDaysToDateKey(dateKey: string, days: number): string {
   const next = new Date(`${dateKey}T00:00:00.000Z`);
