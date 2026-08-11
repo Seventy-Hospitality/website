@@ -60,6 +60,84 @@ export interface OAuthAppleInput {
   fullName?: { givenName?: string; familyName?: string };
 }
 
+// ── Plans & membership types (W1 onboarding; W6 account reuses these) ──
+
+export type BillingInterval = 'month' | 'year';
+
+/**
+ * A membership plan row from the public catalog (GET /api/plans). Plans are
+ * per-billing-period rows: "Member monthly" and "Member annual" are two rows
+ * sharing a tier, keyed by their Stripe price.
+ */
+export interface Plan {
+  id: string;
+  name: string;
+  stripePriceId: string;
+  amountCents: number;
+  interval: BillingInterval;
+  tier: 'member' | 'pro';
+  inviteOnly: boolean;
+  features: string[];
+  sortOrder: number;
+  active: boolean;
+}
+
+/** Stripe subscription statuses, stored verbatim by the backend. */
+export type MembershipStatus =
+  | 'active'
+  | 'trialing'
+  | 'past_due'
+  | 'canceled'
+  | 'unpaid'
+  | 'incomplete'
+  | 'incomplete_expired'
+  | 'paused';
+
+export interface MembershipPlanSummary {
+  id: string;
+  name: string;
+  amountCents: number;
+  interval: BillingInterval;
+  tier: string;
+}
+
+/** The member's current membership as serialized by the /api/me endpoints. */
+export interface MembershipSummary {
+  id: string;
+  status: MembershipStatus;
+  currentPeriodEnd: string;
+  cancelAtPeriodEnd: boolean;
+  plan: MembershipPlanSummary | null;
+  pendingPlan: { id: string; name: string } | null;
+  pendingPlanEffectiveAt: string | null;
+}
+
+export interface SubscribeMembershipResult {
+  subscriptionId: string;
+  /**
+   * Confirmation client secret for the subscription's first invoice; the
+   * Payment Element mounts on it and stripe.confirmPayment() confirms it.
+   * Null only when Stripe has nothing to collect for the invoice.
+   */
+  clientSecret: string | null;
+  customerId: string;
+  /** Minted for the mobile PaymentSheet; unused on web. */
+  ephemeralKeySecret: string;
+}
+
+// ── Identity verification types (W1 onboarding; staff review is admin-web) ──
+
+export type IdVerificationStatus = 'not_submitted' | 'submitted' | 'verified' | 'rejected';
+
+export interface IdVerificationView {
+  status: IdVerificationStatus;
+  hasPhoto: boolean;
+  skippedAt: string | null;
+  submittedAt: string | null;
+  reviewedAt: string | null;
+  note: string | null;
+}
+
 function normalizeJsonResponse(text: string) {
   if (!text) {
     return {};
@@ -212,4 +290,51 @@ export const api = {
     }),
   resendVerification: () =>
     request<{ sent: true }>('/api/auth/email/resend', { method: 'POST' }),
+
+  // ── Plans & membership ──
+  getPlans: () => request<Plan[]>('/api/plans'),
+  /**
+   * The member's current membership. Reads GET /api/me/billing (the one
+   * membership read endpoint); W6 widens the typing for the full billing
+   * screen (payment methods, ledger months) when it builds that page.
+   */
+  getMyMembership: () => request<{ membership: MembershipSummary | null }>('/api/me/billing'),
+  /**
+   * Subscription-first purchase: creates (or re-fetches, on retry of the
+   * same plan) an incomplete Stripe subscription and returns the client
+   * secret to confirm. Terms acceptance is recorded server-side from
+   * termsVersion before the subscription exists.
+   */
+  subscribeMembership: (input: { planId: string; termsVersion: string }) =>
+    request<SubscribeMembershipResult>('/api/me/membership/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** Synchronous read-back after payment; never waits on a webhook. */
+  confirmMembership: () =>
+    request<{ activated: boolean; membership: MembershipSummary | null }>(
+      '/api/me/membership/confirm',
+      { method: 'POST', body: '{}' },
+    ),
+
+  // ── Identity verification (private upload: authenticated endpoint, never /uploads) ──
+  getIdVerification: () => request<IdVerificationView>('/api/me/id-verification'),
+  uploadIdPhoto: (photo: File) => {
+    const body = new FormData();
+    body.append('photo', photo);
+    return request<IdVerificationView>('/api/me/id-verification/photo', {
+      method: 'POST',
+      body,
+    });
+  },
+  submitIdVerification: () =>
+    request<IdVerificationView>('/api/me/id-verification/submit', {
+      method: 'POST',
+      body: '{}',
+    }),
+  skipIdVerification: () =>
+    request<IdVerificationView>('/api/me/id-verification/skip', {
+      method: 'POST',
+      body: '{}',
+    }),
 };
