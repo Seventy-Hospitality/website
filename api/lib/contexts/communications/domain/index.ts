@@ -12,3 +12,14 @@ export {
   type DeviceRecord,
   type NotificationPreferences,
 } from './preferences';
+export {
+  CHANNEL_POLICIES,
+  decideNotifications,
+  planChannels,
+  type ChannelPlan,
+  type ChannelPolicy,
+  type NotificationDecision,
+  type NotificationKind,
+  type OutboxEventLike,
+  type RecipientRef,
+} from './notification-decision';
