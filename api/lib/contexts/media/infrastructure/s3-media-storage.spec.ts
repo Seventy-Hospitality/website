@@ -1,6 +1,10 @@
 import { Readable } from 'node:stream';
 import { S3MediaStorage } from './s3-media-storage';
 
+const NAME = 'ck2qwertyuiopasdfghj.png';
+const PUBLIC_PATH = `/uploads/event-images/${NAME}`;
+const PRIVATE_PATH = `private/id-photos/${NAME}`;
+
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
@@ -10,19 +14,24 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-describe('S3MediaStorage', () => {
-  it('writes event images to the configured bucket', async () => {
-    const send = vi.fn().mockResolvedValue({});
-    const storage = new S3MediaStorage({
-      bucket: 'seventy-media',
-      region: 'us-east-1',
-      client: { send } as any,
-    });
+function makeStorage(send: ReturnType<typeof vi.fn>, prefix?: string) {
+  return new S3MediaStorage({
+    bucket: 'seventy-media',
+    region: 'us-east-1',
+    prefix,
+    client: { send } as any,
+  });
+}
 
-    const result = await storage.saveEventImage({
-      filename: 'poster.png',
-      contentType: 'image/png',
+describe('S3MediaStorage', () => {
+  it('writes public assets under the historical event-images key layout', async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const storage = makeStorage(send);
+
+    await storage.put(PUBLIC_PATH, {
       bytes: Buffer.from('image-bytes'),
+      contentType: 'image/png',
+      cacheControl: 'public, max-age=31536000, immutable',
     });
 
     const commandInput = send.mock.calls[0][0].input;
@@ -31,8 +40,24 @@ describe('S3MediaStorage', () => {
       ContentType: 'image/png',
       CacheControl: 'public, max-age=31536000, immutable',
     });
-    expect(commandInput.Key).toMatch(/^event-images\/.+\.png$/);
-    expect(result.publicPath).toMatch(/^\/uploads\/event-images\/.+\.png$/);
+    expect(commandInput.Key).toBe(`event-images/${NAME}`);
+    expect(commandInput.ServerSideEncryption).toBeUndefined();
+  });
+
+  it('writes private assets under private/ with SSE, honoring the prefix', async () => {
+    const send = vi.fn().mockResolvedValue({});
+    const storage = makeStorage(send, 'app');
+
+    await storage.put(PRIVATE_PATH, {
+      bytes: Buffer.from('ciphertext'),
+      contentType: 'application/octet-stream',
+      cacheControl: 'no-store',
+    });
+
+    const commandInput = send.mock.calls[0][0].input;
+    expect(commandInput.Key).toBe(`app/private/id-photos/${NAME}`);
+    expect(commandInput.ServerSideEncryption).toBe('AES256');
+    expect(commandInput.CacheControl).toBe('no-store');
   });
 
   it('reads managed assets from S3', async () => {
@@ -40,51 +65,37 @@ describe('S3MediaStorage', () => {
       Body: {
         transformToByteArray: vi.fn().mockResolvedValue(Uint8Array.from(Buffer.from('hello'))),
       },
-      ContentType: 'image/png',
       ContentLength: 5,
-      CacheControl: 'public, max-age=60',
       LastModified: new Date('2026-04-04T12:00:00.000Z'),
       ETag: '"etag-1"',
     });
-    const storage = new S3MediaStorage({
-      bucket: 'seventy-media',
-      region: 'us-east-1',
-      client: { send } as any,
-    });
+    const storage = makeStorage(send);
 
-    const asset = await storage.readManagedAsset('/uploads/event-images/test.png');
+    const asset = await storage.get(PUBLIC_PATH);
 
-    expect(asset?.contentType).toBe('image/png');
     expect(asset?.contentLength).toBe(5);
-    expect(asset?.cacheControl).toBe('public, max-age=60');
     expect(asset?.etag).toBe('"etag-1"');
     expect(await streamToBuffer(asset!.body)).toEqual(Buffer.from('hello'));
   });
 
-  it('returns null for missing managed assets', async () => {
+  it('returns null for missing objects and unmanaged paths', async () => {
     const send = vi.fn().mockRejectedValue({ name: 'NoSuchKey' });
-    const storage = new S3MediaStorage({
-      bucket: 'seventy-media',
-      region: 'us-east-1',
-      client: { send } as any,
-    });
+    const storage = makeStorage(send);
 
-    await expect(storage.readManagedAsset('/uploads/event-images/missing.png')).resolves.toBeNull();
+    await expect(storage.get(PUBLIC_PATH)).resolves.toBeNull();
+    await expect(storage.get('/uploads/event-images/../secrets.png')).resolves.toBeNull();
+    await expect(storage.get(`/uploads/id-photos/${NAME}`)).resolves.toBeNull();
   });
 
   it('deletes managed assets from S3', async () => {
     const send = vi.fn().mockResolvedValue({});
-    const storage = new S3MediaStorage({
-      bucket: 'seventy-media',
-      region: 'us-east-1',
-      client: { send } as any,
-    });
+    const storage = makeStorage(send);
 
-    await storage.deleteManagedAsset('/uploads/event-images/test.png');
+    expect(await storage.delete(PUBLIC_PATH)).toBe(true);
 
     expect(send.mock.calls[0][0].input).toMatchObject({
       Bucket: 'seventy-media',
-      Key: 'event-images/test.png',
+      Key: `event-images/${NAME}`,
     });
   });
 });

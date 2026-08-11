@@ -280,7 +280,7 @@ export class ClubService {
   ): Promise<ClubSummary> {
     const { club } = await this.requireOwner(clubId, actor.memberId);
 
-    const asset = await this.coverStore.uploadEventImage(upload);
+    const asset = await this.coverStore.uploadCoverImage(upload);
     const updated = await this.uow.execute(async (tx) => {
       const row = await this.repo.updateClub(tx, clubId, { coverImageUrl: asset.publicPath });
       await this.audit.append(tx, {

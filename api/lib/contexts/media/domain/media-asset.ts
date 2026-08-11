@@ -1,49 +1,54 @@
+import type { MediaUsage, MediaUsageSpec } from './media-usage';
+
 export interface MediaAsset {
-  publicPath: string;
+  /**
+   * The canonical asset key. For public usages it doubles as the browser
+   * URL ("/uploads/<dir>/<name>"); for private usages it is a bare
+   * "private/<dir>/<name>" key that no route can serve.
+   */
+  storagePath: string;
+  /** Browser URL for public assets; null for private ones. */
+  publicUrl: string | null;
+  /** Normalized PLAINTEXT content type and size (never the ciphertext's). */
   contentType: string;
   sizeBytes: number;
   originalFilename: string;
 }
 
-export const EVENT_IMAGE_USAGE = 'event-image';
 export const MEDIA_ASSET_STATUS_PENDING = 'pending';
 export const MEDIA_ASSET_STATUS_ATTACHED = 'attached';
 export const MEDIA_ASSET_STATUS_DISCARDED = 'discarded';
 
 export interface ManagedMediaAsset extends MediaAsset {
-  usage: typeof EVENT_IMAGE_USAGE;
-  status: typeof MEDIA_ASSET_STATUS_PENDING | typeof MEDIA_ASSET_STATUS_ATTACHED | typeof MEDIA_ASSET_STATUS_DISCARDED;
+  usage: MediaUsage;
+  status:
+    | typeof MEDIA_ASSET_STATUS_PENDING
+    | typeof MEDIA_ASSET_STATUS_ATTACHED
+    | typeof MEDIA_ASSET_STATUS_DISCARDED;
+  /** Encryption scheme of the stored object (null = plaintext). */
+  encryption: string | null;
   ownerType: string | null;
   ownerId: string | null;
   createdAt: Date;
   attachedAt: Date | null;
   discardedAt: Date | null;
+  /** Set once the object is confirmed gone from storage (retention proof). */
+  purgedAt: Date | null;
 }
 
-export const MAX_EVENT_IMAGE_BYTES = 5 * 1024 * 1024;
-export const EVENT_IMAGE_MAX_DIMENSION_PX = 1600;
-
-export const EVENT_IMAGE_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-] as const;
-
 export const mediaInvariants = {
-  validateEventImageContentType(contentType: string): void {
-    if (!EVENT_IMAGE_MIME_TYPES.includes(contentType as (typeof EVENT_IMAGE_MIME_TYPES)[number])) {
-      throw new MediaValidationError('Event images must be JPG, PNG, WebP, or GIF files');
+  validateContentType(spec: MediaUsageSpec, contentType: string): void {
+    if (!spec.acceptedMimeTypes.includes(contentType)) {
+      throw new MediaValidationError(spec.invalidTypeMessage);
     }
   },
 
-  validateEventImageSize(sizeBytes: number): void {
+  validateSize(spec: MediaUsageSpec, sizeBytes: number): void {
     if (sizeBytes <= 0) {
       throw new MediaValidationError('Image upload is empty');
     }
-
-    if (sizeBytes > MAX_EVENT_IMAGE_BYTES) {
-      throw new MediaValidationError('Event images must be 5 MB or smaller');
+    if (sizeBytes > spec.maxUploadBytes) {
+      throw new MediaValidationError(spec.tooLargeMessage);
     }
   },
 };

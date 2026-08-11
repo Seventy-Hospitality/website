@@ -1,6 +1,10 @@
 // Persistence abstractions (no concrete implementations)
 export { UnitOfWork, type TransactionContext } from './unit-of-work';
 
+// At-rest encryption (pure crypto; shared by identity's refresh-token
+// storage and media's private assets, each under its own purpose label)
+export { AesGcmCipher } from './aes-gcm';
+
 // Payment-ledger math (pure; the ONE net-paid / refund-allocation
 // implementation, shared by the bookings settlement and billing contexts)
 export {

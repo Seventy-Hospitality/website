@@ -16,6 +16,10 @@ model User {
   staffRole       String? // null | "staff" | "admin"
   status          String    @default("active") // "active" | "suspended" | "deleted"
   deletedAt       DateTime?
+  // Set (never cleared) when the account-deletion pipeline starts: the auth
+  // ladder freezes every policy above `authenticated` for this user, so a
+  // half-deleted account cannot book, pay or create anything new.
+  deletionRequestedAt DateTime?
   termsAcceptedAt DateTime?
   termsVersion    String?
 
@@ -165,6 +169,9 @@ model Member {
   series          ReservationSeries[]
   clubMemberships ClubMember[]
   clubInvites     ClubInvitation[]         @relation("clubInvitee")
+  devices         Device[]
+  notificationPreference NotificationPreference?
+  idVerification  IdVerification?
 
   @@map("members")
 }
@@ -668,23 +675,123 @@ model ClubEvent {
   @@map("club_events")
 }
 
+// One row per managed image. storagePath is the canonical key: public
+// assets store their browser URL ("/uploads/<dir>/<name>"); private assets
+// store a bare "private/<dir>/<name>" key that no route serves (a field
+// named publicPath WILL eventually be serialized by someone, hence the
+// rename). contentType/sizeBytes are always the PLAINTEXT values;
+// encryption records the at-rest scheme of the stored object; purgedAt is
+// the retention proof that the object is confirmed gone from storage.
 model ManagedMediaAsset {
   id               String    @id @default(cuid())
-  publicPath       String    @unique
+  storagePath      String    @unique
   usage            String
   status           String    @default("pending")
   contentType      String
   sizeBytes        Int
   originalFilename String
+  encryption       String?
   ownerType        String?
   ownerId          String?
   attachedAt       DateTime?
   discardedAt      DateTime?
+  purgedAt         DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
   @@index([usage, status, createdAt])
   @@index([ownerType, ownerId])
   @@map("managed_media_assets")
+}
+
+// ── Account surface (package E) ──
+
+// Notification toggles, owned by the communications BC (package F's outbox
+// consumers read them to decide delivery). Absent row = all defaults.
+model NotificationPreference {
+  memberId           String   @id
+  pushNotifications  Boolean  @default(true)
+  emailNotifications Boolean  @default(true)
+  bookingReminders   Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@map("notification_preferences")
+}
+
+// Push tokens (package F delivery targets). token is globally unique: a
+// device that changes hands re-registers and the row moves to the new
+// member. Deleted at account-deletion quiesce (a push channel must die
+// with the sessions).
+model Device {
+  id         String   @id @default(cuid())
+  memberId   String
+  token      String   @unique
+  platform   String // "ios" | "android"
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@index([memberId])
+  @@map("devices")
+}
+
+// Government-ID verification, owned by the members BC. One row per member
+// carrying the CURRENT state; imageAssetRef is a PRIVATE media storage path
+// (never publicly served, encrypted at rest, deleted after review and on
+// account deletion).
+model IdVerification {
+  id                String    @id @default(cuid())
+  memberId          String    @unique
+  status            String    @default("not_submitted") // "not_submitted" | "submitted" | "verified" | "rejected"
+  imageAssetRef     String?
+  skippedAt         DateTime?
+  submittedAt       DateTime?
+  reviewedAt        DateTime?
+  reviewedByAdminId String?
+  note              String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@index([status, submittedAt])
+  @@map("id_verifications")
+}
+
+// Resumable account-deletion saga (account BC). One live request per user;
+// steps is a map of step name -> { completedAt, attempts, lastError,
+// result } so a mid-pipeline Stripe failure retries exactly where it
+// stopped. lockedBy/lockedUntil lease a run so a user retry and the resume
+// cron can never drive the same request concurrently. Snapshot fields
+// (emailAtRequest, memberNumberAtRequest) are the only human-readable
+// provenance once the member row is scrubbed.
+model DeletionRequest {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  memberId              String? // null: account never finished onboarding
+  requestedByUserId     String
+  status                String    @default("in_progress") // "in_progress" | "failed" | "blocked" | "completed"
+  steps                 Json      @default("{}")
+  stepsVersion          Int       @default(1)
+  attempts              Int       @default(0)
+  nextAttemptAt         DateTime? @db.Timestamptz(3)
+  lockedBy              String?
+  lockedUntil           DateTime? @db.Timestamptz(3)
+  blockedReasons        String[]  @default([])
+  stepUpMethod          String // "password" | "oauth" | "reauth_email"
+  client                String?
+  ip                    String?
+  emailAtRequest        String
+  memberNumberAtRequest String?
+  requestedAt           DateTime  @default(now())
+  completedAt           DateTime?
+  updatedAt             DateTime  @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@map("deletion_requests")
 }
 

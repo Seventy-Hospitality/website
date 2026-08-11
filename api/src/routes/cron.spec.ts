@@ -16,7 +16,7 @@ const {
     reconcileBilling: vi.fn().mockResolvedValue({ charges: 0, invoices: 0, refunds: 0, settlementsTriggered: 0, unmatched: 0, dedupeRowsPruned: 0 }),
   },
   mockMediaService: {
-    cleanupStaleEventImages: vi.fn().mockResolvedValue({
+    cleanupStaleAssets: vi.fn().mockResolvedValue({
       deletedCount: 1,
       deletedImageUrls: ['/uploads/event-images/old.png'],
       cutoff: new Date('2026-04-03T12:00:00.000Z'),
@@ -67,7 +67,7 @@ describe('cron routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDb.member.findMany.mockResolvedValue([]);
-    mockMediaService.cleanupStaleEventImages.mockResolvedValue({
+    mockMediaService.cleanupStaleAssets.mockResolvedValue({
       deletedCount: 1,
       deletedImageUrls: ['/uploads/event-images/old.png'],
       cutoff: new Date('2026-04-03T12:00:00.000Z'),
@@ -173,7 +173,7 @@ describe('cron routes', () => {
     });
 
     expect(response.statusCode).toBe(401);
-    expect(mockMediaService.cleanupStaleEventImages).not.toHaveBeenCalled();
+    expect(mockMediaService.cleanupStaleAssets).not.toHaveBeenCalled();
   });
 
   it('rejects a wrong cron secret', async () => {
@@ -196,7 +196,7 @@ describe('cron routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(mockMediaService.cleanupStaleEventImages).toHaveBeenCalledWith({
+    expect(mockMediaService.cleanupStaleAssets).toHaveBeenCalledWith({
       maxAgeHours: 48,
       limit: 25,
     });

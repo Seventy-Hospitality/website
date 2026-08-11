@@ -38,7 +38,7 @@ import {
 } from '@/lib/contexts/bookings/infrastructure';
 import { ClubEventRepository } from '@/lib/contexts/events/infrastructure';
 import { ClubRepository, ClubRosterAdapter } from '@/lib/contexts/clubs/infrastructure';
-import { LocalMediaStorage, PrismaManagedMediaAssetRepository, S3MediaStorage, SharpEventImageProcessor } from '@/lib/contexts/media/infrastructure';
+import { LocalMediaStorage, PrismaManagedMediaAssetRepository, S3MediaStorage, SharpImageProcessor } from '@/lib/contexts/media/infrastructure';
 
 // Application services
 import { MemberService } from '@/lib/contexts/members/application';
@@ -143,7 +143,7 @@ function createMediaStorage() {
 }
 
 export const mediaStorage = createMediaStorage();
-export const eventImageProcessor = new SharpEventImageProcessor();
+export const imageProcessor = new SharpImageProcessor();
 
 // ── Communications ──
 
@@ -183,10 +183,45 @@ export const resourceClaimPort = new ResourceClaimService(
   reservationService,
   VENUE_TIMEZONE,
 );
-export const mediaService = new MediaService(mediaStorage, managedMediaAssetRepo, eventImageProcessor);
-export const clubEventService = new ClubEventService(clubEventRepo, resourceClaimPort, mediaService, uow);
-// Covers ride the media context's ManagedMediaAsset pipeline (event pattern).
-export const clubService = new ClubService(clubRepo, mediaService, eventStore, uow);
+// Private assets (ID photos) are encrypted at rest under a media-specific
+// key. MEDIA_ENCRYPTION_KEY is required in production so rotating
+// JWT_SECRET (a routine security action) can never brick stored photos;
+// keyless local dev derives from the JWT secret.
+const mediaEncryptionKey = process.env.MEDIA_ENCRYPTION_KEY?.trim();
+if (!mediaEncryptionKey && process.env.NODE_ENV === 'production') {
+  throw new Error('MEDIA_ENCRYPTION_KEY must be set in production');
+}
+
+export const mediaService = new MediaService(
+  mediaStorage,
+  managedMediaAssetRepo,
+  imageProcessor,
+  new AesGcmCipher(mediaEncryptionKey || (process.env.JWT_SECRET ?? 'dev-fallback-secret-not-for-production'), 'media-at-rest'),
+);
+
+// Consumer BCs reach media through narrow usage-pinned adapters: a call
+// wired for event images can never attach or delete an asset of another
+// usage (someone's ID photo) by being handed its path.
+const eventImageStore = {
+  deleteManagedAsset: async (path: string | null | undefined) => {
+    await mediaService.deleteAsset(path, { expectUsage: 'event-image' });
+  },
+  isManagedAsset: (path: string | null | undefined) => mediaService.isManagedAsset(path),
+  attachManagedAssetToOwner: (path: string | null | undefined, owner: { ownerType: string; ownerId: string }) =>
+    mediaService.attachAssetToOwner(path, owner, { expectUsage: 'event-image' }),
+};
+// Club covers deliberately share the event-image usage (same directory,
+// sizing and lifecycle as before the pipeline was generalized).
+const clubCoverStore = {
+  uploadCoverImage: async (input: { filename: string; contentType: string; bytes: Buffer }) => {
+    const asset = await mediaService.upload('event-image', input);
+    return { publicPath: asset.storagePath };
+  },
+  ...eventImageStore,
+};
+
+export const clubEventService = new ClubEventService(clubEventRepo, resourceClaimPort, eventImageStore, uow);
+export const clubService = new ClubService(clubRepo, clubCoverStore, eventStore, uow);
 
 // ── Billing services ──
 // Wired after the reservation service: billing drives bookings settlement

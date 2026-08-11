@@ -76,7 +76,7 @@ export async function cronRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: parsed.error.message });
       }
 
-      const result = await mediaService.cleanupStaleEventImages(parsed.data);
+      const result = await mediaService.cleanupStaleAssets(parsed.data);
       return reply.send(result);
     },
   });

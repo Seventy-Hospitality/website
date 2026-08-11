@@ -18,7 +18,7 @@ import {
   type PendingInvitationItem,
   type RosterEntry,
 } from '@/lib/contexts/clubs';
-import { MAX_EVENT_IMAGE_BYTES, MediaValidationError } from '@/lib/contexts/media';
+import { MEDIA_USAGE_SPECS, MediaValidationError } from '@/lib/contexts/media';
 import { error, success } from '@/src/lib/responses';
 import { serializeClubActivityReservation } from '@/src/lib/reservations';
 import {
@@ -203,7 +203,7 @@ export async function clubRoutes(app: FastifyInstance) {
       }
 
       try {
-        const file = await req.file({ limits: { files: 1, fileSize: MAX_EVENT_IMAGE_BYTES } });
+        const file = await req.file({ limits: { files: 1, fileSize: MEDIA_USAGE_SPECS['event-image'].maxUploadBytes } });
         if (!file) return error(reply, 'VALIDATION_ERROR', 'Image file is required');
 
         const bytes = await file.toBuffer();

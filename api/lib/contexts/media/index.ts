@@ -1,21 +1,29 @@
-export { MediaService } from './application';
-export type { MediaAssetReadResult, MediaStorage, UploadEventImageInput } from './application';
+export { MediaService, MEDIA_ENCRYPTION_V1 } from './application';
+export type {
+  MediaAssetReadResult,
+  MediaCipher,
+  MediaObjectStorage,
+  UploadImageInput,
+} from './application';
 export {
   type MediaAsset,
   type ManagedMediaAsset,
-  EVENT_IMAGE_MIME_TYPES,
-  EVENT_IMAGE_USAGE,
+  type MediaUsage,
+  type MediaUsageSpec,
+  MEDIA_USAGES,
+  MEDIA_USAGE_SPECS,
   MEDIA_ASSET_STATUS_PENDING,
   MEDIA_ASSET_STATUS_ATTACHED,
   MEDIA_ASSET_STATUS_DISCARDED,
-  MAX_EVENT_IMAGE_BYTES,
+  parseAssetPath,
+  publicUrlFor,
   MediaValidationError,
 } from './domain';
 export {
   LocalMediaStorage,
   PrismaManagedMediaAssetRepository,
-  SharpEventImageProcessor,
+  SharpImageProcessor,
   getMediaUploadsRoot,
-  ensureMediaUploadsRoot,
+  getMediaPrivateRoot,
   S3MediaStorage,
 } from './infrastructure';

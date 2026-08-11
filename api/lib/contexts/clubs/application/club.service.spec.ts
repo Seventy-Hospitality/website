@@ -102,7 +102,7 @@ function mockRepo(): ClubRepository {
 
 function mockCoverStore(): ManagedCoverImageStore {
   return {
-    uploadEventImage: vi.fn().mockResolvedValue({ publicPath: '/uploads/event-images/cover.jpg' }),
+    uploadCoverImage: vi.fn().mockResolvedValue({ publicPath: '/uploads/event-images/cover.jpg' }),
     attachManagedAssetToOwner: vi.fn(),
     deleteManagedAsset: vi.fn(),
   };
@@ -273,7 +273,7 @@ describe('ClubService.setCoverImage (media happy path)', () => {
     const upload = { filename: 'cover.jpg', contentType: 'image/jpeg', bytes: Buffer.from('img') };
     const club = await service.setCoverImage('clb_1', { memberId: 'mem_owner' }, upload);
 
-    expect(coverStore.uploadEventImage).toHaveBeenCalledWith(upload);
+    expect(coverStore.uploadCoverImage).toHaveBeenCalledWith(upload);
     expect(repo.updateClub).toHaveBeenCalledWith(expect.anything(), 'clb_1', {
       coverImageUrl: '/uploads/event-images/cover.jpg',
     });
@@ -297,7 +297,7 @@ describe('ClubService.setCoverImage (media happy path)', () => {
         { filename: 'x.jpg', contentType: 'image/jpeg', bytes: Buffer.from('x') },
       ),
     ).rejects.toThrow(ClubPermissionError);
-    expect(coverStore.uploadEventImage).not.toHaveBeenCalled();
+    expect(coverStore.uploadCoverImage).not.toHaveBeenCalled();
   });
 });
 

@@ -21,12 +21,14 @@ export interface AuditLog {
 }
 
 /**
- * The slice of the media context clubs needs for cover images (satisfied by
- * MediaService): upload through the ManagedMediaAsset pipeline, attach the
- * asset to its club, drop a replaced cover.
+ * The slice of the media context clubs needs for cover images (adapted over
+ * MediaService in the container, pinned to the event-image usage so a club
+ * cover call can never touch an asset of another usage): upload through the
+ * ManagedMediaAsset pipeline, attach the asset to its club, drop a replaced
+ * cover. Covers are public assets, so the path IS the browser URL.
  */
 export interface ManagedCoverImageStore {
-  uploadEventImage(input: {
+  uploadCoverImage(input: {
     filename: string;
     contentType: string;
     bytes: Buffer;
