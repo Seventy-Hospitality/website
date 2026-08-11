@@ -95,6 +95,10 @@ export async function meMembershipRoutes(app: FastifyInstance) {
       const result = await membershipService.confirmSubscription(memberId(req));
       return success(reply, {
         activated: result.activated,
+        // Latest-invoice collection state: lets the client tell an async
+        // charge still clearing (processing) from a failed one
+        // (requires_payment_method) while status still reads incomplete.
+        paymentStatus: result.paymentStatus,
         membership: serializeOverview(result),
       });
     } catch (err) {

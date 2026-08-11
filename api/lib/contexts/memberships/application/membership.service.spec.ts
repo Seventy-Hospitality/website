@@ -95,6 +95,7 @@ function mockGateway(overrides: Record<string, unknown> = {}): SubscriptionGatew
       .fn()
       .mockResolvedValue({ snapshot: snapshot(), clientSecret: 'cs_secret' }),
     getConfirmationSecret: vi.fn().mockResolvedValue('cs_fresh'),
+    getLatestPaymentState: vi.fn().mockResolvedValue(null),
     getSubscriptionState: vi.fn().mockResolvedValue(snapshot({ status: 'active', rawStatus: 'active' })),
     changeSubscriptionPrice: vi
       .fn()
@@ -252,6 +253,60 @@ describe('MembershipService.confirmSubscription', () => {
 
   it('throws NoMembershipError with nothing to confirm', async () => {
     await expect(service().confirmSubscription('mem_1')).rejects.toThrow(NoMembershipError);
+  });
+
+  it('short-circuits paymentStatus to succeeded for an entitled membership (no extra Stripe read)', async () => {
+    const membershipRepo = mockMembershipRepo({
+      getCurrentForMember: vi.fn().mockResolvedValue(membershipRow({ status: 'active' })),
+    });
+    const gateway = mockGateway();
+
+    const result = await service({ membershipRepo, gateway }).confirmSubscription('mem_1');
+
+    expect(result.paymentStatus).toBe('succeeded');
+    expect(gateway.getLatestPaymentState).not.toHaveBeenCalled();
+  });
+
+  it('reports processing while an async charge is still clearing on an incomplete membership', async () => {
+    const membershipRepo = mockMembershipRepo({
+      getCurrentForMember: vi.fn().mockResolvedValue(membershipRow({ status: 'incomplete' })),
+    });
+    const gateway = mockGateway({
+      getLatestPaymentState: vi
+        .fn()
+        .mockResolvedValue({ invoiceStatus: 'open', paymentIntentStatus: 'processing' }),
+    });
+
+    const result = await service({ membershipRepo, gateway }).confirmSubscription('mem_1');
+
+    expect(gateway.getLatestPaymentState).toHaveBeenCalledWith('sub_1');
+    expect(result.activated).toBe(false);
+    expect(result.paymentStatus).toBe('processing');
+  });
+
+  it('reports requires_payment_method when the async charge failed', async () => {
+    const membershipRepo = mockMembershipRepo({
+      getCurrentForMember: vi.fn().mockResolvedValue(membershipRow({ status: 'incomplete' })),
+    });
+    const gateway = mockGateway({
+      getLatestPaymentState: vi
+        .fn()
+        .mockResolvedValue({ invoiceStatus: 'open', paymentIntentStatus: 'requires_payment_method' }),
+    });
+
+    const result = await service({ membershipRepo, gateway }).confirmSubscription('mem_1');
+
+    expect(result.paymentStatus).toBe('requires_payment_method');
+  });
+
+  it('fails closed to unknown when nothing is observable', async () => {
+    const membershipRepo = mockMembershipRepo({
+      getCurrentForMember: vi.fn().mockResolvedValue(membershipRow({ status: 'incomplete' })),
+    });
+
+    const result = await service({ membershipRepo }).confirmSubscription('mem_1');
+
+    expect(result.paymentStatus).toBe('unknown');
   });
 });
 

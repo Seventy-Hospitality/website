@@ -15,8 +15,10 @@ export {
   NoMembershipError,
   isEntitledStatus,
   pickCurrentMembership,
+  type LatestInvoicePaymentState,
   type Membership,
-  type Plan,
+  type MembershipPaymentStatus,
   type MembershipStatus,
+  type Plan,
   type SubscriptionSnapshot,
 } from './domain';

@@ -1,4 +1,5 @@
 import {
+  deriveMembershipPaymentStatus,
   isEntitledStatus,
   isPlanUpgrade,
   membershipInvariants,
@@ -25,6 +26,35 @@ function plan(overrides: Partial<Plan> = {}): Plan {
     ...overrides,
   };
 }
+
+describe('deriveMembershipPaymentStatus', () => {
+  it('trusts a paid invoice over any intent state', () => {
+    expect(
+      deriveMembershipPaymentStatus({ invoiceStatus: 'paid', paymentIntentStatus: 'processing' }),
+    ).toBe('succeeded');
+  });
+
+  it.each([
+    ['succeeded', 'succeeded'],
+    ['processing', 'processing'],
+    ['requires_action', 'requires_action'],
+    ['requires_confirmation', 'requires_action'],
+    ['requires_payment_method', 'requires_payment_method'],
+    ['canceled', 'canceled'],
+  ] as const)('maps intent status %s to %s', (intentStatus, expected) => {
+    expect(
+      deriveMembershipPaymentStatus({ invoiceStatus: 'open', paymentIntentStatus: intentStatus }),
+    ).toBe(expected);
+  });
+
+  it('fails closed to unknown without an observation or with a novel status', () => {
+    expect(deriveMembershipPaymentStatus(null)).toBe('unknown');
+    expect(deriveMembershipPaymentStatus({ invoiceStatus: 'open', paymentIntentStatus: null })).toBe('unknown');
+    expect(
+      deriveMembershipPaymentStatus({ invoiceStatus: 'open', paymentIntentStatus: 'brand_new_state' }),
+    ).toBe('unknown');
+  });
+});
 
 describe('normalizeSubscriptionStatus', () => {
   it('passes known statuses through', () => {

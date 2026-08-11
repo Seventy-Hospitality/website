@@ -64,6 +64,58 @@ export function normalizeSubscriptionStatus(raw: string): {
   return { status: 'unpaid', recognized: false };
 }
 
+// ── Purchase payment state (confirm read-back) ──
+
+/**
+ * Raw observation of the latest invoice's collection attempt, fetched by
+ * the SubscriptionGateway. Strings, not enums: Stripe owns the vocabulary
+ * and the derivation below maps it fail-closed.
+ */
+export interface LatestInvoicePaymentState {
+  /** Stripe invoice status: draft | open | paid | void | uncollectible. */
+  invoiceStatus: string | null;
+  /** Stripe PaymentIntent status of the invoice's latest payment. */
+  paymentIntentStatus: string | null;
+}
+
+/**
+ * What the confirm caller needs to know about a still-`incomplete`
+ * membership: `processing` = async charge still clearing, keep waiting;
+ * `requires_payment_method` = the charge failed, surface a retry;
+ * `requires_action` = SCA still owed; `succeeded` = paid (activation
+ * follows via webhook/read-back); `canceled` = the intent was voided;
+ * `unknown` = nothing observable (fail closed to "not payable yet").
+ */
+export type MembershipPaymentStatus =
+  | 'succeeded'
+  | 'processing'
+  | 'requires_action'
+  | 'requires_payment_method'
+  | 'canceled'
+  | 'unknown';
+
+export function deriveMembershipPaymentStatus(
+  state: LatestInvoicePaymentState | null,
+): MembershipPaymentStatus {
+  if (!state) return 'unknown';
+  if (state.invoiceStatus === 'paid') return 'succeeded';
+  switch (state.paymentIntentStatus) {
+    case 'succeeded':
+      return 'succeeded';
+    case 'processing':
+      return 'processing';
+    case 'requires_action':
+    case 'requires_confirmation':
+      return 'requires_action';
+    case 'requires_payment_method':
+      return 'requires_payment_method';
+    case 'canceled':
+      return 'canceled';
+    default:
+      return 'unknown';
+  }
+}
+
 /**
  * "The member's current membership" is a query, not a unique row: a member
  * can hold several subscription rows over time (re-subscribing is a new

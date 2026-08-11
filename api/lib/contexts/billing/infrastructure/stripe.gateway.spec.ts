@@ -177,6 +177,52 @@ describe('StripeGateway.cancelSubscriptionNow', () => {
   });
 });
 
+describe('StripeGateway.getLatestPaymentState', () => {
+  it('reads the NEWEST invoice payment intent status', async () => {
+    const g = new StripeGateway('sk_test_fake', 'http://localhost:5173');
+    (g.client.subscriptions as unknown as { retrieve: unknown }).retrieve = vi.fn().mockResolvedValue({
+      latest_invoice: {
+        status: 'open',
+        payments: {
+          data: [
+            { created: 100, payment: { payment_intent: { status: 'requires_payment_method' } } },
+            { created: 200, payment: { payment_intent: { status: 'processing' } } },
+          ],
+        },
+      },
+    });
+
+    await expect(g.getLatestPaymentState('sub_1')).resolves.toEqual({
+      invoiceStatus: 'open',
+      paymentIntentStatus: 'processing',
+    });
+    expect(g.client.subscriptions.retrieve).toHaveBeenCalledWith('sub_1', {
+      expand: ['latest_invoice.payments.data.payment.payment_intent'],
+    });
+  });
+
+  it('answers null without an expandable latest invoice', async () => {
+    const g = new StripeGateway('sk_test_fake', 'http://localhost:5173');
+    (g.client.subscriptions as unknown as { retrieve: unknown }).retrieve = vi
+      .fn()
+      .mockResolvedValue({ latest_invoice: null });
+
+    await expect(g.getLatestPaymentState('sub_1')).resolves.toBeNull();
+  });
+
+  it('reports the invoice status alone when no intent is attached yet', async () => {
+    const g = new StripeGateway('sk_test_fake', 'http://localhost:5173');
+    (g.client.subscriptions as unknown as { retrieve: unknown }).retrieve = vi
+      .fn()
+      .mockResolvedValue({ latest_invoice: { status: 'open', payments: { data: [] } } });
+
+    await expect(g.getLatestPaymentState('sub_1')).resolves.toEqual({
+      invoiceStatus: 'open',
+      paymentIntentStatus: null,
+    });
+  });
+});
+
 describe('StripeGateway.listAllSubscriptions', () => {
   function fakeSub(id: string) {
     return {

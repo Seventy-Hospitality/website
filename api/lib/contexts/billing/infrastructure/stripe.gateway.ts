@@ -1,5 +1,9 @@
 import Stripe from 'stripe';
-import { normalizeSubscriptionStatus, type SubscriptionSnapshot } from '@/lib/contexts/memberships/domain';
+import {
+  normalizeSubscriptionStatus,
+  type LatestInvoicePaymentState,
+  type SubscriptionSnapshot,
+} from '@/lib/contexts/memberships/domain';
 import type { SubscriptionGateway } from '@/lib/contexts/memberships';
 import { CURRENCY } from '../domain';
 import type {
@@ -104,6 +108,29 @@ export class StripeGateway implements SubscriptionGateway {
     });
     if (sub.status !== 'incomplete') return null;
     return confirmationSecretOf(sub.latest_invoice);
+  }
+
+  /**
+   * The latest invoice's collection state for the confirm read-back. The
+   * invoice no longer carries payment_intent directly (dahlia); its
+   * payments list does, so the newest payment's intent is the observation.
+   */
+  async getLatestPaymentState(subscriptionId: string): Promise<LatestInvoicePaymentState | null> {
+    const sub = await this.stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ['latest_invoice.payments.data.payment.payment_intent'],
+    });
+    const invoice = sub.latest_invoice;
+    if (!invoice || typeof invoice === 'string') return null;
+
+    const payments = invoice.payments?.data ?? [];
+    const latest = [...payments].sort((a, b) => b.created - a.created)[0];
+    const intentRef = latest?.payment.payment_intent;
+    const intent = intentRef && typeof intentRef !== 'string' ? intentRef : null;
+
+    return {
+      invoiceStatus: invoice.status ?? null,
+      paymentIntentStatus: intent?.status ?? null,
+    };
   }
 
   async getSubscriptionState(subscriptionId: string): Promise<SubscriptionSnapshot | null> {

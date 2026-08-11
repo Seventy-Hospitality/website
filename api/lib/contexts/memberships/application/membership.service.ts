@@ -1,4 +1,6 @@
 import {
+  deriveMembershipPaymentStatus,
+  isEntitledStatus,
   isPlanUpgrade,
   membershipInvariants,
   resolveSubscriptionApply,
@@ -7,6 +9,7 @@ import {
   PlanInviteOnlyError,
   PlanNotFoundError,
   type Membership,
+  type MembershipPaymentStatus,
   type Plan,
   type SubscriptionSnapshot,
 } from '../domain';
@@ -130,13 +133,30 @@ export class MembershipService {
    * Synchronous read-back after PaymentSheet success: re-fetch the
    * subscription and apply fresh state through the same idempotent path the
    * webhook uses. The app cannot wait on a webhook to render "active".
+   *
+   * `paymentStatus` disambiguates a still-`incomplete` membership for the
+   * caller: an async charge that is still clearing reads `processing`
+   * (keep waiting), a failed one `requires_payment_method` (surface a
+   * retry). An entitled membership short-circuits to `succeeded` with no
+   * extra Stripe read.
    */
-  async confirmSubscription(memberId: string): Promise<MembershipOverview & { activated: boolean }> {
+  async confirmSubscription(
+    memberId: string,
+  ): Promise<MembershipOverview & { activated: boolean; paymentStatus: MembershipPaymentStatus }> {
     const current = await this.membershipRepo.getCurrentForMember(memberId);
     if (!current) throw new NoMembershipError();
     await this.applySubscriptionState(current.stripeSubscriptionId, { fallbackMemberId: memberId });
     const overview = await this.getOverview(memberId);
-    return { ...overview, activated: overview.membership?.status === 'active' };
+
+    const status = overview.membership?.status ?? null;
+    const paymentStatus: MembershipPaymentStatus =
+      status !== null && isEntitledStatus(status)
+        ? 'succeeded'
+        : deriveMembershipPaymentStatus(
+            await this.gateway.getLatestPaymentState(current.stripeSubscriptionId),
+          );
+
+    return { ...overview, activated: overview.membership?.status === 'active', paymentStatus };
   }
 
   async getOverview(memberId: string): Promise<MembershipOverview> {

@@ -167,7 +167,11 @@ describe('me-membership routes', () => {
   describe('POST /membership/confirm', () => {
     it('reads back and activates via the principal member', async () => {
       signedInAs();
-      mockMembershipService.confirmSubscription.mockResolvedValue({ ...OVERVIEW, activated: true });
+      mockMembershipService.confirmSubscription.mockResolvedValue({
+        ...OVERVIEW,
+        activated: true,
+        paymentStatus: 'succeeded',
+      });
 
       const res = await app.inject({ method: 'POST', url: '/api/me/membership/confirm', headers: AUTH });
 
@@ -175,7 +179,27 @@ describe('me-membership routes', () => {
       expect(mockMembershipService.confirmSubscription).toHaveBeenCalledWith('mem_1');
       expect(res.json().data).toMatchObject({
         activated: true,
+        paymentStatus: 'succeeded',
         membership: expect.objectContaining({ status: 'active', plan: expect.objectContaining({ id: 'plan_m' }) }),
+      });
+    });
+
+    it('surfaces the latest-invoice payment state for a still-incomplete membership', async () => {
+      signedInAs();
+      mockMembershipService.confirmSubscription.mockResolvedValue({
+        ...OVERVIEW,
+        membership: { ...OVERVIEW.membership, status: 'incomplete' },
+        activated: false,
+        paymentStatus: 'requires_payment_method',
+      });
+
+      const res = await app.inject({ method: 'POST', url: '/api/me/membership/confirm', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toMatchObject({
+        activated: false,
+        paymentStatus: 'requires_payment_method',
+        membership: expect.objectContaining({ status: 'incomplete' }),
       });
     });
   });

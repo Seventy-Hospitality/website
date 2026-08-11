@@ -1,4 +1,4 @@
-import type { SubscriptionSnapshot } from '../domain';
+import type { LatestInvoicePaymentState, SubscriptionSnapshot } from '../domain';
 
 /**
  * The narrow seam to Stripe's subscription machinery. Implemented by the
@@ -23,6 +23,14 @@ export interface SubscriptionGateway {
 
   /** Fresh confirmation secret for re-entering an incomplete purchase. */
   getConfirmationSecret(subscriptionId: string): Promise<string | null>;
+
+  /**
+   * Latest-invoice collection state (confirm read-back): lets the confirm
+   * caller tell "async charge still clearing" from "charge failed" while
+   * the subscription still reads incomplete. Null when the subscription
+   * has no observable invoice payment.
+   */
+  getLatestPaymentState(subscriptionId: string): Promise<LatestInvoicePaymentState | null>;
 
   /** Fresh subscription state; null when Stripe no longer knows the id. */
   getSubscriptionState(subscriptionId: string): Promise<SubscriptionSnapshot | null>;
