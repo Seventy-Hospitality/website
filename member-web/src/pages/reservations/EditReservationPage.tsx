@@ -14,9 +14,7 @@ import {
   formatDateFull,
   formatDateLong,
   formatTimeRangeCompact,
-  minutesToTimeLabel,
   resourceNoun,
-  timeLabelToMinutes,
 } from '../../lib/booking';
 import { formatAmountWithCents } from '../../lib/plan-pricing';
 import { memberDisplayName } from '../../lib/invites';
@@ -24,7 +22,10 @@ import {
   describeRescheduleMoney,
   hasReservationStarted,
   isSelectionChanged,
+  reservationMatchesMove,
   reservationSlots,
+  selectionTarget,
+  type MoveTarget,
   type RescheduleMoney,
 } from '../../lib/reservation-policy';
 import { getStripe } from '../../lib/stripe';
@@ -57,6 +58,14 @@ const STEP_NAMES: Record<EditStep, string> = {
   1: 'Choose a new time',
   2: 'Confirm changes',
 };
+
+/**
+ * Shown when a paid grow settled but the reservation did NOT move: the
+ * backend dropped the parked change (lapsed at its TTL, superseded, or the
+ * slot was gone at settle time) and auto-refunds the captured delta.
+ */
+const CHANGE_DROPPED_MESSAGE =
+  'We could not apply your change in time. Your original booking is unchanged; if you were charged, the amount is refunded automatically.';
 
 /**
  * The 2-step edit/reschedule wizard (Figma "Editing reservation"
@@ -267,6 +276,17 @@ function EditWizard({ detail, type }: { detail: ReservationDetail; type: Resourc
 
   const resuming = searchParams.get('resume') === '1';
   const redirectStatus = searchParams.get('redirect_status');
+  // The requested move rides the return URL (to_*): after a redirect the
+  // wizard's date/slots state is gone, and the return leg must be able to
+  // tell "the move applied" from "the parked change was dropped and
+  // refunded" (both end with no pendingChange).
+  const resumeDate = searchParams.get('to_date');
+  const resumeStart = searchParams.get('to_start');
+  const resumeEnd = searchParams.get('to_end');
+  const resumeTarget: MoveTarget | null =
+    resumeDate && resumeStart && resumeEnd
+      ? { date: resumeDate, startTime: resumeStart, endTime: resumeEnd }
+      : null;
   const clearResumeParams = useCallback(() => {
     setSearchParams(
       (params) => {
@@ -276,6 +296,9 @@ function EditWizard({ detail, type }: { detail: ReservationDetail; type: Resourc
         next.delete('payment_intent');
         next.delete('payment_intent_client_secret');
         next.delete('source_type');
+        next.delete('to_date');
+        next.delete('to_start');
+        next.delete('to_end');
         return next;
       },
       { replace: true },
@@ -286,6 +309,7 @@ function EditWizard({ detail, type }: { detail: ReservationDetail; type: Resourc
     return (
       <EditRedirectReturn
         detail={detail}
+        target={resumeTarget}
         redirectStatus={redirectStatus}
         onApplied={(reservation) => {
           clearResumeParams();
@@ -439,6 +463,9 @@ function ConfirmChangesStep({
   const stripeReady = getStripe() !== null;
   const noun = resourceNoun(detail.typeName);
 
+  // Step 2 is only reachable with a non-empty, changed selection.
+  const target = selectionTarget(date, slots, type.slotDurationMinutes)!;
+
   const quote = useQuery({
     queryKey: ['reschedule-quote', detail.id, date, slots],
     queryFn: () => api.rescheduleQuote(detail.id, { date, slots }),
@@ -505,15 +532,16 @@ function ConfirmChangesStep({
   async function handlePaid() {
     try {
       const reservation = await confirm.mutateAsync();
-      if (reservation.date === date && !reservation.pendingChange) {
+      // "The pending change is gone" is NOT proof the move applied (a
+      // dropped change also clears it); only the reservation actually
+      // sitting on the requested date AND time counts as success.
+      if (!reservation.pendingChange && reservationMatchesMove(reservation, target)) {
         onApplied(reservation, money);
         return;
       }
       // The change was swept before the payment settled it; any captured
       // delta is refunded by the backend's orphan path.
-      onBackToTime(
-        'We could not apply your change in time. Your original booking is unchanged; if you were charged, the amount is refunded automatically.',
-      );
+      onBackToTime(CHANGE_DROPPED_MESSAGE);
     } catch (error) {
       if (error instanceof ApiError && error.code === 'PAYMENT_REQUIRED') {
         setProcessingHold(true);
@@ -587,14 +615,15 @@ function ConfirmChangesStep({
   }
 
   const quoted = quote.data;
-  const newStart = [...slots].sort((a, b) => timeLabelToMinutes(a) - timeLabelToMinutes(b))[0];
-  const newEnd = minutesToTimeLabel(
-    timeLabelToMinutes(newStart) + slots.length * type.slotDurationMinutes,
-  );
 
   const summary = (
     <div className={wizard.checkoutSummary}>
-      <ChangeSummaryCard detail={detail} newDate={date} newStart={newStart} newEnd={newEnd} />
+      <ChangeSummaryCard
+        detail={detail}
+        newDate={target.date}
+        newStart={target.startTime}
+        newEnd={target.endTime}
+      />
       <EditOrderSummary noun={noun} detail={detail} quoted={quoted} money={money!} />
     </div>
   );
@@ -676,7 +705,7 @@ function ConfirmChangesStep({
       <div className={wizard.checkoutPayment}>
         <StripeProvider key={parked.clientSecret} clientSecret={parked.clientSecret!}>
           <BookingPaymentForm
-            returnUrl={`${window.location.origin}/reservations/${encodeURIComponent(detail.id)}/edit?resume=1`}
+            returnUrl={editReturnUrl(detail.id, target)}
             confirmError={confirm.isError}
             confirmPending={confirm.isPending}
             onRetryConfirm={() => void handlePaid()}
@@ -716,7 +745,9 @@ function ChangeSummaryCard({
   const dateChanged = newDate !== detail.date;
   const oldRange = formatTimeRangeCompact(detail.startTime, detail.endTime);
   const newRange = formatTimeRangeCompact(newStart, newEnd);
-  const timeChanged = oldRange !== newRange || dateChanged;
+  // Time changes on its own merits: a date-only move must not strike
+  // through (and re-print) an identical time range.
+  const timeChanged = oldRange !== newRange;
 
   return (
     <ReservationCard
@@ -728,13 +759,19 @@ function ChangeSummaryCard({
       <div className={styles.changeCardRows}>
         <p className={styles.changeRow}>
           <CalendarDays aria-hidden className={styles.changeRowIcon} />
-          {dateChanged && (
+          {dateChanged ? (
             <>
               <s className={styles.changeOld}>{formatDateLong(detail.date)}</s>
               <ArrowRight aria-hidden className={styles.changeArrow} />
+              <span>{formatDateLong(newDate)}</span>
+              {/* <s> carries no old/new semantics for screen readers. */}
+              <span className="visually-hidden">
+                Changed from {formatDateLong(detail.date)} to {formatDateLong(newDate)}
+              </span>
             </>
+          ) : (
+            <span>{formatDateLong(newDate)}</span>
           )}
-          <span>{formatDateLong(newDate)}</span>
         </p>
         <p className={styles.changeRow}>
           <Clock aria-hidden className={styles.changeRowIcon} />
@@ -903,12 +940,15 @@ function UpdatedBookingSheet({
 
 function EditRedirectReturn({
   detail,
+  target,
   redirectStatus,
   onApplied,
   onPaymentFailed,
   onChangeLost,
 }: {
   detail: ReservationDetail;
+  /** The requested move, restored from the return URL's to_* params. */
+  target: MoveTarget | null;
   redirectStatus: string | null;
   onApplied: (reservation: Reservation) => void;
   onPaymentFailed: () => void;
@@ -916,15 +956,36 @@ function EditRedirectReturn({
 }) {
   const [processingHold, setProcessingHold] = useState(false);
 
+  // The requested move survives the redirect in the return URL; if those
+  // params were stripped, the change still parked on the reservation at
+  // return time names the same destination. With neither there is nothing
+  // to verify against, and a clean confirm is trusted as applied.
+  const requested =
+    target ??
+    (detail.pendingChange
+      ? {
+          date: detail.pendingChange.date,
+          startTime: detail.pendingChange.startTime,
+          endTime: detail.pendingChange.endTime,
+        }
+      : null);
+
   const confirm = useMutation({
     mutationFn: () => api.confirmReservation(detail.id),
     onSuccess: (reservation) => {
-      if (!reservation.pendingChange) {
+      if (reservation.pendingChange) {
+        // Still parked and unpaid after the redirect: treat as not completed.
+        onPaymentFailed();
+        return;
+      }
+      if (requested === null || reservationMatchesMove(reservation, requested)) {
         onApplied(reservation);
         return;
       }
-      // Still parked and unpaid after the redirect: treat as not completed.
-      onPaymentFailed();
+      // No pending change AND not on the requested time: the parked change
+      // was dropped (lapsed at its TTL, superseded, or slot gone) and the
+      // captured delta is auto-refunded; the member keeps the original.
+      onChangeLost(CHANGE_DROPPED_MESSAGE);
     },
     onError: (error) => {
       if (error instanceof ApiError && error.code === 'PAYMENT_REQUIRED') {
@@ -1026,6 +1087,21 @@ function EditRedirectReturn({
 }
 
 // ── Helpers ──
+
+/**
+ * The Stripe return URL for a redirect-based delta payment. It carries the
+ * requested move (to_*) so the return leg can verify the reservation
+ * actually landed on it; see EditRedirectReturn.
+ */
+function editReturnUrl(reservationId: string, target: MoveTarget): string {
+  const params = new URLSearchParams({
+    resume: '1',
+    to_date: target.date,
+    to_start: target.startTime,
+    to_end: target.endTime,
+  });
+  return `${window.location.origin}/reservations/${encodeURIComponent(reservationId)}/edit?${params.toString()}`;
+}
 
 interface EditFailure {
   kind: 'membership' | 'back-to-time' | 'retry';

@@ -38,6 +38,16 @@ consumed, so the edit flow treats it as "payment not completed", lets the
 parked change lapse, and the member re-picks the time (a fresh PATCH mints
 a fresh intent). No money risk; one extra step for the member.
 
+Related: "no pending change" on the confirm read-back is NOT proof the
+move applied; the backend also clears a parked change it dropped (lapsed
+at its TTL, superseded, or slot gone at settle time, delta auto-refunded)
+and then returns the unmoved original. Both settle paths therefore verify
+the reservation actually sits on the requested date and time
+(`reservationMatchesMove` in `reservation-policy.ts`); the redirect return
+leg restores that target from `to_date`/`to_start`/`to_end` params the
+edit wizard puts on the Stripe return URL. A mismatch is reported as
+"unchanged, refunded automatically", never as an updated booking.
+
 ## Cancellation refund preview is a client mirror (accepted)
 
 The cancel dialog previews the tier (100% >24h, 50% 2-24h, 0% inside 2h)

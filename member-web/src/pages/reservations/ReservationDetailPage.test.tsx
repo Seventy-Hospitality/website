@@ -253,6 +253,28 @@ describe('capability-driven actions', () => {
     expect(screen.queryByRole('button', { name: 'Invite' })).not.toBeInTheDocument();
   });
 
+  it('never offers Invite on an inactive reservation, even with a stale canInvite flag', async () => {
+    // The optimistic cancel write flips status but keeps the old viewer
+    // flags; the Invite gate must re-derive the status half itself.
+    getReservation.mockResolvedValue(
+      detailFixture({
+        participants: [selfParticipant('confirmed', 'organizer'), GUEST_CONFIRMED],
+        viewer: {
+          role: 'organizer',
+          status: 'confirmed',
+          canInvite: true,
+          canManage: true,
+          canRespond: false,
+        },
+        status: 'cancelled',
+      }),
+    );
+    renderDetail();
+
+    expect(await screen.findByText('This reservation was cancelled.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Invite' })).not.toBeInTheDocument();
+  });
+
   it('renders not-found for a reservation the viewer is not part of', async () => {
     getReservation.mockRejectedValue(new ApiError('NOT_FOUND', 'not found', 404));
     renderDetail();
@@ -294,6 +316,39 @@ describe('accept/decline optimistic updates', () => {
     );
     resolveRespond({ status: 'confirmed' });
     await waitFor(() => expect(respondToReservation).toHaveBeenCalledWith('res1', 'accept'));
+  });
+
+  it('keeps keyboard focus on the row and announces the result after accepting', async () => {
+    getReservation.mockResolvedValueOnce(PENDING_INVITEE_VIEW).mockResolvedValue(
+      detailFixture({
+        participants: [ORGANIZER, selfParticipant('confirmed'), GUEST_CONFIRMED],
+        viewer: {
+          role: 'guest',
+          status: 'confirmed',
+          canInvite: true,
+          canManage: false,
+          canRespond: true,
+        },
+      }),
+    );
+    respondToReservation.mockResolvedValue({ status: 'confirmed' });
+    renderDetail();
+
+    const accept = await screen.findByRole('button', { name: 'Accept' });
+    const row = accept.closest('li')!;
+    await userEvent.click(accept);
+
+    // The pressed pill unmounts (the row flips off pending); focus must
+    // land on the viewer's own row, not fall back to the body.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument(),
+    );
+    await waitFor(() => expect(row).toHaveFocus());
+
+    // The saved outcome is announced to assistive tech.
+    expect(
+      await screen.findByText('Invitation accepted. You are confirmed for this booking.'),
+    ).toBeInTheDocument();
   });
 
   it('rolls the row back when the respond call fails', async () => {
@@ -343,6 +398,9 @@ describe('cancel with the tiered refund preview', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel reservation' }));
     await waitFor(() => expect(cancelReservation).toHaveBeenCalledWith('res1'));
     expect(await screen.findByText('This reservation was cancelled.')).toBeInTheDocument();
+    // The optimistic write leaves viewer.canInvite stale-true; Invite must
+    // disappear with the cancellation, not wait for the refetch.
+    expect(screen.queryByRole('button', { name: 'Invite' })).not.toBeInTheDocument();
   });
 
   it('spells out the 0% tier inside 2 hours of start', async () => {

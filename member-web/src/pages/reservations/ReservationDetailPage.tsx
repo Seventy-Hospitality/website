@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Ellipsis, SearchX } from 'lucide-react';
@@ -140,10 +140,34 @@ function ReservationDetailView({ detail }: { detail: ReservationDetail }) {
 
   const respond = useRespondToReservation();
 
+  // Responding unmounts the control the user just pressed (the optimistic
+  // write flips the row off pending, replacing the Accept/Decline pills or
+  // the withdraw action with static status text), which would drop keyboard
+  // focus to the body. Park focus on the viewer's own row instead, and
+  // announce the saved outcome through a live region.
+  const selfRowRef = useRef<HTMLLIElement>(null);
+  const restoreFocusRef = useRef(false);
+  const [respondNotice, setRespondNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!restoreFocusRef.current) return;
+    restoreFocusRef.current = false;
+    selfRowRef.current?.focus();
+  }, [myStatus]);
+
   function respondWith(response: 'accept' | 'decline') {
+    restoreFocusRef.current = true;
     respond.mutate(
       { reservationId: detail.id, response },
       {
+        onSuccess: ({ status }) => {
+          setRespondNotice(
+            status === 'confirmed'
+              ? 'Invitation accepted. You are confirmed for this booking.'
+              : status === 'withdrawn'
+                ? 'You have declined this booking and given up your spot.'
+                : 'Invitation declined.',
+          );
+        },
         onError: (error) => {
           toast({
             variant: 'error',
@@ -287,7 +311,12 @@ function ReservationDetailView({ detail }: { detail: ReservationDetail }) {
       <PlayersHead
         count={detail.participants.length}
         onInvite={
-          viewer.canInvite ? () => navigate(`/reservations/${detail.id}/invite`) : undefined
+          // Mirror the backend's own gate (canManageInvites AND isActive):
+          // an optimistic status write (cancel) leaves viewer.canInvite
+          // stale-true until the refetch, so re-derive the status half.
+          viewer.canInvite && active
+            ? () => navigate(`/reservations/${detail.id}/invite`)
+            : undefined
         }
       />
 
@@ -299,7 +328,14 @@ function ReservationDetailView({ detail }: { detail: ReservationDetail }) {
           const showMenu =
             viewer.canManage && active && !isSelf && participant.role !== 'organizer';
           return (
-            <li key={participant.memberId} className={styles.playerRow}>
+            <li
+              key={participant.memberId}
+              className={styles.playerRow}
+              // The focus home after the viewer's own respond controls
+              // unmount (see respondWith).
+              ref={isSelf ? selfRowRef : undefined}
+              tabIndex={isSelf ? -1 : undefined}
+            >
               <Avatar name={name} size="md" />
               <span className={styles.playerName}>
                 {name}
@@ -357,6 +393,12 @@ function ReservationDetailView({ detail }: { detail: ReservationDetail }) {
           );
         })}
       </ul>
+
+      {/* Respond outcomes swap a button for static text, which no screen
+          reader announces on its own; this live region says what happened. */}
+      <p className="visually-hidden" role="status">
+        {respondNotice}
+      </p>
 
       {/* ── Bottom actions by role ── */}
 

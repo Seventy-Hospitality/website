@@ -8,7 +8,9 @@ import {
   isSelectionChanged,
   mergeOwnSlots,
   refundPercentFor,
+  reservationMatchesMove,
   reservationSlots,
+  selectionTarget,
 } from './reservation-policy';
 
 const NOW = new Date('2026-07-06T12:00:00.000Z');
@@ -110,6 +112,31 @@ describe('reservationSlots / isSelectionChanged (the edit dirty check)', () => {
 
   it('never reports an empty selection as a change (Continue stays off)', () => {
     expect(isSelectionChanged(RESERVATION, '2026-07-07', [], 30)).toBe(false);
+  });
+});
+
+describe('selectionTarget / reservationMatchesMove (paid-move verification)', () => {
+  it('builds the contiguous range a selection covers, in any input order', () => {
+    expect(selectionTarget('2026-07-06', ['22:00', '21:30'], 30)).toEqual({
+      date: '2026-07-06',
+      startTime: '21:30',
+      endTime: '22:30',
+    });
+    expect(selectionTarget('2026-07-06', [], 30)).toBeNull();
+  });
+
+  it('counts only a reservation sitting exactly on the target as moved', () => {
+    const target = { date: '2026-07-06', startTime: '21:00', endTime: '22:30' };
+    expect(
+      reservationMatchesMove(
+        { date: '2026-07-06', startTime: '21:00', endTime: '22:30' },
+        target,
+      ),
+    ).toBe(true);
+    // Same date but the OLD time: the dropped-parked-change case a paid
+    // grow must never report as success.
+    expect(reservationMatchesMove(RESERVATION, target)).toBe(false);
+    expect(reservationMatchesMove({ ...RESERVATION, date: '2026-07-07' }, target)).toBe(false);
   });
 });
 

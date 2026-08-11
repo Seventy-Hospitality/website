@@ -10,7 +10,7 @@ import {
   type RescheduleQuote,
   type ResourceTypeSummary,
 } from '../../lib/api';
-import { addDaysToDateKey, todayDateKey } from '../../lib/booking';
+import { addDaysToDateKey, formatDateLong, todayDateKey } from '../../lib/booking';
 import { ToastProvider } from '../../components';
 import { EditReservationPage } from './EditReservationPage';
 
@@ -168,7 +168,7 @@ function updatedReservation(overrides: Partial<Reservation>): Reservation {
   };
 }
 
-function renderEdit() {
+function renderEdit(initialEntry = '/reservations/res1/edit') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -176,7 +176,7 @@ function renderEdit() {
   return render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <MemoryRouter initialEntries={['/reservations/res1/edit']}>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <Routes>
             <Route path="/reservations/:reservationId/edit" element={<EditReservationPage />} />
             <Route path="/reservations/:reservationId" element={<div>Detail page</div>} />
@@ -352,10 +352,39 @@ describe('step 2: charge branch (grow)', () => {
     await waitFor(() => expect(confirmPayment).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(confirmReservation).toHaveBeenCalledWith('res1'));
 
+    // The Stripe return URL carries the requested move so the redirect
+    // return leg can verify the reservation actually landed on it.
+    expect(confirmPayment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        confirmParams: expect.objectContaining({
+          return_url: expect.stringContaining(
+            `resume=1&to_date=${TOMORROW}&to_start=21%3A00&to_end=22%3A30`,
+          ),
+        }),
+      }),
+    );
+
     expect(await screen.findByText('Your court booking was updated')).toBeInTheDocument();
     expect(screen.getByText('will need to reaccept their invitations')).toBeInTheDocument();
     // One PATCH, one payment confirm: no double charge path.
     expect(rescheduleReservation).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a dropped change instead of success when the reservation did not move', async () => {
+    confirmPayment.mockResolvedValue({});
+    // The parked change lapsed or was swept while the payment settled: the
+    // backend cleared pendingChange, refunded the delta, and confirm()
+    // returns the UNMOVED original (same date, old 21:30-22:30 time).
+    confirmReservation.mockResolvedValue({ ...DETAIL });
+    renderEdit();
+    await growSelection();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Save changes' }));
+
+    expect(
+      await screen.findByText(/We could not apply your change in time/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Your court booking was updated')).not.toBeInTheDocument();
   });
 
   it('surfaces a decline inline and never confirms the change', async () => {
@@ -369,6 +398,91 @@ describe('step 2: charge branch (grow)', () => {
     expect(await screen.findByText('Your card was declined.')).toBeInTheDocument();
     expect(confirmReservation).not.toHaveBeenCalled();
     expect(rescheduleReservation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('redirect-based payment return', () => {
+  // The wizard put the requested move (21:00-22:30 tomorrow) on the
+  // return URL before handing off to the redirect payment method.
+  const RESUME_URL =
+    `/reservations/res1/edit?resume=1&redirect_status=succeeded` +
+    `&to_date=${TOMORROW}&to_start=21%3A00&to_end=22%3A30`;
+
+  it('shows the updated modal when the reservation moved to the requested time', async () => {
+    confirmReservation.mockResolvedValue(
+      updatedReservation({
+        startTime: '21:00',
+        endTime: '22:30',
+        durationMinutes: 90,
+        amountPaidCents: 18000,
+      }),
+    );
+    renderEdit(RESUME_URL);
+
+    expect(await screen.findByText('Your court booking was updated')).toBeInTheDocument();
+    await waitFor(() => expect(confirmReservation).toHaveBeenCalledWith('res1'));
+  });
+
+  it('reports a dropped change when confirm returns the unmoved original', async () => {
+    // pendingChange is gone but the reservation still sits on its old
+    // 21:30-22:30 time: the change lapsed/was swept and the delta was
+    // refunded server-side. Success must NOT be reported.
+    confirmReservation.mockResolvedValue({ ...DETAIL });
+    renderEdit(RESUME_URL);
+
+    expect(
+      await screen.findByText(/We could not apply your change in time/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Your court booking was updated')).not.toBeInTheDocument();
+  });
+});
+
+describe('step 2: date-only move (same clock time on a new day)', () => {
+  it('marks the date as changed without striking through the identical time', async () => {
+    const dayAfter = addDaysToDateKey(todayDateKey(), 2);
+    getAvailability.mockResolvedValue([
+      {
+        date: TOMORROW,
+        slots: [
+          { start: '21:30', startsAt: new Date().toISOString() },
+          { start: '22:00', startsAt: new Date().toISOString() },
+        ],
+      },
+    ]);
+    rescheduleQuote.mockResolvedValue(
+      quoteFixture({
+        date: dayAfter,
+        slots: ['21:30', '22:00'],
+        durationMinutes: 60,
+        newTotalCents: 12000,
+        deltaCents: 0,
+      }),
+    );
+    renderEdit();
+
+    // Pick the day after tomorrow (strip starts today), then the same
+    // 21:30-22:30 run.
+    await screen.findByRole('heading', { name: 'Edit booking' });
+    await userEvent.click(screen.getAllByRole('radio')[2]);
+    await userEvent.click(await screen.findByRole('option', { name: '9:30PM - 10:00PM' }));
+    await userEvent.click(screen.getByRole('option', { name: '10:00PM - 10:30PM' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(await screen.findByRole('heading', { name: 'Confirm changes' })).toBeInTheDocument();
+
+    // The date change is spelled out for screen readers (the struck-through
+    // <s> carries no old/new semantics on its own).
+    expect(
+      await screen.findByText(
+        `Changed from ${formatDateLong(TOMORROW)} to ${formatDateLong(dayAfter)}`,
+      ),
+    ).toBeInTheDocument();
+
+    // The unchanged time renders once: no strike-through, no bogus
+    // "Changed from X to X" announcement.
+    expect(screen.getAllByText('9:30-10:30PM')).toHaveLength(1);
+    expect(screen.getByText('9:30-10:30PM').tagName).not.toBe('S');
+    expect(screen.queryByText(/Changed from 9:30-10:30PM/)).not.toBeInTheDocument();
   });
 });
 

@@ -10,7 +10,7 @@ import type {
   ReservationParticipantStatus,
   RescheduleQuote,
 } from './api';
-import { slotsFromRange, timeLabelToMinutes } from './booking';
+import { minutesToTimeLabel, slotsFromRange, timeLabelToMinutes } from './booking';
 
 // ── Cancellation refund tiers ──
 
@@ -113,6 +113,49 @@ export function mergeOwnSlots(available: string[], own: string[]): string[] {
   const merged = new Set(available);
   for (const slot of own) merged.add(slot);
   return [...merged].sort((a, b) => timeLabelToMinutes(a) - timeLabelToMinutes(b));
+}
+
+/** A requested reschedule destination in reservation terms. */
+export interface MoveTarget {
+  date: string;
+  startTime: string;
+  endTime: string;
+}
+
+/** The wall-clock range a contiguous slot selection covers on `date`. */
+export function selectionTarget(
+  date: string,
+  slots: string[],
+  slotDurationMinutes: number,
+): MoveTarget | null {
+  if (slots.length === 0) return null;
+  const sorted = [...slots].sort((a, b) => timeLabelToMinutes(a) - timeLabelToMinutes(b));
+  return {
+    date,
+    startTime: sorted[0],
+    endTime: minutesToTimeLabel(
+      timeLabelToMinutes(sorted[sorted.length - 1]) + slotDurationMinutes,
+    ),
+  };
+}
+
+/**
+ * True when the reservation sits exactly on the requested move. Success
+ * after a grow-delta payment MUST be verified with this, never with
+ * "pendingChange is gone": the backend also clears a parked change it
+ * DROPPED (lapsed at its TTL, superseded by a newer PATCH, or slot gone at
+ * settle time, with the captured delta auto-refunded), and confirm() then
+ * returns the unmoved original reservation.
+ */
+export function reservationMatchesMove(
+  reservation: Pick<Reservation, 'date' | 'startTime' | 'endTime'>,
+  target: MoveTarget,
+): boolean {
+  return (
+    reservation.date === target.date &&
+    reservation.startTime === target.startTime &&
+    reservation.endTime === target.endTime
+  );
 }
 
 export type RescheduleMoneyKind = 'charge' | 'refund' | 'even';
