@@ -17,3 +17,12 @@ export {
   signMemberQrToken,
   verifyMemberQrToken,
 } from './qr-token';
+export {
+  IdVerificationStateError,
+  type IdVerificationStatus,
+  type IdReviewDecision,
+  assertCanUploadPhoto,
+  assertCanSubmit,
+  assertCanSkip,
+  statusAfterReview,
+} from './id-verification';

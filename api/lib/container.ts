@@ -5,7 +5,7 @@ import { EventStore } from './infrastructure/event-store';
 import { NoopOutboxSink, OutboxDispatcher, OutboxRepository } from './infrastructure/outbox';
 
 // Repositories + infrastructure
-import { MemberRepository } from '@/lib/contexts/members/infrastructure';
+import { IdVerificationRepository, MemberRepository } from '@/lib/contexts/members/infrastructure';
 import { MembershipRepository, PlanRepository } from '@/lib/contexts/memberships/infrastructure';
 import {
   StripeGateway,
@@ -42,7 +42,7 @@ import { ClubRepository, ClubRosterAdapter } from '@/lib/contexts/clubs/infrastr
 import { LocalMediaStorage, PrismaManagedMediaAssetRepository, S3MediaStorage, SharpImageProcessor } from '@/lib/contexts/media/infrastructure';
 
 // Application services
-import { MemberAvatarService, MemberQrService, MemberService } from '@/lib/contexts/members/application';
+import { IdVerificationService, MemberAvatarService, MemberQrService, MemberService } from '@/lib/contexts/members/application';
 import { MembershipService } from '@/lib/contexts/memberships/application';
 import {
   BillingService,
@@ -179,6 +179,27 @@ export const memberAvatarService = new MemberAvatarService(memberService, {
     await mediaService.deleteAsset(publicUrl, { expectUsage: 'avatar' });
   },
 });
+
+// Government-ID photos ride the media pipeline's PRIVATE usage: encrypted
+// at rest, never publicly served, fetched only through the audited staff
+// endpoint, deleted after review and on account deletion.
+export const idVerificationService = new IdVerificationService(
+  new IdVerificationRepository(db),
+  {
+    uploadIdPhoto: async (input: { filename: string; contentType: string; bytes: Buffer }) => {
+      const asset = await mediaService.upload('id-photo', input);
+      return { storagePath: asset.storagePath };
+    },
+    attachToMember: (storagePath: string, memberId: string) =>
+      mediaService.attachAssetToOwner(storagePath, { ownerType: 'member', ownerId: memberId }, { expectUsage: 'id-photo' }),
+    deleteIdPhoto: async (storagePath: string | null | undefined) => {
+      await mediaService.deleteAsset(storagePath, { expectUsage: 'id-photo' });
+    },
+    readIdPhoto: (storagePath: string) => mediaService.readPrivateAsset(storagePath, 'id-photo'),
+  },
+  eventStore,
+  uow,
+);
 
 // The member QR credential signs with a dedicated key derivation (its own
 // env var when set), never the raw JWT secret.

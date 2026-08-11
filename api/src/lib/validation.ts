@@ -371,3 +371,12 @@ export const registerDeviceSchema = z.object({
 export const qrVerifySchema = z.object({
   token: z.string().trim().min(1).max(512),
 });
+
+export const idVerificationReviewSchema = z.object({
+  decision: z.enum(['approve', 'reject']),
+  note: z.string().trim().max(1000).optional(),
+});
+
+export const idVerificationQueueQuerySchema = z.object({
+  status: z.enum(['not_submitted', 'submitted', 'verified', 'rejected']).default('submitted'),
+});

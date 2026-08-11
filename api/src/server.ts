@@ -25,6 +25,7 @@ import { meAccountRoutes } from './routes/me-account';
 import { meBillingRoutes } from './routes/me-billing';
 import { meMembershipRoutes } from './routes/me-membership';
 import { qrRoutes } from './routes/qr';
+import { idVerificationReviewRoutes, meIdVerificationRoutes } from './routes/id-verification';
 
 const app = Fastify(SERVER_FASTIFY_OPTIONS);
 
@@ -86,6 +87,8 @@ await app.register(meAccountRoutes, { prefix: '/api/me' });
 await app.register(meMembershipRoutes, { prefix: '/api/me' });
 await app.register(meBillingRoutes, { prefix: '/api/me' });
 await app.register(qrRoutes, { prefix: '/api/qr' });
+await app.register(meIdVerificationRoutes, { prefix: '/api/me' });
+await app.register(idVerificationReviewRoutes, { prefix: '/api' });
 import { adminRoutes } from './routes/admin';
 await app.register(adminRoutes, { prefix: '/api/admin' });
 

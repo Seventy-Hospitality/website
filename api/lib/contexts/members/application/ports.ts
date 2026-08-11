@@ -1,3 +1,19 @@
+import type { TransactionContext } from '@/lib/kernel';
+
+/** Same-transaction audit trail (satisfied by the shared EventStore). */
+export interface AuditLog {
+  append(
+    tx: TransactionContext,
+    event: {
+      streamType: string;
+      streamId: string;
+      eventType: string;
+      data: unknown;
+      actorId?: string;
+    },
+  ): Promise<unknown>;
+}
+
 // Narrow media seams for the members context, adapted over MediaService in
 // the container and pinned to their usage, so a members-side call can never
 // touch an asset of another usage.
