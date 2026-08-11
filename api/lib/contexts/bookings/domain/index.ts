@@ -1,5 +1,12 @@
 export { type MemberTier, type ResourceType, type Resource, tierSatisfies } from './resource';
 export {
+  type ActivityFamily,
+  type ActivityStats,
+  type ActivityStatRow,
+  activityFamilyForTypeCode,
+  aggregateActivityStats,
+} from './activity-stats';
+export {
   type Reservation,
   type ReservationParticipant,
   type ReservationPayment,

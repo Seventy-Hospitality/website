@@ -21,8 +21,10 @@ import { eventRoutes } from './routes/events';
 import { mediaRoutes } from './routes/media';
 import { uploadAssetRoutes } from './routes/uploads';
 import { meRoutes } from './routes/me';
+import { meAccountRoutes } from './routes/me-account';
 import { meBillingRoutes } from './routes/me-billing';
 import { meMembershipRoutes } from './routes/me-membership';
+import { qrRoutes } from './routes/qr';
 
 const app = Fastify(SERVER_FASTIFY_OPTIONS);
 
@@ -80,8 +82,10 @@ await app.register(clubRoutes, { prefix: '/api' });
 await app.register(eventRoutes, { prefix: '/api/events' });
 await app.register(mediaRoutes, { prefix: '/api/media' });
 await app.register(meRoutes, { prefix: '/api/me' });
+await app.register(meAccountRoutes, { prefix: '/api/me' });
 await app.register(meMembershipRoutes, { prefix: '/api/me' });
 await app.register(meBillingRoutes, { prefix: '/api/me' });
+await app.register(qrRoutes, { prefix: '/api/qr' });
 import { adminRoutes } from './routes/admin';
 await app.register(adminRoutes, { prefix: '/api/admin' });
 

@@ -50,22 +50,35 @@ export class BillingService {
   // ── Account closure (the billing side of package E's deletion pipeline) ──
 
   /**
-   * TODO(package-e): the deletion pipeline (step-up re-auth, session
-   * revocation, reservation cancellation, member anonymization) lives in
-   * the account package; it calls these two methods for the billing side.
+   * The account package's deletion pipeline calls these for the billing
+   * side. The gate splits by severity:
    *
-   * Blocked while money is unsettled: a refund in flight or an open
-   * dispute must resolve before the member can be deleted.
+   * - HARD (open dispute): terminal, needs staff. Checked at pipeline
+   *   entry AND re-checked by closeBillingForMember, so a dispute arriving
+   *   mid-pipeline re-blocks the deletion.
+   * - SOFT (refund in flight, pending ledger rows): checked at entry only.
+   *   The pipeline's own reservation-cancellation step legitimately
+   *   creates pending refund rows, so re-checking them mid-pipeline would
+   *   wedge the very flow that made them.
    */
   async assertClosable(memberId: string): Promise<void> {
     const reasons: string[] = [];
-    if (await this.bookings.hasBlockingFinancialState(memberId)) {
-      reasons.push('a refund in flight or an open dispute');
+    if (await this.bookings.hasOpenDisputes(memberId)) {
+      reasons.push('an open payment dispute');
+    } else if (await this.bookings.hasBlockingFinancialState(memberId)) {
+      reasons.push('a refund in flight');
     }
     if ((await this.ledger.countPendingForMember(memberId)) > 0) {
       reasons.push('pending ledger transactions');
     }
     if (reasons.length > 0) throw new AccountClosureBlockedError(reasons);
+  }
+
+  /** The hard half only; see assertClosable. */
+  async assertNoDisputes(memberId: string): Promise<void> {
+    if (await this.bookings.hasOpenDisputes(memberId)) {
+      throw new AccountClosureBlockedError(['an open payment dispute']);
+    }
   }
 
   /**
@@ -79,7 +92,9 @@ export class BillingService {
     subscriptionCanceled: boolean;
     paymentMethodsDetached: number;
   }> {
-    await this.assertClosable(memberId);
+    // Hard blocks only: the pipeline's earlier cancellation step creates
+    // pending refunds by design (see assertClosable).
+    await this.assertNoDisputes(memberId);
 
     let subscriptionCanceled = false;
     const membership = await this.membershipLookup.getCurrentForMember(memberId);

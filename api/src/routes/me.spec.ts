@@ -25,12 +25,15 @@ const {
     create: vi.fn(),
     confirm: vi.fn(),
     cancel: vi.fn().mockResolvedValue({ refundCents: 0 }),
+    getLifetimeActivityStats: vi
+      .fn()
+      .mockResolvedValue({ courtsBooked: 0, badmintonMinutes: 0, tennisMinutes: 0 }),
   },
   mockResourceRepo: { getById: vi.fn() },
   mockResourceTypeRepo: { getById: vi.fn() },
   mockClubEventService: { list: vi.fn().mockResolvedValue([]) },
   mockMemberRepo: { setStripeCustomerId: vi.fn().mockResolvedValue(undefined) },
-  mockMemberService: { getById: vi.fn() },
+  mockMemberService: { getById: vi.fn(), updateDisplayName: vi.fn() },
   mockMembershipService: {
     createCheckoutSession: vi.fn(),
     createPortalSession: vi.fn(),
@@ -157,7 +160,56 @@ describe('me routes', () => {
 
       expect(res.statusCode).toBe(200);
       expect(mockMemberService.getById).toHaveBeenCalledWith('mem_1');
-      expect(res.json().data.member).toMatchObject({ id: 'mem_1', email: 'alice@example.com' });
+      expect(res.json().data.member).toMatchObject({
+        id: 'mem_1',
+        email: 'alice@example.com',
+        memberNumber: 'A12345',
+        memberSince: '2025-01-15T00:00:00.000Z',
+      });
+    });
+
+    it('serves lifetime activity stats (courts, badminton hours, tennis hours)', async () => {
+      signedInAs();
+      mockMemberService.getById.mockResolvedValue(fixtureMember());
+      mockReservationService.getLifetimeActivityStats.mockResolvedValue({
+        courtsBooked: 15,
+        badmintonMinutes: 720,
+        tennisMinutes: 270,
+      });
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/profile', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReservationService.getLifetimeActivityStats).toHaveBeenCalledWith('mem_1');
+      expect(res.json().data.stats).toEqual({
+        courtsBooked: 15,
+        badmintonHours: 12,
+        tennisHours: 4.5,
+      });
+    });
+
+    it('PATCH updates the display name for the principal member', async () => {
+      signedInAs();
+      mockMemberService.getById.mockResolvedValue(fixtureMember({ displayName: 'Ali' }));
+      mockMemberService.updateDisplayName.mockResolvedValue({});
+
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/api/me/profile',
+        headers: AUTH,
+        payload: { displayName: 'Ali' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockMemberService.updateDisplayName).toHaveBeenCalledWith('mem_1', 'Ali');
+      expect(res.json().data.member.displayName).toBe('Ali');
+    });
+
+    it('PATCH rejects a body without the displayName key', async () => {
+      signedInAs();
+      const res = await app.inject({ method: 'PATCH', url: '/api/me/profile', headers: AUTH, payload: {} });
+      expect(res.statusCode).toBe(400);
+      expect(mockMemberService.updateDisplayName).not.toHaveBeenCalled();
     });
 
     it('403s an account with no club profile before the handler runs', async () => {

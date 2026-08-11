@@ -1,4 +1,5 @@
-export { NotificationService } from './application';
+export { NotificationService, NotificationSettingsService } from './application';
 export type { NotificationSender } from './application';
-export type { Notification } from './domain';
-export { ResendAdapter } from './infrastructure';
+export type { Notification, NotificationPreferences, DevicePlatform, DeviceRecord } from './domain';
+export { DEVICE_PLATFORMS, DEFAULT_NOTIFICATION_PREFERENCES } from './domain';
+export { ResendAdapter, NotificationPreferenceRepository, DeviceRepository } from './infrastructure';

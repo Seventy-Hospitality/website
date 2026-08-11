@@ -348,3 +348,26 @@ export const clubTokenSchema = z.object({
 export const clubActivityQuerySchema = z.object({
   filter: z.enum(['upcoming', 'past', 'all']).default('upcoming'),
 });
+
+// ── Account surface (package E) ──
+
+export const updateMyProfileSchema = z.object({
+  // null (or empty string, normalized in the service) clears the display
+  // name back to the first/last fallback.
+  displayName: z.string().max(120).nullable(),
+});
+
+export const updatePreferencesSchema = z.object({
+  pushNotifications: z.boolean().optional(),
+  emailNotifications: z.boolean().optional(),
+  bookingReminders: z.boolean().optional(),
+});
+
+export const registerDeviceSchema = z.object({
+  token: z.string().trim().min(1).max(512),
+  platform: z.enum(['ios', 'android']),
+});
+
+export const qrVerifySchema = z.object({
+  token: z.string().trim().min(1).max(512),
+});

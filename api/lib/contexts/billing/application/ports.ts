@@ -41,6 +41,8 @@ export interface BookingSettlementPort {
   freezeChargeForDispute(stripePaymentIntentId: string, source?: string): Promise<string[]>;
   /** Account-closure blocker: refunds in flight or open disputes. */
   hasBlockingFinancialState(memberId: string): Promise<boolean>;
+  /** The HARD half only (needs staff); pending refunds are soft. */
+  hasOpenDisputes(memberId: string): Promise<boolean>;
 }
 
 /** Member resolution + Stripe-customer bookkeeping (members context). */

@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { TransactionContext } from '@/lib/kernel';
 import { asPrismaTx } from '@/lib/infrastructure/prisma-tx';
 import type {
+  ActivityStatRow,
   ParticipantRole,
   ParticipantStatus,
   Reservation,
@@ -151,6 +152,25 @@ export class ReservationRepository {
         endsAt: { gte: now },
       },
     });
+  }
+
+  /**
+   * Lifetime activity aggregation for the account screen: the member's
+   * CONFIRMED reservations as organizer, grouped by resource-type code,
+   * with scheduled minutes summed from the instant range (see
+   * domain/activity-stats.ts for the definition).
+   */
+  async aggregateLifetimeStatsForMember(memberId: string): Promise<ActivityStatRow[]> {
+    const rows = await this.prisma.$queryRaw<Array<{ typeCode: string; count: number; minutes: number }>>`
+      SELECT rt."code" AS "typeCode",
+             COUNT(*)::int AS "count",
+             COALESCE(SUM(EXTRACT(EPOCH FROM (r."endsAt" - r."startsAt"))) / 60, 0)::int AS "minutes"
+      FROM "reservations" r
+      JOIN "resource_types" rt ON rt."id" = r."resourceTypeId"
+      WHERE r."organizerId" = ${memberId} AND r."status" = 'confirmed'
+      GROUP BY rt."code"
+    `;
+    return rows.map((row) => ({ typeCode: row.typeCode, count: Number(row.count), minutes: Number(row.minutes) }));
   }
 
   /**

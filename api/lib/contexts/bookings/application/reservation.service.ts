@@ -7,6 +7,7 @@ import {
   zonedMinutesSinceMidnight,
 } from '@/lib/kernel';
 import {
+  type ActivityStats,
   type BookingPaymentPort,
   type ClubRosterPort,
   type MembershipChecker,
@@ -15,6 +16,7 @@ import {
   type Resource,
   type ResourceType,
   type SlotGridConfig,
+  aggregateActivityStats,
   applyParticipantResponse,
   allocateRefund,
   canManageInvites,
@@ -890,6 +892,94 @@ export class ReservationService {
     const { pendingRefunds, disputedCharges } =
       await this.reservationRepo.countBlockingFinancialState(memberId);
     return pendingRefunds > 0 || disputedCharges > 0;
+  }
+
+  /**
+   * The HARD half of the closure gate: an open dispute needs staff, while
+   * pending refunds are soft (the deletion pipeline itself creates them
+   * when it cancels future bookings, so re-checking them mid-pipeline
+   * would wedge the very flow that made them).
+   */
+  async hasOpenDisputes(memberId: string): Promise<boolean> {
+    const { disputedCharges } = await this.reservationRepo.countBlockingFinancialState(memberId);
+    return disputedCharges > 0;
+  }
+
+  /** Lifetime activity stats for the account screen (definition in domain/activity-stats.ts). */
+  async getLifetimeActivityStats(memberId: string): Promise<ActivityStats> {
+    return aggregateActivityStats(await this.reservationRepo.aggregateLifetimeStatsForMember(memberId));
+  }
+
+  // ── Account-deletion seams (package E's pipeline consumes these) ──
+
+  /**
+   * Cancels the member's FUTURE reservations (organizer, startsAt strictly
+   * in the future) at the normal tier refund policy. Re-lists on every run
+   * and treats already-cancelled/started/missing rows as done, so a
+   * resumed pipeline converges without double work. A reservation
+   * currently under way is court time being consumed and is left alone.
+   */
+  async cancelFutureReservationsForMember(
+    memberId: string,
+    actorId?: string,
+    now: Date = new Date(),
+  ): Promise<{ cancelled: number; refundCents: number }> {
+    const upcoming = await this.reservationRepo.listForMember(memberId, 'upcoming', now);
+    let cancelled = 0;
+    let refundCents = 0;
+    for (const detail of upcoming) {
+      if (detail.organizerId !== memberId) continue;
+      if (detail.startsAt.getTime() <= now.getTime()) continue;
+      if (!isActiveReservationStatus(detail.status)) continue;
+      try {
+        const result = await this.cancel(detail.id, { memberId, actorId: actorId ?? memberId, now });
+        cancelled += 1;
+        refundCents += result.refundCents;
+      } catch (err) {
+        // Lost a race with another cancel/expiry: that outcome is the one
+        // this step wanted anyway.
+        if (
+          err instanceof InvalidReservationStatusError ||
+          err instanceof ReservationNotFoundError ||
+          err instanceof ReservationAlreadyStartedError
+        ) {
+          continue;
+        }
+        throw err;
+      }
+    }
+    return { cancelled, refundCents };
+  }
+
+  /**
+   * Declines/withdraws the member's guest participations on OTHER members'
+   * future reservations, so no organizer keeps a ghost "Deleted Member"
+   * attendee. Pure DB, idempotent (respond() self-idempotents).
+   */
+  async releaseParticipationsForMember(
+    memberId: string,
+    actorId?: string,
+    now: Date = new Date(),
+  ): Promise<{ released: number }> {
+    const upcoming = await this.reservationRepo.listForMember(memberId, 'upcoming', now);
+    let released = 0;
+    for (const detail of upcoming) {
+      const participant = detail.participants.find((row) => row.memberId === memberId);
+      if (!participant || participant.role === 'organizer') continue;
+      if (participant.status !== 'pending' && participant.status !== 'confirmed') continue;
+      try {
+        await this.respond(detail.id, memberId, 'decline', actorId ?? memberId);
+        released += 1;
+      } catch (err) {
+        // The reservation resolved (cancelled/expired) between list and
+        // respond; nothing left to release.
+        if (err instanceof InvalidReservationStatusError || err instanceof ReservationNotFoundError) {
+          continue;
+        }
+        throw err;
+      }
+    }
+    return { released };
   }
 
   /**

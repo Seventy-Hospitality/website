@@ -4,6 +4,10 @@
 // ResourceClaimPort; billing is reached via BookingPaymentPort (package C).
 
 export {
+  type ActivityFamily,
+  type ActivityStats,
+  activityFamilyForTypeCode,
+  aggregateActivityStats,
   type MemberTier,
   type ResourceType,
   type Resource,

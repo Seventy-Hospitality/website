@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { db } from './db';
 import { PrismaUnitOfWork } from './infrastructure/prisma-unit-of-work';
 import { EventStore } from './infrastructure/event-store';
@@ -27,7 +28,7 @@ import {
   AppleTokenGateway,
   PrismaMemberDirectory,
 } from '@/lib/contexts/identity/infrastructure';
-import { ResendAdapter } from '@/lib/contexts/communications/infrastructure';
+import { DeviceRepository, NotificationPreferenceRepository, ResendAdapter } from '@/lib/contexts/communications/infrastructure';
 import {
   ResourceTypeRepository,
   ResourceRepository,
@@ -41,7 +42,7 @@ import { ClubRepository, ClubRosterAdapter } from '@/lib/contexts/clubs/infrastr
 import { LocalMediaStorage, PrismaManagedMediaAssetRepository, S3MediaStorage, SharpImageProcessor } from '@/lib/contexts/media/infrastructure';
 
 // Application services
-import { MemberService } from '@/lib/contexts/members/application';
+import { MemberAvatarService, MemberQrService, MemberService } from '@/lib/contexts/members/application';
 import { MembershipService } from '@/lib/contexts/memberships/application';
 import {
   BillingService,
@@ -56,7 +57,7 @@ import {
   AccountLinkingService,
   MemberClaimService,
 } from '@/lib/contexts/identity/application';
-import { NotificationService } from '@/lib/contexts/communications/application';
+import { NotificationService, NotificationSettingsService } from '@/lib/contexts/communications/application';
 import { ReservationService, ResourceClaimService } from '@/lib/contexts/bookings/application';
 import { ClubEventService } from '@/lib/contexts/events/application';
 import { ClubService } from '@/lib/contexts/clubs/application';
@@ -149,6 +150,10 @@ export const imageProcessor = new SharpImageProcessor();
 
 const resendAdapter = new ResendAdapter(process.env.RESEND_API_KEY ?? '');
 export const notificationService = new NotificationService(resendAdapter);
+export const notificationSettingsService = new NotificationSettingsService(
+  new NotificationPreferenceRepository(db),
+  new DeviceRepository(db),
+);
 
 // ── Application Services ──
 
@@ -161,6 +166,29 @@ export const membershipService = new MembershipService(
   { recordAcceptance: (userId, version, when) => userRepo.recordTermsAcceptance(userId, version, when) },
   memberRepo,
 );
+// Avatars ride the media pipeline under their own public usage; the
+// members context reaches it only through this usage-pinned adapter.
+export const memberAvatarService = new MemberAvatarService(memberService, {
+  uploadAvatar: async (input: { filename: string; contentType: string; bytes: Buffer }) => {
+    const asset = await mediaService.upload('avatar', input);
+    return { publicUrl: asset.publicUrl! };
+  },
+  attachToMember: (publicUrl: string, memberId: string) =>
+    mediaService.attachAssetToOwner(publicUrl, { ownerType: 'member', ownerId: memberId }, { expectUsage: 'avatar' }),
+  deleteAvatar: async (publicUrl: string | null | undefined) => {
+    await mediaService.deleteAsset(publicUrl, { expectUsage: 'avatar' });
+  },
+});
+
+// The member QR credential signs with a dedicated key derivation (its own
+// env var when set), never the raw JWT secret.
+export const memberQrService = new MemberQrService(
+  memberRepo,
+  createHash('sha256')
+    .update(`${process.env.MEMBER_QR_SECRET?.trim() || process.env.JWT_SECRET || 'dev-fallback-secret-not-for-production'}:member-qr`)
+    .digest(),
+);
+
 // Clubs BC: bookings expands club-chip invites ONLY through this port.
 export const clubRepo = new ClubRepository(db);
 export const clubRosterPort = new ClubRosterAdapter(db);

@@ -11,7 +11,7 @@ import {
   resourceTypeRepo,
   VENUE_TIMEZONE,
 } from '@/lib/container';
-import { MemberNotFoundError } from '@/lib/contexts/members';
+import { MemberNotFoundError, MemberValidationError } from '@/lib/contexts/members';
 import { MembershipError, PlanNotFoundError } from '@/lib/contexts/memberships';
 import type { LinkedCredentials, Provider } from '@/lib/contexts/identity';
 import { handleIdentityError } from '@/src/lib/identity-errors';
@@ -21,7 +21,7 @@ import {
   serializeLegacyBooking,
   serializeReservation,
 } from '@/src/lib/reservations';
-import { createSelfBookingSchema, linkProviderSchema, meCheckoutSchema, myReservationsQuerySchema } from '@/src/lib/validation';
+import { createSelfBookingSchema, linkProviderSchema, meCheckoutSchema, myReservationsQuerySchema, updateMyProfileSchema } from '@/src/lib/validation';
 
 type MemberProfile = Awaited<ReturnType<typeof memberService.getById>>;
 type ClubEvent = Awaited<ReturnType<typeof clubEventService.list>>[number];
@@ -107,9 +107,36 @@ export async function meRoutes(app: FastifyInstance) {
 
   app.get('/profile', { config: { policy: 'member' } }, async (req, reply) => {
     try {
-      const [member, plans] = await Promise.all([currentMember(req), planRepo.list()]);
-      return success(reply, { member: serializeMember(member), plans });
+      const [member, plans, stats] = await Promise.all([
+        currentMember(req),
+        planRepo.list(),
+        reservationService.getLifetimeActivityStats(memberId(req)),
+      ]);
+      return success(reply, {
+        member: serializeMember(member),
+        plans,
+        // Lifetime, confirmed-only, courts only; definition in
+        // bookings/domain/activity-stats.ts and docs/decisions-account.md.
+        stats: {
+          courtsBooked: stats.courtsBooked,
+          badmintonHours: stats.badmintonMinutes / 60,
+          tennisHours: stats.tennisMinutes / 60,
+        },
+      });
     } catch (err) {
+      return handleMemberError(reply, err);
+    }
+  });
+
+  app.patch('/profile', { config: { policy: 'member' } }, async (req, reply) => {
+    const parsed = updateMyProfileSchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    try {
+      await memberService.updateDisplayName(memberId(req), parsed.data.displayName);
+      return success(reply, { member: serializeMember(await currentMember(req)) });
+    } catch (err) {
+      if (err instanceof MemberValidationError) return error(reply, 'VALIDATION_ERROR', err.message, 422);
       return handleMemberError(reply, err);
     }
   });

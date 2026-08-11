@@ -99,6 +99,7 @@ function build() {
     redriveStalePendingRefunds: vi.fn().mockResolvedValue({ reissued: 0, failed: 0 }),
     freezeChargeForDispute: vi.fn().mockResolvedValue(['rsv_1']),
     hasBlockingFinancialState: vi.fn().mockResolvedValue(false),
+    hasOpenDisputes: vi.fn().mockResolvedValue(false),
   };
   const members = {
     getById: vi.fn(),
