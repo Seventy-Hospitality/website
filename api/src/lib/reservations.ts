@@ -26,6 +26,7 @@ import {
   ReservationTooFarInAdvanceError,
   ResourceNotFoundError,
   ResourceTypeNotFoundError,
+  SeriesNotFoundError,
   SlotUnavailableError,
   TierRequiredError,
 } from '@/lib/contexts/bookings';
@@ -63,6 +64,8 @@ export function serializeReservation(
     amountPaidCents: detail.amountPaidCents,
     clubId: detail.clubId,
     seriesId: detail.seriesId,
+    // The Weekly badge: this reservation was materialized from a series.
+    weekly: detail.seriesId !== null,
     createdByAdmin: detail.createdByAdminId !== null,
     participants: detail.participants.map((participant) => ({
       memberId: participant.memberId,
@@ -218,6 +221,7 @@ export function handleReservationError(reply: FastifyReply, err: unknown) {
   if (err instanceof ResourceNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof ReservationNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof ParticipantNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
+  if (err instanceof SeriesNotFoundError) return error(reply, 'NOT_FOUND', err.message, 404);
   if (err instanceof InviteeNotFoundError) return error(reply, 'INVITEE_NOT_FOUND', err.message, 404);
   // 404-shaped on purpose: a club the inviter does not belong to answers
   // exactly like one that does not exist.

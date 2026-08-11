@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { reservationService, VENUE_TIMEZONE } from '@/lib/container';
+import { reservationService, seriesService, VENUE_TIMEZONE } from '@/lib/container';
 import { error, success } from '@/src/lib/responses';
 import { handleReservationError, serializeReservation } from '@/src/lib/reservations';
 import {
   addParticipantsSchema,
   availabilityQuerySchema,
   createReservationSchema,
+  createReservationSeriesSchema,
   rescheduleReservationSchema,
   reservationQuoteSchema,
   respondReservationSchema,
@@ -284,4 +285,67 @@ export async function reservationRoutes(app: FastifyInstance) {
       }
     },
   );
+
+  // ── Weekly series (admin-only creation; plan OPEN decision 8) ──
+  // Members see the Weekly badge on materialized reservations; creating or
+  // cancelling the series itself is a staff action until a member UI is
+  // designed.
+
+  app.get('/admin/reservation-series', { config: { policy: 'admin' } }, async (_req, reply) => {
+    const series = await seriesService.list();
+    return success(reply, series.map(serializeSeries));
+  });
+
+  app.post('/admin/reservation-series', { config: { policy: 'admin' } }, async (req, reply) => {
+    const parsed = createReservationSeriesSchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    try {
+      const series = await seriesService.create({
+        organizerId: parsed.data.memberId,
+        typeCode: parsed.data.typeCode,
+        weekday: parsed.data.weekday,
+        startTime: parsed.data.startTime,
+        durationMinutes: parsed.data.durationMinutes,
+        adminUserId: req.principal!.userId,
+      });
+      return success(reply, serializeSeries(series), 201);
+    } catch (err) {
+      return handleReservationError(reply, err);
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>(
+    '/admin/reservation-series/:id',
+    { config: { policy: 'admin' } },
+    async (req, reply) => {
+      try {
+        const result = await seriesService.cancel(req.params.id, req.principal!.userId);
+        return success(reply, result);
+      } catch (err) {
+        return handleReservationError(reply, err);
+      }
+    },
+  );
+}
+
+type SeriesAdminItem = Awaited<ReturnType<typeof seriesService.list>>[number];
+
+function serializeSeries(series: SeriesAdminItem) {
+  return {
+    id: series.id,
+    member: {
+      id: series.organizer.id,
+      firstName: series.organizer.firstName,
+      lastName: series.organizer.lastName,
+      memberNumber: series.organizer.memberNumber,
+    },
+    typeCode: series.resourceType.code,
+    typeName: series.resourceType.name,
+    weekday: series.weekday,
+    startTime: series.startTimeLocal,
+    durationMinutes: series.durationMinutes,
+    active: series.active,
+    createdAt: series.createdAt.toISOString(),
+  };
 }

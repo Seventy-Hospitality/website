@@ -55,6 +55,11 @@ export {
   EventClaimConflictError,
 } from './ports';
 export {
+  listSeriesOccurrenceDates,
+  weekdayOfDateKey,
+  type SeriesOccurrenceQuery,
+} from './series';
+export {
   SlotUnavailableError,
   OutsideOperatingHoursError,
   InvalidSlotSelectionError,
@@ -80,4 +85,6 @@ export {
   HoldExpiredError,
   InsufficientRefundableBalanceError,
   ReservationChangedError,
+  SeriesNotFoundError,
+  DuplicateSeriesOccurrenceError,
 } from './errors';

@@ -177,3 +177,22 @@ export class ReservationChangedError extends Error {
     this.name = 'ReservationChangedError';
   }
 }
+
+export class SeriesNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Reservation series not found: ${id}`);
+    this.name = 'SeriesNotFoundError';
+  }
+}
+
+/**
+ * The (seriesId, localDate) partial unique fired: another materializer pass
+ * created this occurrence between our existence check and the insert. Not a
+ * failure; the occurrence exists.
+ */
+export class DuplicateSeriesOccurrenceError extends Error {
+  constructor(seriesId: string, localDate: string) {
+    super(`Series ${seriesId} already has a reservation on ${localDate}`);
+    this.name = 'DuplicateSeriesOccurrenceError';
+  }
+}

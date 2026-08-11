@@ -7,6 +7,7 @@ import {
   outboxDispatcher,
   reconciliationService,
   reservationService,
+  seriesService,
 } from '@/lib/container';
 import { cleanupManagedImagesQuerySchema } from '@/src/lib/validation';
 
@@ -54,6 +55,21 @@ export async function cronRoutes(app: FastifyInstance) {
     config: { policy: 'cron' },
     handler: async (_req, reply) => {
       const result = await bookingReminderService.sendDueReminders();
+      return reply.send(result);
+    },
+  });
+
+  // Weekly series materialization: concrete comp reservations from active
+  // series inside each type's booking horizon. An occurrence that cannot be
+  // created is skipped and the organizer notified exactly once (skip
+  // markers + the (seriesId, localDate) partial unique keep repeated and
+  // concurrent passes idempotent).
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/materialize-series',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await seriesService.materializeDue();
       return reply.send(result);
     },
   });

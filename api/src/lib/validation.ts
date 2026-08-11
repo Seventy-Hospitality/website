@@ -205,6 +205,15 @@ export const myReservationsQuerySchema = z.object({
   filter: z.enum(['upcoming', 'past', 'all']).default('upcoming'),
 });
 
+/** Admin-only weekly series creation (plan OPEN decision 8). */
+export const createReservationSeriesSchema = z.object({
+  memberId: z.string().min(1),
+  typeCode: z.string().min(1),
+  weekday: z.number().int().min(0).max(6),
+  startTime: slotLabelSchema,
+  durationMinutes: z.number().int().positive(),
+});
+
 export const adminReservationsQuerySchema = z.object({
   date: dateKeySchema.optional(),
   includeInactive: z

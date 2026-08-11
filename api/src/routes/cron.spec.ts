@@ -9,6 +9,7 @@ const {
   mockOutboxDispatcher,
   mockReconciliationService,
   mockBookingReminderService,
+  mockSeriesService,
 } = vi.hoisted(() => ({
   mockMembershipService: {
     reconcileSubscriptionDrift: vi.fn().mockResolvedValue({ checked: 0, updated: 0, stale: 0, skipped: 0, orphanedLocal: 0 }),
@@ -40,6 +41,9 @@ const {
   mockBookingReminderService: {
     sendDueReminders: vi.fn().mockResolvedValue({ reservations: 0, remindersSent: 0, skipped: 0, failed: 0 }),
   },
+  mockSeriesService: {
+    materializeDue: vi.fn().mockResolvedValue({ series: 0, created: 0, skipped: 0, alreadyHandled: 0 }),
+  },
 }));
 
 vi.mock('@/lib/container', () => ({
@@ -50,6 +54,7 @@ vi.mock('@/lib/container', () => ({
   outboxDispatcher: mockOutboxDispatcher,
   reconciliationService: mockReconciliationService,
   bookingReminderService: mockBookingReminderService,
+  seriesService: mockSeriesService,
 }));
 
 vi.mock('@/lib/db', () => ({
@@ -131,6 +136,23 @@ describe('cron routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ reservations: 3, remindersSent: 5, skipped: 1, failed: 0 });
+  });
+
+  it('materializes weekly series behind the cron secret', async () => {
+    mockSeriesService.materializeDue.mockResolvedValue({ series: 2, created: 3, skipped: 1, alreadyHandled: 4 });
+
+    const denied = await app.inject({ method: 'POST', url: '/materialize-series' });
+    expect(denied.statusCode).toBe(401);
+    expect(mockSeriesService.materializeDue).not.toHaveBeenCalled();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/materialize-series',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ series: 2, created: 3, skipped: 1, alreadyHandled: 4 });
   });
 
   it('runs the nightly billing reconcile behind the cron secret (GET works for URL schedulers)', async () => {

@@ -7,7 +7,7 @@ import {
   TierRequiredError,
 } from '@/lib/contexts/bookings';
 
-const { mockReservationService, mockMembershipChecker, mockSessionService } = vi.hoisted(() => ({
+const { mockReservationService, mockSeriesService, mockMembershipChecker, mockSessionService } = vi.hoisted(() => ({
   mockReservationService: {
     listResourceTypesForMember: vi.fn().mockResolvedValue([]),
     getAvailability: vi.fn().mockResolvedValue([]),
@@ -22,12 +22,18 @@ const { mockReservationService, mockMembershipChecker, mockSessionService } = vi
     removeParticipant: vi.fn().mockResolvedValue(undefined),
     respond: vi.fn(),
   },
+  mockSeriesService: {
+    list: vi.fn().mockResolvedValue([]),
+    create: vi.fn(),
+    cancel: vi.fn().mockResolvedValue({ cancelled: true, occurrencesCancelled: 0 }),
+  },
   mockMembershipChecker: { hasActiveMembership: vi.fn().mockResolvedValue(true) },
   mockSessionService: { validateAccessToken: vi.fn(), refresh: vi.fn() },
 }));
 
 vi.mock('@/lib/container', () => ({
   reservationService: mockReservationService,
+  seriesService: mockSeriesService,
   membershipChecker: mockMembershipChecker,
   sessionService: mockSessionService,
   VENUE_TIMEZONE: 'America/New_York',
@@ -459,6 +465,127 @@ describe('reservation routes', () => {
         payload: { response: 'maybe' },
       });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe('weekly series (admin-only creation, OPEN decision 8)', () => {
+    const fixtureSeries = {
+      id: 'ser_1',
+      organizerId: 'mem_1',
+      resourceTypeId: 'rt_badminton_court',
+      weekday: 4,
+      startTimeLocal: '18:00',
+      durationMinutes: 60,
+      active: true,
+      createdByAdminId: 'usr_admin',
+      createdAt: new Date('2026-08-01T00:00:00Z'),
+      updatedAt: new Date('2026-08-01T00:00:00Z'),
+      resourceType: { id: 'rt_badminton_court', code: 'badminton_court', name: 'Badminton Court' },
+      organizer: { id: 'mem_1', firstName: 'Alice', lastName: 'Chen', memberNumber: 'A12345' },
+    };
+
+    it('keeps every series route off-limits to plain members', async () => {
+      signedInAs(); // member, no staff role
+      for (const [method, url] of [
+        ['GET', '/api/admin/reservation-series'],
+        ['POST', '/api/admin/reservation-series'],
+        ['DELETE', '/api/admin/reservation-series/ser_1'],
+      ] as const) {
+        const res = await app.inject({ method, url, headers: AUTH, ...(method === 'POST' ? { payload: {} } : {}) });
+        expect(res.statusCode).toBe(403);
+      }
+      expect(mockSeriesService.create).not.toHaveBeenCalled();
+      expect(mockSeriesService.cancel).not.toHaveBeenCalled();
+    });
+
+    it('creates a series for the named member as the acting admin', async () => {
+      signedInAs({ userId: 'usr_admin', staffRole: 'admin', memberId: null });
+      mockSeriesService.create.mockResolvedValue(fixtureSeries);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/reservation-series',
+        headers: AUTH,
+        payload: {
+          memberId: 'mem_1',
+          typeCode: 'badminton_court',
+          weekday: 4,
+          startTime: '18:00',
+          durationMinutes: 60,
+        },
+      });
+
+      expect(res.statusCode).toBe(201);
+      expect(mockSeriesService.create).toHaveBeenCalledWith({
+        organizerId: 'mem_1',
+        typeCode: 'badminton_court',
+        weekday: 4,
+        startTime: '18:00',
+        durationMinutes: 60,
+        adminUserId: 'usr_admin',
+      });
+      expect(res.json().data).toMatchObject({
+        id: 'ser_1',
+        typeCode: 'badminton_court',
+        weekday: 4,
+        startTime: '18:00',
+        active: true,
+        member: { memberNumber: 'A12345' },
+      });
+    });
+
+    it('validates the series payload', async () => {
+      signedInAs({ userId: 'usr_admin', staffRole: 'admin', memberId: null });
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/admin/reservation-series',
+        headers: AUTH,
+        payload: { memberId: 'mem_1', typeCode: 'badminton_court', weekday: 9, startTime: '18:00', durationMinutes: 60 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockSeriesService.create).not.toHaveBeenCalled();
+    });
+
+    it('cancels a series (and its future occurrences) as the acting admin', async () => {
+      signedInAs({ userId: 'usr_admin', staffRole: 'admin', memberId: null });
+      mockSeriesService.cancel.mockResolvedValue({ cancelled: true, occurrencesCancelled: 3 });
+
+      const res = await app.inject({
+        method: 'DELETE',
+        url: '/api/admin/reservation-series/ser_1',
+        headers: AUTH,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSeriesService.cancel).toHaveBeenCalledWith('ser_1', 'usr_admin');
+      expect(res.json().data).toEqual({ cancelled: true, occurrencesCancelled: 3 });
+    });
+
+    it('lists series for staff review', async () => {
+      signedInAs({ userId: 'usr_admin', staffRole: 'admin', memberId: null });
+      mockSeriesService.list.mockResolvedValue([fixtureSeries]);
+
+      const res = await app.inject({ method: 'GET', url: '/api/admin/reservation-series', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toEqual([
+        expect.objectContaining({ id: 'ser_1', typeName: 'Badminton Court', durationMinutes: 60 }),
+      ]);
+    });
+  });
+
+  describe('weekly badge on serialized reservations', () => {
+    it('marks a series-materialized reservation weekly', async () => {
+      signedInAs();
+      mockReservationService.getForViewer.mockResolvedValue({
+        reservation: fixtureReservation({ seriesId: 'ser_1' }),
+        viewer: { role: 'organizer', status: 'confirmed', canInvite: true, canManage: true, canRespond: false },
+      });
+
+      const res = await app.inject({ method: 'GET', url: '/api/reservations/rsv_1', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toMatchObject({ seriesId: 'ser_1', weekly: true });
     });
   });
 });

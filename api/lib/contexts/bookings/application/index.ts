@@ -9,4 +9,9 @@ export {
   type ViewerContext,
 } from './reservation.service';
 export { ResourceClaimService } from './resource-claim.service';
+export {
+  SeriesService,
+  type CreateSeriesInput,
+  type MaterializeResult,
+} from './series.service';
 export { type AuditLog } from './ports';

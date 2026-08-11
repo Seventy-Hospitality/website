@@ -40,6 +40,7 @@ import {
   ResourceTypeRepository,
   ResourceRepository,
   ReservationRepository,
+  ReservationSeriesRepository,
   SlotClaimRepository,
   PrismaMembershipChecker,
   StubBookingPaymentAdapter,
@@ -74,7 +75,7 @@ import {
   NotificationService,
   NotificationSettingsService,
 } from '@/lib/contexts/communications/application';
-import { ReservationService, ResourceClaimService } from '@/lib/contexts/bookings/application';
+import { ReservationService, ResourceClaimService, SeriesService } from '@/lib/contexts/bookings/application';
 import { ClubEventService } from '@/lib/contexts/events/application';
 import { ClubService } from '@/lib/contexts/clubs/application';
 import { MediaService } from '@/lib/contexts/media/application';
@@ -242,6 +243,19 @@ export const resourceClaimPort = new ResourceClaimService(
   resourceRepo,
   slotClaimRepo,
   reservationService,
+  VENUE_TIMEZONE,
+);
+
+// Weekly series (OPEN decision 8): admin-only creation; the materialize
+// cron books comp occurrences inside the horizon, skipping + notifying on
+// collision (never silently shifting).
+export const seriesService = new SeriesService(
+  new ReservationSeriesRepository(db),
+  resourceTypeRepo,
+  reservationRepo,
+  reservationService,
+  eventStore,
+  uow,
   VENUE_TIMEZONE,
 );
 // Private assets (ID photos) are encrypted at rest under a media-specific

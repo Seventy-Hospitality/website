@@ -13,8 +13,8 @@ import type {
   ReservationStatus,
   ResourceType,
 } from '../domain';
-import { SlotUnavailableError } from '../domain';
-import { isClaimConflictError } from './pg-errors';
+import { DuplicateSeriesOccurrenceError, SlotUnavailableError } from '../domain';
+import { isClaimConflictError, isSeriesOccurrenceConflict } from './pg-errors';
 
 export interface ParticipantWithMember extends ReservationParticipant {
   member: { id: string; firstName: string; lastName: string; email: string };
@@ -293,7 +293,39 @@ export class ReservationRepository {
   async createWithClaim(tx: TransactionContext, input: CreateReservationInput): Promise<ReservationDetailRecord> {
     const prisma = asPrismaTx(tx);
 
-    const reservation = await prisma.reservation.create({
+    let reservation: { id: string };
+    try {
+      reservation = await this.insertReservation(prisma, input);
+    } catch (error) {
+      // The (seriesId, localDate) partial unique: another materializer pass
+      // created this occurrence first. Semantically "already exists", never
+      // a slot race.
+      if (input.seriesId && isSeriesOccurrenceConflict(error)) {
+        throw new DuplicateSeriesOccurrenceError(input.seriesId, input.localDate);
+      }
+      throw error;
+    }
+
+    try {
+      await prisma.$executeRaw`
+        INSERT INTO "slot_claims"
+          ("id", "resourceId", "startsAt", "endsAt", "kind", "reservationId", "status", "expiresAt", "localDate", "createdAt", "updatedAt")
+        VALUES
+          (${createId()}, ${input.resourceId}, ${input.startsAt}, ${input.endsAt}, 'reservation', ${reservation.id}, 'active', ${input.holdExpiresAt}, ${input.localDate}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `;
+    } catch (error) {
+      if (isClaimConflictError(error)) throw new SlotUnavailableError();
+      throw error;
+    }
+
+    return (await this.getDetail(reservation.id, tx))!;
+  }
+
+  private async insertReservation(
+    prisma: ReturnType<typeof asPrismaTx>,
+    input: CreateReservationInput,
+  ): Promise<{ id: string }> {
+    return prisma.reservation.create({
       data: {
         resourceTypeId: input.resourceTypeId,
         resourceId: input.resourceId,
@@ -318,20 +350,6 @@ export class ReservationRepository {
       },
       select: { id: true },
     });
-
-    try {
-      await prisma.$executeRaw`
-        INSERT INTO "slot_claims"
-          ("id", "resourceId", "startsAt", "endsAt", "kind", "reservationId", "status", "expiresAt", "localDate", "createdAt", "updatedAt")
-        VALUES
-          (${createId()}, ${input.resourceId}, ${input.startsAt}, ${input.endsAt}, 'reservation', ${reservation.id}, 'active', ${input.holdExpiresAt}, ${input.localDate}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `;
-    } catch (error) {
-      if (isClaimConflictError(error)) throw new SlotUnavailableError();
-      throw error;
-    }
-
-    return (await this.getDetail(reservation.id, tx))!;
   }
 
   /**

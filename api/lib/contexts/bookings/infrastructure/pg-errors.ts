@@ -47,3 +47,38 @@ export function isClaimConflictError(error: unknown): boolean {
 
   return false;
 }
+
+/**
+ * A unique violation on reservations_series_occurrence_key (the raw-SQL
+ * partial unique on (seriesId, localDate)): another materializer pass
+ * created this occurrence first. Prisma surfaces schema-unknown indexes as
+ * P2002 with the index name in meta/message, or as the raw 23505 SQLSTATE
+ * depending on the path; check both plus the index name.
+ */
+export function isSeriesOccurrenceConflict(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+
+  const candidate = error as {
+    code?: unknown;
+    meta?: { code?: unknown; target?: unknown };
+    message?: unknown;
+    cause?: unknown;
+  };
+
+  const mentionsIndex = (value: unknown): boolean =>
+    typeof value === 'string' && value.includes('series_occurrence');
+
+  if (mentionsIndex(candidate.message)) return true;
+  if (mentionsIndex(candidate.meta?.target)) return true;
+  if (Array.isArray(candidate.meta?.target) && candidate.meta.target.some(mentionsIndex)) return true;
+
+  const cause = candidate.cause;
+  if (cause && typeof cause === 'object') {
+    const inner = cause as { message?: unknown; constraint?: unknown };
+    if (mentionsIndex(inner.message) || mentionsIndex(inner.constraint)) return true;
+  }
+
+  // Fall back on the bare unique-violation codes: a series insert has no
+  // other plausible unique (references come from a Postgres sequence).
+  return candidate.code === 'P2002' || candidate.code === '23505' || candidate.meta?.code === '23505';
+}

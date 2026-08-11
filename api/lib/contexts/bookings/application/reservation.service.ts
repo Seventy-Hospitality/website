@@ -357,6 +357,8 @@ export class ReservationService {
     admin?: { adminUserId: string };
     /** Pin to one resource (admin compat routes book a named court). */
     resourceId?: string;
+    /** Weekly-series materialization provenance (cron; rides admin comp). */
+    seriesId?: string | null;
     now?: Date;
   }): Promise<CreateReservationResult> {
     const now = request.now ?? new Date();
@@ -422,6 +424,7 @@ export class ReservationService {
             resourceId,
             organizerId: request.organizerId,
             clubId,
+            seriesId: request.seriesId ?? null,
             startsAt: range.startsAt,
             endsAt: range.endsAt,
             localDate: request.date,
@@ -461,6 +464,7 @@ export class ReservationService {
               totalCents,
               status: detail.status,
               clubId,
+              seriesId: request.seriesId ?? null,
               createdByAdminId: request.admin?.adminUserId ?? null,
             },
             actorId,
