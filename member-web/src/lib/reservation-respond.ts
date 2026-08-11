@@ -6,13 +6,16 @@
  * - optimistic: the viewer's row in the ['reservations', id] detail cache
  *   (participants + myParticipation + viewer.status) flips immediately,
  *   with a snapshot rollback on error;
+ * - optimistic on home too: the ['home'] feed moves an accepted invitation
+ *   card into the upcoming list (and drops a declined one) immediately,
+ *   with the same snapshot rollback;
  * - conflicts (the reservation was cancelled/expired mid-flight, or the
  *   invite was revoked) re-fetch the truth instead of trusting the cache;
  * - settlement invalidates the ['reservations'] and ['home'] prefixes so
  *   every surface converges on the server state.
  */
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, ApiError, type Reservation, type ReservationViewer } from './api';
+import { api, ApiError, type HomeFeed, type Reservation, type ReservationViewer } from './api';
 import { useSession } from './session-context';
 import { applyParticipantResponse, type ParticipantResponse } from './reservation-policy';
 
@@ -56,6 +59,38 @@ export function applyResponseToDetail<T extends ReservationDetail>(
   };
 }
 
+/**
+ * The optimistic home-feed write for a response by `memberId`: accepting a
+ * pending invitation moves its card into the upcoming list (viewer row
+ * flipped to confirmed, list re-sorted by start), declining removes it.
+ * Declining an already-upcoming reservation (withdraw) removes that row.
+ * Anything else leaves the feed untouched.
+ */
+export function applyResponseToHome(
+  home: HomeFeed,
+  reservationId: string,
+  memberId: string,
+  response: ParticipantResponse,
+): HomeFeed {
+  const invitation = home.pendingInvitations.find((row) => row.id === reservationId);
+  if (invitation) {
+    const pendingInvitations = home.pendingInvitations.filter((row) => row.id !== reservationId);
+    if (response === 'decline') return { ...home, pendingInvitations };
+    const upcomingReservations = [
+      ...home.upcomingReservations,
+      applyResponseToDetail(invitation, memberId, response),
+    ].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+    return { ...home, pendingInvitations, upcomingReservations };
+  }
+  if (response === 'decline' && home.upcomingReservations.some((row) => row.id === reservationId)) {
+    return {
+      ...home,
+      upcomingReservations: home.upcomingReservations.filter((row) => row.id !== reservationId),
+    };
+  }
+  return home;
+}
+
 export function useRespondToReservation() {
   const queryClient = useQueryClient();
   const { memberId } = useSession();
@@ -66,15 +101,25 @@ export function useRespondToReservation() {
     onMutate: async ({ reservationId, response }) => {
       const detailKey = ['reservations', reservationId];
       await queryClient.cancelQueries({ queryKey: detailKey });
+      await queryClient.cancelQueries({ queryKey: ['home'] });
       const previous = queryClient.getQueryData<ReservationDetail>(detailKey);
-      if (previous && memberId) {
-        queryClient.setQueryData(detailKey, applyResponseToDetail(previous, memberId, response));
+      const previousHome = queryClient.getQueriesData<HomeFeed>({ queryKey: ['home'] });
+      if (memberId) {
+        if (previous) {
+          queryClient.setQueryData(detailKey, applyResponseToDetail(previous, memberId, response));
+        }
+        queryClient.setQueriesData<HomeFeed>({ queryKey: ['home'] }, (home) =>
+          home ? applyResponseToHome(home, reservationId, memberId, response) : home,
+        );
       }
-      return { previous };
+      return { previous, previousHome };
     },
     onError: (error, { reservationId }, context) => {
       if (context?.previous) {
         queryClient.setQueryData(['reservations', reservationId], context.previous);
+      }
+      for (const [key, data] of context?.previousHome ?? []) {
+        queryClient.setQueryData(key, data);
       }
       if (isRespondConflict(error)) {
         // The reservation changed under us (cancelled, expired, invite

@@ -49,6 +49,10 @@ export interface ReservationCardProps {
   rows: ReservationCardRow[];
   layout?: 'columns' | 'rows';
   className?: string;
+  /** Rendered above the head (W2's "SARAH invited you" invitation line). */
+  header?: ReactNode;
+  /** Right-aligned in the head row (W2's Weekly / participation badges). */
+  badge?: ReactNode;
   /** Extra content below the fact rows, inside the card (W4's old -> new
       change rows on the reschedule confirm screen). */
   children?: ReactNode;
@@ -66,10 +70,13 @@ export function ReservationCard({
   rows,
   layout = 'columns',
   className,
+  header,
+  badge,
   children,
 }: ReservationCardProps) {
   return (
     <Card className={[styles.card, className ?? ''].join(' ')}>
+      {header}
       <div className={styles.head}>
         <IconTile>
           <ResourceTypeIcon code={typeCode} />
@@ -78,6 +85,7 @@ export function ReservationCard({
           <span className={styles.typeName}>{typeName}</span>
           {resourceName && <span className={styles.resourceName}>{resourceName}</span>}
         </div>
+        {badge && <div className={styles.headBadge}>{badge}</div>}
       </div>
 
       {rows.length > 0 &&

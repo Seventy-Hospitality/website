@@ -332,6 +332,111 @@ export interface ClubRosterEntry {
   joinedAt: string;
 }
 
+// ── Home types (W2; GET /api/me/home is the one aggregated home read) ──
+
+/** The member profile block on the home payload (serializeMember). */
+export interface HomeMember {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  phone: string | null;
+  memberNumber: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  memberSince: string;
+  membership: {
+    id: string;
+    status: MembershipStatus;
+    currentPeriodEnd: string;
+    cancelAtPeriodEnd: boolean;
+    plan: { id: string; name: string; amountCents: number; interval: BillingInterval };
+  } | null;
+}
+
+/**
+ * Greeting computed in the VIEWER'S clock: the client sends its IANA zone
+ * as `?tz=`; the backend falls back to the venue zone when it is invalid.
+ */
+export interface HomeGreeting {
+  firstName: string;
+  timeOfDay: 'morning' | 'afternoon' | 'evening';
+  timezone: string;
+}
+
+/** A spotlight club event card (image, title, when). */
+export interface SpotlightEvent {
+  id: string;
+  title: string;
+  imageUrl: string | null;
+  details: string | null;
+  startsAt: string;
+  endsAt: string;
+  /** The venue zone the event times are anchored in; format with it. */
+  timezone: string;
+  active: boolean;
+  courts: { id: string; name: string }[];
+}
+
+/** The deterministic "AI suggestion" quick-book slot (habit or fallback). */
+export interface QuickBookSuggestion {
+  typeCode: string;
+  typeName: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  durationMinutes: number;
+  hourlyRateCents: number;
+  /** Why this slot, e.g. "You often book Badminton Court on Sundays ...". */
+  reason: string;
+}
+
+/** Empty-state amenity summary row (present ONLY in the empty state). */
+export interface HomeAmenitySummary {
+  typeCode: string;
+  typeName: string;
+  hourlyRateCents: number;
+  resourceCount: number;
+  availableSlotsToday: number;
+  locked: boolean;
+}
+
+/** A pending club invitation awaiting the viewer's response. */
+export interface ClubInvitation {
+  id: string;
+  club: ClubSummary;
+  invitedBy: { memberId: string; firstName: string; lastName: string } | null;
+  createdAt: string;
+}
+
+/**
+ * GET /api/me/home. `upcomingReservations` are upcoming where the viewer is
+ * confirmed; `pendingInvitations` where their participation is pending
+ * (rendered distinctly with inline Accept/Decline; `myParticipation`
+ * carries the inviter's first name). `amenities` is non-null ONLY in the
+ * empty state (nothing upcoming, no reservation invitations). The response
+ * also carries a legacy `upcomingBookings` list for the old member portal,
+ * which this client ignores.
+ */
+export interface HomeFeed {
+  member: HomeMember;
+  greeting: HomeGreeting;
+  spotlightEvents: SpotlightEvent[];
+  upcomingReservations: Reservation[];
+  pendingInvitations: Reservation[];
+  clubInvitations: ClubInvitation[];
+  quickBook: QuickBookSuggestion | null;
+  amenities: HomeAmenitySummary[] | null;
+}
+
+/** GET /api/me/qr: a short-lived signed token (60s TTL) for the member
+    card QR; refetch before `expiresAt`, never cache across opens. */
+export interface MemberQrToken {
+  token: string;
+  expiresAt: string;
+  ttlSeconds: number;
+}
+
 function normalizeJsonResponse(text: string) {
   if (!text) {
     return {};
@@ -630,4 +735,21 @@ export const api = {
   getMyClubs: () => request<MyClub[]>('/api/me/clubs'),
   getClubMembers: (clubId: string) =>
     request<ClubRosterEntry[]>(`/api/clubs/${encodeURIComponent(clubId)}/members`),
+  /**
+   * Accept or decline a pending club invitation. Idempotent when the state
+   * already agrees; a stale invitation answers 409 INVALID_INVITATION_STATE
+   * or 404 (not the invitee / gone).
+   */
+  respondToClubInvitation: (id: string, response: 'accept' | 'decline') =>
+    request<{ status: string; clubId: string }>(
+      `/api/club-invitations/${encodeURIComponent(id)}/respond`,
+      { method: 'POST', body: JSON.stringify({ response }) },
+    ),
+
+  // ── Home (W2) ──
+  /** The aggregated home feed; `tz` is the browser IANA zone for the greeting. */
+  getHome: (tz?: string) =>
+    request<HomeFeed>(`/api/me/home${tz ? `?${new URLSearchParams({ tz })}` : ''}`),
+  /** Short-lived member-card QR token (see MemberQrToken). */
+  getMemberQr: () => request<MemberQrToken>('/api/me/qr'),
 };

@@ -97,6 +97,19 @@ export function formatDateHeading(key: string): string {
   return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+/** "Sun 7/26" (home invitation and quick-book meta lines). */
+export function formatDateCompact(key: string): string {
+  const date = dateKeyToDate(key);
+  const weekday = date.toLocaleDateString('en-US', { weekday: 'short' });
+  return `${weekday} ${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+/** "July 26" (the home "See you July 26" accept toast). */
+export function formatMonthDay(key: string): string {
+  const date = dateKeyToDate(key);
+  return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+}
+
 /** "Monday, Jul 6" (checkout reservation card). */
 export function formatDateLong(key: string): string {
   const date = dateKeyToDate(key);

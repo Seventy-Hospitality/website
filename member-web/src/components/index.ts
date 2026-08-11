@@ -13,6 +13,7 @@ export { Skeleton } from './Skeleton';
 export { EmptyState } from './EmptyState';
 export { SegmentedControl, type SegmentedOption } from './SegmentedControl';
 export { ListRow, IconTile } from './ListRow';
+export { MemberQrSheet, type MemberQrSheetProps } from './MemberQrSheet';
 export {
   ReservationCard,
   ResourceTypeIcon,

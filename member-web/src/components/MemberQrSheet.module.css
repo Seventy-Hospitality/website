@@ -1,0 +1,70 @@
+/* The membership card face (Figma account/member-card 107:9461): brand
+   mark over a letterspaced URL, the check-in QR, then name + number. */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) 0 var(--space-lg);
+  text-align: center;
+  background: linear-gradient(180deg, var(--color-surface-card), var(--color-bg));
+  border-radius: var(--radius-lg);
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  padding-top: var(--space-sm);
+}
+
+.brandUrl {
+  font-size: var(--text-xs-size);
+  line-height: var(--text-xs-line);
+  letter-spacing: var(--text-xs-spacing);
+  color: var(--color-text-muted);
+}
+
+/* Fixed square so loading / error / code swaps never shift the layout.
+   The padding doubles as the QR quiet zone (dark, per the Figma's
+   light-on-dark code). */
+.qrFrame {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  width: 13rem;
+  height: 13rem;
+  padding: var(--space-sm);
+}
+
+.qr {
+  width: 100%;
+  height: 100%;
+  color: var(--color-text);
+  shape-rendering: crispEdges;
+}
+
+.errorText {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.name {
+  font-family: var(--font-display);
+  font-size: var(--text-h3-size);
+  line-height: var(--text-h3-line);
+  font-weight: 700;
+  letter-spacing: 0.0625rem;
+  text-transform: uppercase;
+}
+
+.number {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
