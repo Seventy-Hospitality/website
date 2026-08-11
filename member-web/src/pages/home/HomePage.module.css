@@ -232,11 +232,8 @@
 
 /* ── Spotlight events ── */
 
-.eventRegion {
-  border-radius: var(--radius-lg);
-}
-
 .eventList {
+  border-radius: var(--radius-lg);
   display: flex;
   gap: var(--space-sm);
   list-style: none;

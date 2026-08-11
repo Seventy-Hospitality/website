@@ -60,9 +60,31 @@ reservation shapes the booking flow consumes. Reuse, do not redefine:
   `useRespondToReservation()` in `src/lib/reservation-respond.ts` is THE
   respond mutation: optimistic flip of the viewer's row in the
   `['reservations', id]` cache with rollback, conflict re-fetch, and the
-  standard invalidation. Policy mirrors (participant transitions, the
-  cancellation refund tiers, reschedule delta/dirty helpers) live in
+  standard invalidation. It also rewrites the `['home']` feed cache
+  (`applyResponseToHome`: accept moves the invitation card into the
+  upcoming list, decline drops it) with the same snapshot rollback. Policy
+  mirrors (participant transitions, the cancellation refund tiers,
+  reschedule delta/dirty helpers) live in
   `src/lib/reservation-policy.ts`; the server response stays authoritative.
+- Home feed (W2): `homeQuery` in `src/pages/home/home-data.ts` owns the
+  `['home']` key (GET `/api/me/home?tz=<browser IANA zone>`); mutations
+  keep invalidating the `['home']` prefix as above. Club invitations
+  respond through `useRespondToClubInvitation()` in the same module
+  (optimistic removal, rollback, invalidates `['home']` + `['clubs']`).
+  Beware: a card whose respond action unmounts it optimistically must run
+  its outcome toasts from a mutation owned by the PAGE, not the card
+  (mutate-time callbacks are dropped for unmounted callers).
+
+## Member QR card (set by W2)
+
+`MemberQrSheet` in `src/components` is THE membership card overlay
+(Figma account/member-card 107:9461): W2 opens it from the home header's
+QR button and W6's account "View membership card" must reuse it, not
+rebuild it. Props: `open`, `onClose`, `memberName`, `memberNumber`. It
+fetches `GET /api/me/qr` itself (query `['member-qr']`, only while open,
+never cached across opens) and re-requests before the token's 60s TTL
+lapses; the QR is drawn by `src/lib/qr.ts` (`qrcode-generator`, zero
+deps) with the member number as the text fallback for failed scans.
 
 ## Loading / error / empty states are first-class
 

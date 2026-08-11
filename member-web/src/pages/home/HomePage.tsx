@@ -283,18 +283,13 @@ export function HomePage() {
 
       {feed.spotlightEvents.length > 0 && (
         <HomeSection id="home-events" title="Spotlight events">
-          <div
-            className={styles.eventRegion}
-            role="region"
-            aria-label="Spotlight events"
-            tabIndex={0}
-          >
-            <ul className={styles.eventList}>
-              {feed.spotlightEvents.map((event) => (
-                <EventCard key={event.id} event={event} />
-              ))}
-            </ul>
-          </div>
+          {/* The list itself is the horizontal scroller; it takes focus so
+              keyboard users can scroll it with the arrow keys. */}
+          <ul className={styles.eventList} aria-label="Spotlight events" tabIndex={0}>
+            {feed.spotlightEvents.map((event) => (
+              <EventCard key={event.id} event={event} />
+            ))}
+          </ul>
         </HomeSection>
       )}
 
