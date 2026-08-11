@@ -26,6 +26,18 @@ function actorId(req: FastifyRequest): string {
  * reservation service, which answers with 404-shaped errors for outsiders.
  */
 export async function reservationRoutes(app: FastifyInstance) {
+  // ── Venue ──
+  // The single source of the venue's IANA timezone (VENUE_TIMEZONE), the
+  // wall clock every slot, booking horizon and "today" computation lives
+  // on. Clients must anchor date strips on this zone, never the device
+  // zone (near midnight the two disagree on what "today" is). Public by
+  // design: a physical club's timezone is public knowledge, the payload
+  // carries no member data, and pre-auth surfaces may need venue-local
+  // dates.
+  app.get('/venue', { config: { policy: 'public' } }, async (_req, reply) => {
+    return success(reply, { timezone: VENUE_TIMEZONE });
+  });
+
   // ── Catalog ──
 
   app.get('/resource-types', { config: { policy: 'member' } }, async (req, reply) => {

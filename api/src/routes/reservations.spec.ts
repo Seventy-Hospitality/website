@@ -112,6 +112,15 @@ describe('reservation routes', () => {
 
   afterEach(() => app.close());
 
+  describe('GET /api/venue', () => {
+    it('serves the venue timezone without a session', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/venue' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toEqual({ timezone: 'America/New_York' });
+    });
+  });
+
   describe('GET /api/resource-types', () => {
     it('requires a session', async () => {
       const res = await app.inject({ method: 'GET', url: '/api/resource-types' });
