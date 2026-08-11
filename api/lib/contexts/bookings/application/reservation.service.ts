@@ -127,6 +127,22 @@ export interface ViewerContext {
   canRespond: boolean;
 }
 
+export interface ReissuePaymentIntentResult {
+  reservation: ReservationDetailRecord;
+  /** What the fresh secret pays for: the hold, or a parked change delta. */
+  purpose: 'hold' | 'change_delta';
+  amountCents: number;
+  /** Null when the previous intent turned out captured (alreadyPaid). */
+  clientSecret: string | null;
+  /** The unmoved TTL the payment races (hold or parked-change expiry). */
+  expiresAt: Date | null;
+  /**
+   * The "failed" payment actually captured: the reservation was settled
+   * through the normal confirm path instead of minting a second charge.
+   */
+  alreadyPaid: boolean;
+}
+
 interface ReservedRefund {
   paymentId: string;
   stripePaymentIntentId: string | null;
@@ -616,6 +632,248 @@ export class ReservationService {
       throw new HoldExpiredError();
     }
     return (await this.reservationRepo.getDetail(id))!;
+  }
+
+  // ── Payment-intent reissue (retry-in-place after a failed payment) ──
+
+  /**
+   * A fresh client secret for money the member still owes on THIS
+   * reservation: the hold charge while pending_payment, or the parked
+   * change delta while a pending change is live. No second hold, no second
+   * charge, no TTL extension; the replacement rides the same
+   * idempotency-per-attempt design as every other intent (attempt =
+   * payments.length + 1, strictly increasing because every attempt adds a
+   * ledger row).
+   *
+   * NO-DOUBLE-CHARGE: money is never superseded. The previous intent is
+   * retired at Stripe BEFORE the replacement exists (a canceled intent can
+   * never capture), so at no instant are two capturable intents live for
+   * the same debt; a previous intent that turns out CAPTURED — up front,
+   * or discovered when Stripe refuses the cancel — is settled through the
+   * normal confirm path and reported `alreadyPaid` instead of re-charged.
+   * A cancel failure that is not a capture aborts the reissue entirely
+   * (fail closed: no replacement while the old intent might still be
+   * live). The row swap is CAS-guarded under the per-reservation advisory
+   * lock, and a replacement whose transaction loses the race is voided
+   * before its secret ever leaves the server.
+   *
+   * Organizer-only (the organizer is the payer); 404-shaped otherwise.
+   */
+  async reissuePaymentIntent(
+    id: string,
+    options: { memberId?: string; actorId?: string; now?: Date } = {},
+  ): Promise<ReissuePaymentIntentResult> {
+    const now = options.now ?? new Date();
+    const detail = await this.getOwn(id, options.memberId);
+    const actorId = options.actorId ?? options.memberId;
+
+    if (detail.status === 'pending_payment') {
+      return this.reissueHoldIntent(detail, { actorId, now });
+    }
+    if (detail.status === 'confirmed' && detail.pendingChange) {
+      return this.reissueChangeIntent(detail, { actorId, now });
+    }
+    throw new InvalidReservationStatusError(detail.status, 'pending_payment or a pending change');
+  }
+
+  /** Reissue the hold charge of a still-held pending_payment reservation. */
+  private async reissueHoldIntent(
+    detail: ReservationDetailRecord,
+    options: { actorId?: string; now: Date },
+  ): Promise<ReissuePaymentIntentResult> {
+    const id = detail.id;
+    const holdExpiresAt = detail.claim?.status === 'active' ? detail.claim.expiresAt : null;
+    if (!holdExpiresAt || holdExpiresAt.getTime() <= options.now.getTime()) {
+      // An expired hold belongs to the sweeper; the member rebooks.
+      throw new HoldExpiredError();
+    }
+
+    const previous = [...detail.payments].reverse().find((payment) => payment.kind === 'charge');
+    if (previous?.stripePaymentIntentId && previous.status === 'pending') {
+      if ((await this.retireIntentForReissue(previous.stripePaymentIntentId)) === 'already_paid') {
+        const reservation = await this.confirm(id, { actorId: options.actorId, source: 'reissue' });
+        return {
+          reservation,
+          purpose: 'hold',
+          amountCents: previous.amountCents,
+          clientSecret: null,
+          expiresAt: null,
+          alreadyPaid: true,
+        };
+      }
+    }
+
+    // No charge row (a crash between intent create and row insert): the
+    // attempt number equals the orphaned one, so the idempotency key hands
+    // back that same intent instead of minting a stray second one.
+    const amountCents =
+      previous?.amountCents ??
+      computeTotalCents(detail.hourlyRateCentsSnapshot, this.wallDurationMinutes(detail));
+
+    const intent = await this.paymentPort.createPaymentIntent({
+      reservationId: id,
+      memberId: detail.organizerId,
+      amountCents,
+      attempt: detail.payments.length + 1,
+    });
+
+    const applied = await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, id);
+      const fresh = await this.reservationRepo.getDetail(id, tx);
+      if (!fresh || fresh.status !== 'pending_payment') return false;
+      const freshHold = fresh.claim?.status === 'active' ? fresh.claim.expiresAt : null;
+      if (!freshHold || freshHold.getTime() <= options.now.getTime()) return false;
+      const freshPrevious = [...fresh.payments].reverse().find((payment) => payment.kind === 'charge');
+      if ((freshPrevious?.id ?? null) !== (previous?.id ?? null)) return false; // raced another reissue
+      if (freshPrevious && freshPrevious.status === 'pending') {
+        await this.reservationRepo.setPaymentStatusIf(tx, freshPrevious.id, 'pending', 'failed');
+      }
+      await this.reservationRepo.addPayment(tx, {
+        reservationId: id,
+        kind: 'charge',
+        amountCents,
+        stripePaymentIntentId: intent.paymentIntentId,
+        status: 'pending',
+      });
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: id,
+        eventType: 'reservation.payment_intent_reissued',
+        data: {
+          purpose: 'hold',
+          amountCents,
+          supersededPaymentIntentId: previous?.stripePaymentIntentId ?? null,
+        },
+        actorId: options.actorId,
+      });
+      return true;
+    });
+
+    if (!applied) {
+      // The secret never left the server, so a plain void suffices.
+      await this.paymentPort.cancelPaymentIntent(intent.paymentIntentId).catch(() => {});
+      const fresh = await this.reservationRepo.getDetail(id);
+      if (!fresh || fresh.status !== 'pending_payment') {
+        throw new InvalidReservationStatusError(fresh?.status ?? 'missing', 'pending_payment');
+      }
+      const freshHold = fresh.claim?.status === 'active' ? fresh.claim.expiresAt : null;
+      if (!freshHold || freshHold.getTime() <= options.now.getTime()) throw new HoldExpiredError();
+      throw new ReservationChangedError();
+    }
+
+    return {
+      reservation: (await this.reservationRepo.getDetail(id))!,
+      purpose: 'hold',
+      amountCents,
+      clientSecret: intent.clientSecret,
+      expiresAt: holdExpiresAt,
+      alreadyPaid: false,
+    };
+  }
+
+  /** Reissue the delta charge of a live parked reschedule-grow. */
+  private async reissueChangeIntent(
+    detail: ReservationDetailRecord,
+    options: { actorId?: string; now: Date },
+  ): Promise<ReissuePaymentIntentResult> {
+    const id = detail.id;
+    const pending = detail.pendingChange!;
+    if (pending.expiresAt.getTime() <= options.now.getTime()) {
+      // Lapsed: the sweeper drops it; a fresh PATCH parks a fresh change.
+      throw new HoldExpiredError();
+    }
+    const charge = detail.payments.find((payment) => payment.id === pending.chargePaymentId);
+    if (!charge?.stripePaymentIntentId || charge.status !== 'pending') {
+      // Settled or superseded meanwhile; the client re-reads the detail.
+      throw new ReservationChangedError();
+    }
+
+    if ((await this.retireIntentForReissue(charge.stripePaymentIntentId)) === 'already_paid') {
+      // A captured delta applies the move (or refunds inside settle when
+      // the slot is gone) — never a second charge.
+      const reservation = await this.confirm(id, { actorId: options.actorId, source: 'reissue' });
+      return {
+        reservation,
+        purpose: 'change_delta',
+        amountCents: charge.amountCents,
+        clientSecret: null,
+        expiresAt: null,
+        alreadyPaid: true,
+      };
+    }
+
+    const intent = await this.paymentPort.createPaymentIntent({
+      reservationId: id,
+      memberId: detail.organizerId,
+      amountCents: pending.deltaCents,
+      attempt: detail.payments.length + 1,
+    });
+
+    const applied = await this.uow.execute(async (tx) => {
+      await this.reservationRepo.advisoryLockReservation(tx, id);
+      const fresh = await this.reservationRepo.getDetail(id, tx);
+      if (!fresh || fresh.status !== 'confirmed') return false;
+      if (fresh.pendingChange?.id !== pending.id) return false;
+      if (fresh.pendingChange.chargePaymentId !== charge.id) return false; // raced another reissue
+      await this.reservationRepo.setPaymentStatusIf(tx, charge.id, 'pending', 'failed');
+      const row = await this.reservationRepo.addPayment(tx, {
+        reservationId: id,
+        kind: 'charge',
+        purpose: 'change_delta',
+        amountCents: pending.deltaCents,
+        stripePaymentIntentId: intent.paymentIntentId,
+        status: 'pending',
+      });
+      await this.reservationRepo.setPendingChangeCharge(tx, id, pending.id, row.id);
+      await this.audit.append(tx, {
+        streamType: STREAM_TYPE,
+        streamId: id,
+        eventType: 'reservation.payment_intent_reissued',
+        data: {
+          purpose: 'change_delta',
+          amountCents: pending.deltaCents,
+          supersededPaymentIntentId: charge.stripePaymentIntentId,
+        },
+        actorId: options.actorId,
+      });
+      return true;
+    });
+
+    if (!applied) {
+      await this.paymentPort.cancelPaymentIntent(intent.paymentIntentId).catch(() => {});
+      throw new ReservationChangedError();
+    }
+
+    return {
+      reservation: (await this.reservationRepo.getDetail(id))!,
+      purpose: 'change_delta',
+      amountCents: pending.deltaCents,
+      clientSecret: intent.clientSecret,
+      expiresAt: pending.expiresAt,
+      alreadyPaid: false,
+    };
+  }
+
+  /**
+   * NO-DOUBLE-CHARGE core of a reissue: retire the previous intent at
+   * Stripe BEFORE any replacement exists. 'already_paid' means the intent
+   * captured (settle it, never supersede it); 'retired' means it is now
+   * guaranteed uncapturable. Stripe refuses to cancel a captured intent,
+   * so a cancel failure re-checks; a failure that is not a capture
+   * rethrows and the reissue aborts with the old intent still the only
+   * live one.
+   */
+  private async retireIntentForReissue(intentId: string): Promise<'already_paid' | 'retired'> {
+    const status = await this.paymentPort.getPaymentStatus(intentId);
+    if (status === 'succeeded') return 'already_paid';
+    if (status === 'canceled') return 'retired';
+    try {
+      await this.paymentPort.cancelPaymentIntent(intentId);
+      return 'retired';
+    } catch (error) {
+      if ((await this.paymentPort.getPaymentStatus(intentId)) === 'succeeded') return 'already_paid';
+      throw error;
+    }
   }
 
   // ── Billing-context entry points (webhook + reconcile cron) ──
@@ -2447,6 +2705,16 @@ export class ReservationService {
       return changeCharge.stripePaymentIntentId ?? null;
     }
     return null;
+  }
+
+  /** Venue wall-clock duration (matches how the price was quoted). */
+  private wallDurationMinutes(
+    detail: Pick<ReservationDetailRecord, 'startsAt' | 'endsAt' | 'localDate'>,
+  ): number {
+    return (
+      zonedMinutesSinceMidnight(detail.endsAt, this.timezone, detail.localDate) -
+      zonedMinutesSinceMidnight(detail.startsAt, this.timezone, detail.localDate)
+    );
   }
 
   private gridConfig(type: ResourceType): SlotGridConfig {

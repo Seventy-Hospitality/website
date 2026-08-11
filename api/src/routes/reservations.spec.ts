@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { SessionExpiredError } from '@/lib/contexts/identity';
 import {
+  HoldExpiredError,
   NotInvitePermittedError,
   ReservationNotFoundError,
   SlotUnavailableError,
@@ -14,6 +15,7 @@ const { mockReservationService, mockSeriesService, mockMembershipChecker, mockSe
     quote: vi.fn(),
     create: vi.fn(),
     confirm: vi.fn(),
+    reissuePaymentIntent: vi.fn(),
     getForViewer: vi.fn(),
     rescheduleQuote: vi.fn(),
     reschedule: vi.fn(),
@@ -347,6 +349,94 @@ describe('reservation routes', () => {
       mockReservationService.confirm.mockRejectedValue(new ReservationNotFoundError('rsv_1'));
 
       const res = await app.inject({ method: 'POST', url: '/api/reservations/rsv_1/confirm', headers: AUTH });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe('POST /api/reservations/:id/payment-intent', () => {
+    it('requires a session', async () => {
+      const res = await app.inject({ method: 'POST', url: '/api/reservations/rsv_1/payment-intent' });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('hands back a fresh secret for the same hold', async () => {
+      signedInAs();
+      const holdExpiresAt = new Date('2026-09-01T21:40:00.000Z');
+      mockReservationService.reissuePaymentIntent.mockResolvedValue({
+        reservation: fixtureReservation(),
+        purpose: 'hold',
+        amountCents: 2000,
+        clientSecret: 'pi_new_secret',
+        expiresAt: holdExpiresAt,
+        alreadyPaid: false,
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/reservations/rsv_1/payment-intent',
+        headers: AUTH,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReservationService.reissuePaymentIntent).toHaveBeenCalledWith('rsv_1', {
+        memberId: 'mem_1',
+        actorId: 'usr_1',
+      });
+      expect(res.json().data).toMatchObject({
+        purpose: 'hold',
+        amountCents: 2000,
+        clientSecret: 'pi_new_secret',
+        expiresAt: holdExpiresAt.toISOString(),
+        alreadyPaid: false,
+      });
+      expect(res.json().data.reservation.id).toBe('rsv_1');
+    });
+
+    it('reports an already-captured payment without a secret', async () => {
+      signedInAs();
+      mockReservationService.reissuePaymentIntent.mockResolvedValue({
+        reservation: fixtureReservation({ status: 'confirmed' }),
+        purpose: 'hold',
+        amountCents: 2000,
+        clientSecret: null,
+        expiresAt: null,
+        alreadyPaid: true,
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/reservations/rsv_1/payment-intent',
+        headers: AUTH,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toMatchObject({ alreadyPaid: true, clientSecret: null, expiresAt: null });
+      expect(res.json().data.reservation.status).toBe('confirmed');
+    });
+
+    it('maps an expired hold to 409 HOLD_EXPIRED', async () => {
+      signedInAs();
+      mockReservationService.reissuePaymentIntent.mockRejectedValue(new HoldExpiredError());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/reservations/rsv_1/payment-intent',
+        headers: AUTH,
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error.code).toBe('HOLD_EXPIRED');
+    });
+
+    it('404s for non-organizers (service-level ownership)', async () => {
+      signedInAs();
+      mockReservationService.reissuePaymentIntent.mockRejectedValue(new ReservationNotFoundError('rsv_1'));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/reservations/rsv_1/payment-intent',
+        headers: AUTH,
+      });
       expect(res.statusCode).toBe(404);
     });
   });

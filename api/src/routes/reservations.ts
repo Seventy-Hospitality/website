@@ -153,6 +153,42 @@ export async function reservationRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── Payment-intent reissue (organizer; service enforces ownership) ──
+  // A failed or consumed payment on a still-held reservation (or a live
+  // parked change delta) gets a FRESH client secret without rebooking:
+  // same hold, same TTL, and never a second charge (the previous intent is
+  // retired at Stripe before the replacement exists; one that actually
+  // captured settles as alreadyPaid instead). Policy `member`, not
+  // `active-member`, for the same reason as confirm: finishing payment for
+  // a hold already taken must not be blocked by a mid-checkout membership
+  // change.
+
+  app.post<{ Params: { id: string } }>(
+    '/reservations/:id/payment-intent',
+    { config: { policy: 'member' } },
+    async (req, reply) => {
+      try {
+        const result = await reservationService.reissuePaymentIntent(req.params.id, {
+          memberId: memberId(req),
+          actorId: actorId(req),
+        });
+        return success(reply, {
+          reservation: serializeReservation(result.reservation, {
+            timezone: VENUE_TIMEZONE,
+            viewerMemberId: memberId(req),
+          }),
+          purpose: result.purpose,
+          amountCents: result.amountCents,
+          clientSecret: result.clientSecret,
+          expiresAt: result.expiresAt?.toISOString() ?? null,
+          alreadyPaid: result.alreadyPaid,
+        });
+      } catch (err) {
+        return handleReservationError(reply, err);
+      }
+    },
+  );
+
   // ── Detail (any participant) ──
 
   app.get<{ Params: { id: string } }>(

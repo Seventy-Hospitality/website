@@ -10,6 +10,7 @@ import {
   CannotRemoveOrganizerError,
   PaymentNotCompletedError,
   ReservationAlreadyStartedError,
+  ReservationChangedError,
   ReservationInPastError,
   ReservationNotFoundError,
   ReservationTooFarInAdvanceError,
@@ -149,6 +150,7 @@ function pendingChangeFixture(overrides: Record<string, unknown> = {}) {
     chargePaymentId: 'pay_2',
     expiresAt: new Date(NOW.getTime() + 12 * 60_000),
     createdAt: NOW,
+    ...overrides,
   };
 }
 
@@ -228,6 +230,7 @@ function mockReservationRepo(): ReservationRepository {
     countBlockingFinancialState: vi.fn().mockResolvedValue({ pendingRefunds: 0, disputedCharges: 0 }),
     createPendingChange: vi.fn(),
     clearPendingChange: vi.fn().mockResolvedValue(true),
+    setPendingChangeCharge: vi.fn().mockResolvedValue(true),
     listExpiredPendingChanges: vi.fn().mockResolvedValue([]),
     getParticipant: vi.fn(),
     upsertPendingInvite: vi.fn(),
@@ -1315,6 +1318,279 @@ describe('ReservationService.expireStaleHolds', () => {
     expect(reservationRepo.moveClaimAndReservation).not.toHaveBeenCalled();
     expect(reservationRepo.setPaymentStatusIf).toHaveBeenCalledWith(expect.anything(), 'pay_2', 'pending', 'failed');
     expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledWith('pi_2');
+  });
+});
+
+describe('ReservationService.reissuePaymentIntent', () => {
+  function pendingHoldDetail(overrides: Partial<ReservationDetailRecord> = {}) {
+    return detailFixture({
+      payments: [paymentRow({ status: 'pending' })],
+      claim: { id: 'clm_1', status: 'active', expiresAt: new Date(NOW.getTime() + 10 * 60_000) },
+      ...overrides,
+    });
+  }
+
+  it('retires the old intent at Stripe BEFORE minting the replacement, swaps the ledger row and keeps the hold TTL', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    const audit = mockAudit();
+    const detail = pendingHoldDetail();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new',
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort, audit });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    // NO-DOUBLE-CHARGE ordering: the old intent is uncapturable before the
+    // new one exists.
+    const cancelOrder = (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    const createOrder = (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledWith('pi_1');
+    expect(cancelOrder).toBeLessThan(createOrder);
+
+    expect(paymentPort.createPaymentIntent).toHaveBeenCalledWith({
+      reservationId: 'rsv_1',
+      memberId: 'mem_1',
+      amountCents: 2000,
+      attempt: 2, // one ledger row so far; attempts strictly increase
+    });
+    expect(reservationRepo.setPaymentStatusIf).toHaveBeenCalledWith(expect.anything(), 'pay_1', 'pending', 'failed');
+    expect(reservationRepo.addPayment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        kind: 'charge',
+        amountCents: 2000,
+        stripePaymentIntentId: 'pi_new',
+        status: 'pending',
+      }),
+    );
+    expect(auditEventTypes(audit)).toContain('reservation.payment_intent_reissued');
+    expect(result).toMatchObject({
+      purpose: 'hold',
+      amountCents: 2000,
+      clientSecret: 'pi_new_secret',
+      alreadyPaid: false,
+    });
+    // Same hold, same TTL: a reissue must never extend the squat.
+    expect(result.expiresAt).toEqual(detail.claim!.expiresAt);
+  });
+
+  it('NO DOUBLE CHARGE: a captured intent is settled as alreadyPaid, never superseded', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort(); // getPaymentStatus defaults to succeeded
+    const detail = pendingHoldDetail();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
+    expect(paymentPort.cancelPaymentIntent).not.toHaveBeenCalled();
+    expect(reservationRepo.confirmFrom).toHaveBeenCalled(); // settled through confirm
+    expect(result.alreadyPaid).toBe(true);
+    expect(result.clientSecret).toBeNull();
+  });
+
+  it('NO DOUBLE CHARGE: a capture discovered when Stripe refuses the cancel settles instead of minting', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(pendingHoldDetail());
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('requires_payment') // pre-cancel check
+      .mockResolvedValue('succeeded'); // re-check after the refused cancel + confirm path
+    (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('You cannot cancel this PaymentIntent'),
+    );
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
+    expect(result.alreadyPaid).toBe(true);
+    expect(reservationRepo.confirmFrom).toHaveBeenCalled();
+  });
+
+  it('fails CLOSED when the old intent cannot be retired (no replacement while it might be live)', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(pendingHoldDetail());
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('stripe down'));
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
+    ).rejects.toThrow('stripe down');
+    expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
+    expect(reservationRepo.addPayment).not.toHaveBeenCalled();
+  });
+
+  it('refuses an expired hold without touching the payment port', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      pendingHoldDetail({
+        claim: { id: 'clm_1', status: 'active', expiresAt: new Date(NOW.getTime() - 1000) },
+      }),
+    );
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
+    ).rejects.toThrow(HoldExpiredError);
+    expect(paymentPort.getPaymentStatus).not.toHaveBeenCalled();
+    expect(paymentPort.cancelPaymentIntent).not.toHaveBeenCalled();
+    expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it('voids the replacement and reports the truth when the reservation resolved mid-reissue', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(pendingHoldDetail()) // getOwn
+      .mockResolvedValue(detailFixture({ status: 'cancelled' })); // in-tx fresh + post-mortem
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new',
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
+    ).rejects.toThrow(InvalidReservationStatusError);
+    // The replacement's secret never left the server; it is voided.
+    expect(paymentPort.cancelPaymentIntent).toHaveBeenNthCalledWith(2, 'pi_new');
+    expect(reservationRepo.addPayment).not.toHaveBeenCalled();
+  });
+
+  it('is organizer-only (404-shaped for everyone else)', async () => {
+    const reservationRepo = mockReservationRepo();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(pendingHoldDetail());
+    const { service, paymentPort } = buildService({ reservationRepo });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_intruder', now: NOW }),
+    ).rejects.toThrow(ReservationNotFoundError);
+    expect(paymentPort.getPaymentStatus).not.toHaveBeenCalled();
+  });
+
+  it('rejects a confirmed reservation with no pending change (nothing is owed)', async () => {
+    const reservationRepo = mockReservationRepo();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({ status: 'confirmed', payments: [paymentRow()] }),
+    );
+    const { service } = buildService({ reservationRepo });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
+    ).rejects.toThrow(InvalidReservationStatusError);
+  });
+
+  it('reissues a live parked-change delta and repoints the change at the new row', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    const audit = mockAudit();
+    const pending = pendingChangeFixture();
+    const detail = detailFixture({
+      status: 'confirmed',
+      payments: [paymentRow(), deltaChargeRow()],
+      pendingChange: pending,
+    });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    (reservationRepo.addPayment as ReturnType<typeof vi.fn>).mockResolvedValue(
+      paymentRow({ id: 'pay_3', amountCents: 1000, stripePaymentIntentId: 'pi_new', status: 'pending' }),
+    );
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new',
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort, audit });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledWith('pi_2');
+    expect(paymentPort.createPaymentIntent).toHaveBeenCalledWith({
+      reservationId: 'rsv_1',
+      memberId: 'mem_1',
+      amountCents: 1000,
+      attempt: 3,
+    });
+    expect(reservationRepo.setPaymentStatusIf).toHaveBeenCalledWith(expect.anything(), 'pay_2', 'pending', 'failed');
+    expect(reservationRepo.addPayment).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ purpose: 'change_delta', amountCents: 1000, stripePaymentIntentId: 'pi_new' }),
+    );
+    expect(reservationRepo.setPendingChangeCharge).toHaveBeenCalledWith(expect.anything(), 'rsv_1', 'pc_1', 'pay_3');
+    expect(auditEventTypes(audit)).toContain('reservation.payment_intent_reissued');
+    expect(result).toMatchObject({
+      purpose: 'change_delta',
+      amountCents: 1000,
+      clientSecret: 'pi_new_secret',
+      alreadyPaid: false,
+    });
+    expect(result.expiresAt).toEqual(pending.expiresAt);
+  });
+
+  it('NO DOUBLE CHARGE: a captured delta applies the move instead of minting', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort(); // succeeded by default
+    const detail = detailFixture({
+      status: 'confirmed',
+      payments: [paymentRow(), deltaChargeRow()],
+      pendingChange: pendingChangeFixture(),
+    });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail);
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
+    expect(reservationRepo.moveClaimAndReservation).toHaveBeenCalled(); // the paid move applied
+    expect(result.alreadyPaid).toBe(true);
+    expect(result.clientSecret).toBeNull();
+  });
+
+  it('treats a lapsed parked change as expired (the sweeper owns it)', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({
+        status: 'confirmed',
+        payments: [paymentRow(), deltaChargeRow()],
+        pendingChange: pendingChangeFixture({ expiresAt: new Date(NOW.getTime() - 1000) }),
+      }),
+    );
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
+    ).rejects.toThrow(HoldExpiredError);
+    expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it('answers RESERVATION_CHANGED when the change charge is no longer pending', async () => {
+    const reservationRepo = mockReservationRepo();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({
+        status: 'confirmed',
+        payments: [paymentRow(), deltaChargeRow({ status: 'succeeded' })],
+        pendingChange: pendingChangeFixture(),
+      }),
+    );
+    const { service, paymentPort } = buildService({ reservationRepo });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
+    ).rejects.toThrow(ReservationChangedError);
+    expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
   });
 });
 

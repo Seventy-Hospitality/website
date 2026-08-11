@@ -778,6 +778,24 @@ export class ReservationRepository {
     return deleted.count > 0;
   }
 
+  /**
+   * Repoints a parked change at a replacement delta charge (payment-intent
+   * reissue). Guarded by id so a change that was superseded or dropped
+   * meanwhile is never resurrected; the TTL is deliberately untouched.
+   */
+  async setPendingChangeCharge(
+    tx: TransactionContext,
+    reservationId: string,
+    pendingChangeId: string,
+    chargePaymentId: string,
+  ): Promise<boolean> {
+    const updated = await asPrismaTx(tx).reservationPendingChange.updateMany({
+      where: { id: pendingChangeId, reservationId },
+      data: { chargePaymentId },
+    });
+    return updated.count > 0;
+  }
+
   async listExpiredPendingChanges(now: Date): Promise<ReservationDetailRecord[]> {
     const records = await this.prisma.reservation.findMany({
       where: { pendingChange: { is: { expiresAt: { lt: now } } } },
