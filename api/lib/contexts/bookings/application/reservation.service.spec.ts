@@ -1369,6 +1369,72 @@ describe('ReservationService availability and quote', () => {
     ).rejects.toThrow(TierRequiredError);
   });
 
+  it('passes self-exclusion through for a participant of the reservation', async () => {
+    const claimRepo = mockClaimRepo();
+    const reservationRepo = mockReservationRepo();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({ status: 'confirmed' }),
+    );
+    const { service } = buildService({ claimRepo, reservationRepo });
+
+    await service.getAvailability({
+      typeCode: 'badminton_court',
+      startDate: DATE,
+      memberId: 'mem_1',
+      excludeReservationId: 'rsv_1',
+      now: NOW,
+    });
+
+    expect(reservationRepo.getDetail).toHaveBeenCalledWith('rsv_1');
+    expect(claimRepo.listActiveInWindow).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      { excludeReservationId: 'rsv_1', now: NOW },
+    );
+    // The daily-limit count must not charge the member for the excluded
+    // reservation either (the edit flow's own booking).
+    expect(reservationRepo.countActiveOnDate).toHaveBeenCalledWith(
+      undefined,
+      expect.objectContaining({ excludeReservationId: 'rsv_1' }),
+    );
+  });
+
+  it('answers 404-shaped when the excluded reservation is not the caller\'s', async () => {
+    const reservationRepo = mockReservationRepo();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(
+      detailFixture({ status: 'confirmed' }),
+    );
+    const { service, claimRepo } = buildService({ reservationRepo });
+
+    await expect(
+      service.getAvailability({
+        typeCode: 'badminton_court',
+        startDate: DATE,
+        memberId: 'mem_other',
+        excludeReservationId: 'rsv_1',
+        now: NOW,
+      }),
+    ).rejects.toThrow(ReservationNotFoundError);
+    expect(claimRepo.listActiveInWindow).not.toHaveBeenCalled();
+  });
+
+  it('answers 404-shaped when the excluded reservation does not exist', async () => {
+    const reservationRepo = mockReservationRepo();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    const { service } = buildService({ reservationRepo });
+
+    await expect(
+      service.getAvailability({
+        typeCode: 'badminton_court',
+        startDate: DATE,
+        memberId: 'mem_1',
+        excludeReservationId: 'rsv_missing',
+        now: NOW,
+      }),
+    ).rejects.toThrow(ReservationNotFoundError);
+  });
+
   it('quotes only when one resource can host the whole selection', async () => {
     const claimRepo = mockClaimRepo();
     (claimRepo.listActiveInWindow as ReturnType<typeof vi.fn>).mockResolvedValue([

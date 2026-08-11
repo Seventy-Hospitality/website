@@ -75,6 +75,7 @@ export async function reservationRoutes(app: FastifyInstance) {
           startDate: parsed.data.date,
           days: parsed.data.days,
           memberId: memberId(req),
+          excludeReservationId: parsed.data.excludeReservationId,
         });
         return success(reply, days);
       } catch (err) {

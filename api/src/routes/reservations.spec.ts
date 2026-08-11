@@ -191,6 +191,38 @@ describe('reservation routes', () => {
       });
     });
 
+    it('passes the edit flow self-exclusion through', async () => {
+      signedInAs();
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/resource-types/badminton_court/availability?date=2026-09-01&excludeReservationId=rsv_9',
+        headers: AUTH,
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockReservationService.getAvailability).toHaveBeenCalledWith({
+        typeCode: 'badminton_court',
+        startDate: '2026-09-01',
+        days: undefined,
+        memberId: 'mem_1',
+        excludeReservationId: 'rsv_9',
+      });
+    });
+
+    it('maps a foreign excludeReservationId to 404', async () => {
+      signedInAs();
+      mockReservationService.getAvailability.mockRejectedValue(new ReservationNotFoundError('rsv_9'));
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/resource-types/badminton_court/availability?date=2026-09-01&excludeReservationId=rsv_9',
+        headers: AUTH,
+      });
+
+      expect(res.statusCode).toBe(404);
+    });
+
     it('maps the PRO gate to 403', async () => {
       signedInAs();
       mockReservationService.getAvailability.mockRejectedValue(new TierRequiredError('pro'));

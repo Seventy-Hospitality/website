@@ -195,6 +195,16 @@ export class ReservationService {
     const type = await this.getActiveType(params.typeCode);
     await this.assertTier(params.memberId, type);
 
+    // Self-exclusion is a per-reservation privilege: only a participant of
+    // the named reservation may see its claims as free. Anyone else gets
+    // the 404 shape (no probing which ids exist).
+    if (params.excludeReservationId) {
+      const own = await this.reservationRepo.getDetail(params.excludeReservationId);
+      if (!own || !own.participants.some((row) => row.memberId === params.memberId)) {
+        throw new ReservationNotFoundError(params.excludeReservationId);
+      }
+    }
+
     const resources = await this.resourceRepo.listActiveByType(type.id);
     const dateKeys = Array.from({ length: days }, (_, i) => addDaysToDateKey(params.startDate, i));
     const todayKey = zonedDateKey(now, this.timezone);

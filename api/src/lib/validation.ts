@@ -164,6 +164,12 @@ export const createSelfBookingSchema = z.object({
 export const availabilityQuerySchema = z.object({
   date: dateKeySchema,
   days: z.coerce.number().int().positive().max(31).optional(),
+  /**
+   * Edit-flow self-exclusion: the named reservation's own claims read as
+   * free. The service verifies the caller participates in it (404-shaped
+   * otherwise), so foreign reservations cannot be probed or excluded.
+   */
+  excludeReservationId: z.string().trim().min(1).max(64).optional(),
 });
 
 export const reservationQuoteSchema = z.object({
