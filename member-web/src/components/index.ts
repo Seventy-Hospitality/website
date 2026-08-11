@@ -13,3 +13,9 @@ export { Skeleton } from './Skeleton';
 export { EmptyState } from './EmptyState';
 export { SegmentedControl, type SegmentedOption } from './SegmentedControl';
 export { ListRow, IconTile } from './ListRow';
+export {
+  ReservationCard,
+  ResourceTypeIcon,
+  type ReservationCardProps,
+  type ReservationCardRow,
+} from './ReservationCard';
