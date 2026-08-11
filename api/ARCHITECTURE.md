@@ -273,7 +273,21 @@ The bookings BC owns facility scheduling:
   lock always BEFORE the reservation lock when both are held).
 - **Time model**: UTC instants (`timestamptz`) + one venue IANA zone
   (`VENUE_TIMEZONE`); wall-clock math lives in `lib/kernel/venue-time.ts`.
-  A range counts against the local date of its start.
+  A range counts against the local date of its start. Clients read the
+  zone from `GET /api/venue` (public; the single source) and must anchor
+  date strips and "today" on it, never on the device zone.
+- **Availability self-exclusion**: `GET /api/resource-types/:code/availability`
+  accepts `excludeReservationId` so the edit flow sees its own claims as
+  free; the service releases it only to a participant of that reservation
+  (404-shaped otherwise, no id probing).
+- **Payment-intent reissue**: `POST /api/reservations/:id/payment-intent`
+  (organizer) replaces a failed/consumed secret for the hold charge while
+  `pending_payment` with a live hold, or for a live parked change delta —
+  same hold, same TTL, next `attempt` under the per-attempt idempotency
+  keys. Money is never superseded: the previous intent is retired at
+  Stripe BEFORE the replacement exists, a captured one settles through
+  confirm() and answers `alreadyPaid`, and a cancel failure that is not a
+  capture aborts the reissue (fail closed).
 - **Events BC** claims courts exclusively through `ResourceClaimPort`; it
   never writes `slot_claims` directly.
 
