@@ -12,6 +12,9 @@ import { AuthCallbackPage } from './pages/auth/AuthCallbackPage';
 import { HomePage } from './pages/home/HomePage';
 import { ReservePage } from './pages/reserve/ReservePage';
 import { BookingWizardPage } from './pages/reserve/BookingWizardPage';
+import { ReservationDetailPage } from './pages/reservations/ReservationDetailPage';
+import { EditReservationPage } from './pages/reservations/EditReservationPage';
+import { InviteParticipantsPage } from './pages/reservations/InviteParticipantsPage';
 import { AccountPage } from './pages/account/AccountPage';
 import { OnboardingGate } from './pages/onboarding/OnboardingGate';
 import { ChoosePlanPage } from './pages/onboarding/ChoosePlanPage';
@@ -59,18 +62,23 @@ export default function App() {
                 per the Figma frames (back arrow + close + progress). */}
             <Route path="/reserve/:typeCode" element={<BookingWizardPage />} />
 
+            {/* Reservation edit + invite (W4): full-screen wizard chrome,
+                outside the tab shell, mirroring the booking wizard. */}
+            <Route
+              path="/reservations/:reservationId/edit"
+              element={<EditReservationPage />}
+            />
+            <Route
+              path="/reservations/:reservationId/invite"
+              element={<InviteParticipantsPage />}
+            />
+
             <Route element={<AppShell />}>
               <Route path="/" element={<HomePage />} />
               <Route path="/reserve" element={<ReservePage />} />
               <Route
                 path="/reservations/:reservationId"
-                element={
-                  <PlaceholderPage
-                    title="Reservation"
-                    ownerPackage="W4"
-                    description="Reservation details, invitations, rescheduling, and cancellation"
-                  />
-                }
+                element={<ReservationDetailPage />}
               />
               <Route
                 path="/clubs"
