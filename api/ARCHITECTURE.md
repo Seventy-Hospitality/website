@@ -53,10 +53,18 @@ lib/
 │   │   ├── domain/               # Role matrix, invitation machine, link validity (pure)
 │   │   ├── application/          # ClubService (authz, invites, links, deletion seam)
 │   │   └── infrastructure/       # ClubRepository, ClubRosterAdapter (bookings port)
+│   ├── media/                    # Managed images: usage registry, public/private storage
+│   │   ├── domain/               # Usage specs, path scheme (public vs private), validation
+│   │   ├── application/          # MediaService (upload/normalize/encrypt/serve/cleanup)
+│   │   └── infrastructure/       # Local + S3 object storage, sharp processor, asset repo
+│   ├── account/                  # Account-deletion saga ONLY (see decisions-account.md)
+│   │   ├── domain/               # Step list, backoff, steps-map (pure)
+│   │   ├── application/          # AccountDeletionService + ports into the other BCs
+│   │   └── infrastructure/       # deletion_requests repository (lease, step progress)
 │   └── communications/
-│       ├── domain/               # Email templates (pure data)
-│       ├── application/          # NotificationService (what to send)
-│       └── infrastructure/       # EmailAdapter (Resend)
+│       ├── domain/               # Email templates (pure data), notification prefs, devices
+│       ├── application/          # NotificationService (what to send), NotificationSettingsService
+│       └── infrastructure/       # EmailAdapter (Resend), preference + device repositories
 ├── container.ts                  # Composition root
 ├── db.ts                         # Prisma singleton
 ├── auth.ts                       # Transport: cookies/headers → IAM
@@ -250,9 +258,69 @@ These are the members' own groups, not the facility's events.
 - **Account deletion seam (package E)**:
   `clubService.releaseMemberForAccountDeletion` transfers owned clubs to
   the longest-tenured remaining member (tie: member id), deletes empty
-  clubs, removes memberships and withdraws pending invitations both ways.
+  clubs, removes memberships, withdraws pending invitations both ways and
+  revokes share links the member minted.
 - All mutations append `club.*` audit/outbox events in-transaction
   (package F consumes them). Decisions: `docs/decisions-clubs.md`.
+
+## Media (managed images)
+
+One usage-parameterized pipeline (`lib/contexts/media`): a domain registry
+(`event-image | avatar | id-photo`) carries each usage's directory,
+visibility, mime/size limits, sharp normalization, cache policy, at-rest
+encryption and pending TTL. Path invariant: public assets live at
+`/uploads/<dir>/<name>` (the storage path IS the URL, served by the public
+uploads route); private assets use a bare `private/<dir>/<name>` key no
+route can serve, reachable only through their authenticated endpoint.
+`parseAssetPath` is a strict whitelist (registry directory + cuid object
+name), so traversal and prefix confusion are structurally dead. Private
+usages are encrypted in the application layer (AES-256-GCM, kernel cipher,
+`MEDIA_ENCRYPTION_KEY`, buffered and tag-verified before a byte is
+served). Uploads are `pending` until attached to an owner; the cleanup
+cron sweeps per-usage TTLs behind a compiler-enforced owner-reference
+registry, and deletes are discard -> object delete -> `purgedAt` (the
+retention proof), with a retry sweep for unconfirmed purges. Consumer BCs
+(club covers, event images, avatars, ID photos) go through usage-PINNED
+adapters wired in the container: a call wired for one usage can never
+attach or delete an asset of another.
+
+## Account surface (package E)
+
+- **Member number**: stable human-facing id (`#` + one uppercase letter,
+  I/O excluded, + five digits), random, generated at member creation,
+  unique forever (deletion keeps it on the anonymized row). Directory
+  search matches it by prefix; rosters carry it. Never an auth identifier.
+- **Profile**: displayName (member-chosen, distinct from legal names),
+  avatarUrl (media pipeline, public `avatar` usage), memberSince, and
+  lifetime activity stats computed in the bookings read side (confirmed
+  reservations as organizer; badminton_court/tennis_court families only;
+  hours = scheduled duration sums). `docs/decisions-account.md` has the
+  exact definition.
+- **Member QR**: `GET /api/me/qr` issues a 60-second HMAC token
+  (`MQR1.<payload>.<sig>`, dedicated key derivation), never the raw member
+  id; `POST /api/qr/verify` (staff) checks signature+expiry and re-reads
+  the member row, so deleted members scan as invalid.
+- **Notification preferences + push devices** live in the communications
+  BC (package F's consumers read them). Toggle upserts carry only the keys
+  present; devices are keyed on the globally-unique push token.
+- **ID verification** lives in the members BC: one row per member, pure
+  state machine (upload/replace until submitted or after rejection,
+  CAS-guarded staff review), photo in PRIVATE encrypted storage, deleted
+  on review decision and account deletion, served solely through the
+  audited staff endpoint.
+- **Account deletion** is the `account` BC: a resumable saga over
+  `deletion_requests` consuming billing/bookings/clubs/identity/members/
+  communications through container-wired ports. DELETE /api/me (policy
+  `authenticated`) requires step-up proof (password, subject-bound OAuth
+  assertion, or a session-bound emailed `reauth` token); creation
+  quiesces (freeze-stamp + revoke other sessions + kill devices; the auth
+  ladder answers 409 for every policy above `authenticated`), then the
+  ordered idempotent steps run with per-step progress, exponential
+  backoff, a worker lease, and a finalize step that commits the
+  `account.deleted` outbox event atomically with completion.
+  `/api/cron/resume-deletions` re-drives incomplete requests once the
+  user's credentials are gone. Full sequence + rationale:
+  `docs/decisions-account.md`.
 
 ## Dependency Wiring
 
@@ -439,6 +507,8 @@ verb, is the guard):
 - `/api/cron/subscription-drift` — account-wide subscription listing
   applied through the same guarded path as webhooks (replaces the old
   per-member syncFromStripe loop)
+- `/api/cron/resume-deletions` — re-drives incomplete account-deletion
+  sagas (after credential erasure the user cannot retry themselves)
 
 One-time job: `npm run job:backfill-billing-ledger` imports historical
 Stripe charges/invoices/refunds into the ledger (ledger-only, idempotent).
