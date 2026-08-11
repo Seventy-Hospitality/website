@@ -19,6 +19,7 @@ import {
 import { Button, EmptyState, FullScreenLoader, useToast } from '../../components';
 import { membershipQuery } from '../onboarding/onboarding-data';
 import { isEntitledMembershipStatus, resourceTypesQuery } from './booking-data';
+import { createHoldSession, type HoldSession } from './hold-session';
 import { MembershipInactiveState } from './MembershipInactiveState';
 import { SelectTimeStep } from './SelectTimeStep';
 import { InvitePlayersStep } from './InvitePlayersStep';
@@ -65,13 +66,26 @@ export function BookingWizardPage() {
   const [inviteMoreSelection, setInviteMoreSelection] =
     useState<InviteSelection>(EMPTY_INVITE_SELECTION);
 
-  /** The live checkout hold; released when the user backs out of paying. */
-  const heldIdRef = useRef<string | null>(null);
-  /** Mirrors `step` for callbacks that fire after a step change. */
-  const stepRef = useRef<WizardStep>(step);
-  useEffect(() => {
-    stepRef.current = step;
-  }, [step]);
+  /**
+   * Mirrors the hold session's payment lock: while a submitted payment may
+   * have captured, the wizard chrome (Back/Close) is disabled so no path
+   * can cancel-and-forfeit a paid hold.
+   */
+  const [paymentLocked, setPaymentLocked] = useState(false);
+
+  /**
+   * The checkout hold lifecycle (attempt tokens, back-out release, payment
+   * lock). All hold-affecting paths go through this one session; the rules
+   * live in hold-session.ts. Created once per wizard mount.
+   */
+  const [holdSession] = useState<HoldSession>(() =>
+    createHoldSession({
+      // Fire and forget: releasing early is a courtesy, the hold TTL is
+      // the backstop. Errors (already expired/cancelled) are fine.
+      cancel: (id) => void api.cancelReservation(id).catch(() => undefined),
+      onLockChange: setPaymentLocked,
+    }),
+  );
 
   // Step changes move focus to the heading so keyboard and screen-reader
   // users land at the top of the new step.
@@ -80,53 +94,34 @@ export function BookingWizardPage() {
     headingRef.current?.focus({ preventScroll: false });
   }, [step, inviteMore, confirmed]);
 
-  const releaseHold = useCallback(() => {
-    const id = heldIdRef.current;
-    heldIdRef.current = null;
-    // Fire and forget: releasing early is a courtesy, the hold TTL is the
-    // backstop. Errors (already expired/cancelled) are fine.
-    if (id) void api.cancelReservation(id).catch(() => undefined);
-  }, []);
-
-  const handleHoldCreated = useCallback((id: string) => {
-    const previous = heldIdRef.current;
-    if (previous && previous !== id) {
-      // A stale hold from an earlier checkout entry; free it.
-      void api.cancelReservation(previous).catch(() => undefined);
-    }
-    if (stepRef.current !== 3) {
-      // The member backed out of checkout while the hold request was in
-      // flight; release it immediately instead of squatting the slot.
-      heldIdRef.current = null;
-      void api.cancelReservation(id).catch(() => undefined);
-      return;
-    }
-    heldIdRef.current = id;
-  }, []);
-
   // Leaving the wizard by any route (browser back included) releases a
-  // still-pending hold instead of squatting the slot for the TTL.
-  useEffect(() => releaseHold, [releaseHold]);
+  // still-pending hold instead of squatting the slot for the TTL. If the
+  // create is still in flight, releasing invalidates the live attempt, so
+  // the hold cancels itself the moment it lands.
+  useEffect(() => () => holdSession.release(), [holdSession]);
 
   const closeWizard = useCallback(() => {
-    releaseHold();
+    // The chrome is disabled while a submitted payment may have captured,
+    // but guard anyway: never client-cancel a possibly-paid hold.
+    if (holdSession.paymentLocked) return;
+    holdSession.release();
     navigate('/reserve');
-  }, [releaseHold, navigate]);
+  }, [holdSession, navigate]);
 
   const backToTimeStep = useCallback(
     (message: string | null) => {
-      releaseHold();
+      holdSession.release();
       void queryClient.invalidateQueries({ queryKey: ['availability', typeCode] });
       setNotice(message);
       setSlots([]);
       setStep(1);
     },
-    [releaseHold, queryClient, typeCode, setNotice, setSlots, setStep],
+    [holdSession, queryClient, typeCode, setNotice, setSlots, setStep],
   );
 
   const handleConfirmed = useCallback(
     (reservation: Reservation) => {
-      heldIdRef.current = null;
+      holdSession.settle();
       // Cache-write before the confirmation renders its navigation: the
       // reservation detail route (W4) resolves instantly from cache.
       queryClient.setQueryData(['reservations', reservation.id], {
@@ -146,7 +141,7 @@ export function BookingWizardPage() {
       void queryClient.invalidateQueries({ queryKey: ['availability', typeCode] });
       setConfirmed(reservation);
     },
-    [queryClient, typeCode],
+    [holdSession, queryClient, typeCode],
   );
 
   const inviteMoreMutation = useMutation({
@@ -263,7 +258,7 @@ export function BookingWizardPage() {
             setDate(reservation.date);
             setSlots(slotsFromRange(reservation.startTime, reservation.endTime, type.slotDurationMinutes));
           }
-          heldIdRef.current = null;
+          holdSession.settle();
           setNotice(
             'Your payment was not completed and the held time was released. Pick your time to try again.',
           );
@@ -271,7 +266,7 @@ export function BookingWizardPage() {
         }}
         onHoldExpired={() => {
           clearResumeParams();
-          heldIdRef.current = null;
+          holdSession.settle();
           backToTimeStep(
             'Your booking hold expired before the payment completed. If you were charged, the amount is refunded automatically.',
           );
@@ -336,14 +331,22 @@ export function BookingWizardPage() {
     } else if (step === 2) {
       setStep(1);
     } else {
+      // Unreachable while a submitted payment may have captured (the
+      // chrome is disabled then), but guard regardless: money first.
+      if (holdSession.paymentLocked) return;
       // Leaving checkout abandons the hold; the slot frees up for others.
-      releaseHold();
+      holdSession.release();
       setStep(2);
     }
   };
 
   return (
-    <WizardFrame onBack={goBack} onClose={closeWizard} step={step}>
+    <WizardFrame
+      onBack={goBack}
+      onClose={closeWizard}
+      step={step}
+      chromeDisabled={paymentLocked}
+    >
       {step === 1 && (
         <SelectTimeStep
           headingRef={headingRef}
@@ -379,7 +382,9 @@ export function BookingWizardPage() {
           date={date}
           slots={slots}
           invites={invites}
-          onHoldCreated={handleHoldCreated}
+          beginHoldAttempt={() => holdSession.beginAttempt()}
+          onHoldCreated={(id, attempt) => holdSession.holdCreated(id, attempt)}
+          onPaymentLock={(locked) => holdSession.setPaymentLocked(locked)}
           onConfirmed={handleConfirmed}
           onPickAnotherTime={backToTimeStep}
         />
@@ -391,23 +396,33 @@ export function BookingWizardPage() {
 /**
  * The wizard chrome: back arrow, close, and the 3-segment progress bar
  * (hidden on frame-level states that are not one of the steps).
+ * `chromeDisabled` turns Back/Close off while a submitted payment may have
+ * captured: leaving then would client-cancel a hold the member paid for.
  */
 function WizardFrame({
   onBack,
   onClose,
   step,
+  chromeDisabled = false,
   children,
 }: {
   onBack: () => void;
   onClose: () => void;
   step?: WizardStep;
+  chromeDisabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div className={styles.page}>
       <div className={styles.column}>
         <header className={styles.chrome}>
-          <button type="button" className={styles.chromeButton} onClick={onBack} aria-label="Back">
+          <button
+            type="button"
+            className={styles.chromeButton}
+            onClick={onBack}
+            aria-label="Back"
+            disabled={chromeDisabled}
+          >
             <ArrowLeft aria-hidden />
           </button>
           <button
@@ -415,6 +430,7 @@ function WizardFrame({
             className={styles.chromeButton}
             onClick={onClose}
             aria-label="Close booking"
+            disabled={chromeDisabled}
           >
             <X aria-hidden />
           </button>

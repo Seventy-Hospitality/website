@@ -133,7 +133,10 @@ function renderCheckout() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
 
-  const onHoldCreated = vi.fn<(id: string) => void>();
+  let attempts = 0;
+  const beginHoldAttempt = vi.fn(() => ++attempts);
+  const onHoldCreated = vi.fn<(id: string, attempt: number) => void>();
+  const onPaymentLock = vi.fn<(locked: boolean) => void>();
   const onConfirmed = vi.fn<(reservation: Reservation) => void>();
   const onPickAnotherTime = vi.fn<(message: string | null) => void>();
 
@@ -145,14 +148,16 @@ function renderCheckout() {
         date="2026-07-06"
         slots={['21:30', '22:00', '22:30', '23:00']}
         invites={EMPTY_INVITE_SELECTION}
+        beginHoldAttempt={beginHoldAttempt}
         onHoldCreated={onHoldCreated}
+        onPaymentLock={onPaymentLock}
         onConfirmed={onConfirmed}
         onPickAnotherTime={onPickAnotherTime}
       />
     </QueryClientProvider>,
   );
 
-  return { onHoldCreated, onConfirmed, onPickAnotherTime };
+  return { beginHoldAttempt, onHoldCreated, onPaymentLock, onConfirmed, onPickAnotherTime };
 }
 
 beforeEach(() => {
@@ -169,7 +174,9 @@ describe('CheckoutStep hold + pay + confirm', () => {
     expect(await screen.findByText('Court 1')).toBeInTheDocument();
     expect(screen.getByText('$120.00')).toBeInTheDocument();
 
-    await waitFor(() => expect(onHoldCreated).toHaveBeenCalledWith('res1'));
+    // The hold is reported with the attempt token from beginHoldAttempt,
+    // so the wizard can tell live holds from orphaned late resolutions.
+    await waitFor(() => expect(onHoldCreated).toHaveBeenCalledWith('res1', 1));
     expect(createReservation).toHaveBeenCalledTimes(1);
     expect(createReservation.mock.calls[0][0]).toEqual({
       typeCode: 'badminton_court',
@@ -290,5 +297,100 @@ describe('CheckoutStep hold + pay + confirm', () => {
     expect(await screen.findByText('Payments are not configured')).toBeInTheDocument();
     expect(quoteReservation).not.toHaveBeenCalled();
     expect(createReservation).not.toHaveBeenCalled();
+  });
+});
+
+describe('CheckoutStep payment lock', () => {
+  it('locks at submit and unlocks on a definitive decline', async () => {
+    confirmPayment.mockResolvedValue({
+      error: { type: 'card_error', message: 'Your card was declined.' },
+    });
+    const { onPaymentLock } = renderCheckout();
+
+    await userEvent.click(await screen.findByRole('button', { name: /Confirm & pay/ }));
+
+    expect(await screen.findByText('Your card was declined.')).toBeInTheDocument();
+    // Declines put the intent back to requires_payment_method: nothing
+    // captured, so the wizard may release the hold again.
+    expect(onPaymentLock.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('keeps the lock held when the charge outcome is unknown', async () => {
+    confirmPayment.mockResolvedValue({ error: { type: 'api_connection_error' } });
+    const { onPaymentLock } = renderCheckout();
+
+    await userEvent.click(await screen.findByRole('button', { name: /Confirm & pay/ }));
+
+    expect(
+      await screen.findByText('Payment failed. Please check your details and try again.'),
+    ).toBeInTheDocument();
+    expect(onPaymentLock).toHaveBeenCalledWith(true);
+    expect(onPaymentLock).not.toHaveBeenCalledWith(false);
+  });
+
+  it('keeps the lock held while a captured payment waits on a confirm retry', async () => {
+    confirmPayment.mockResolvedValue({});
+    confirmReservation.mockRejectedValue(new ApiError('UNKNOWN', 'boom', 500));
+    const { onPaymentLock } = renderCheckout();
+
+    await userEvent.click(await screen.findByRole('button', { name: /Confirm & pay/ }));
+
+    expect(await screen.findByText(/we could not confirm your booking/)).toBeInTheDocument();
+    // The charge went through: no path may unlock (and thereby let the
+    // wizard cancel the paid hold) until confirm succeeds.
+    expect(onPaymentLock.mock.calls).toEqual([[true]]);
+  });
+});
+
+describe('CheckoutStep processing takeover', () => {
+  it('is a modal dialog that takes focus while the payment settles', async () => {
+    let finishPayment!: (value: { error?: { type: string } }) => void;
+    confirmPayment.mockImplementation(
+      () => new Promise<{ error?: { type: string } }>((resolve) => {
+        finishPayment = resolve;
+      }),
+    );
+    confirmReservation.mockResolvedValue(CONFIRMED);
+    const { onConfirmed } = renderCheckout();
+
+    await userEvent.click(await screen.findByRole('button', { name: /Confirm & pay/ }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Processing your booking');
+    // Focus moves into the takeover, so Tab cannot reach the wizard
+    // chrome behind it and cancel a hold whose payment just went through.
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    finishPayment({});
+    await waitFor(() => expect(onConfirmed).toHaveBeenCalled());
+  });
+});
+
+describe('CheckoutStep hold countdown announcements', () => {
+  it('ticks visually without a live region and announces the base message once', async () => {
+    renderCheckout();
+
+    const timer = await screen.findByText(/is held for you for/);
+    // The per-second timer must NOT be a live region: role=status would
+    // re-announce the whole sentence every second for the entire hold.
+    expect(timer.closest('[role="status"]')).toBeNull();
+
+    const announcer = screen.getByRole('status');
+    expect(announcer).toHaveTextContent(
+      'Court 1 is held for you while you complete payment.',
+    );
+    expect(announcer.textContent).not.toMatch(/\d+:\d\d/);
+  });
+
+  it('announces the 2-minute milestone instead of per-second ticks', async () => {
+    createReservation.mockResolvedValue(
+      heldResult({ holdExpiresAt: new Date(Date.now() + 90_000).toISOString() }),
+    );
+    renderCheckout();
+
+    await screen.findByText(/is held for you for/);
+    const announcer = screen.getByRole('status');
+    expect(announcer).toHaveTextContent(/less than 2 minutes/);
+    expect(announcer.textContent).not.toMatch(/\d+:\d\d/);
   });
 });

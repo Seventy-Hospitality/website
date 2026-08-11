@@ -131,6 +131,13 @@ Stripe Elements only (`StripeProvider` + Payment Element with the shared
 `stripeAppearance`); client secrets come from the billing API. No card
 data ever touches our code (SAQ A).
 
+Booking checkout holds: every hold-affecting path goes through the wizard's
+hold session (`src/pages/reserve/hold-session.ts`). Its two invariants:
+out-of-order create responses never cancel the live hold, and a hold whose
+payment was submitted is never client-cancelled (backend cancel of a paid
+hold refunds at the policy percent, 0% near start time). While that payment
+lock is held the wizard chrome (Back/Close) is disabled.
+
 ## Quality bar
 
 - `npm run build` (type-check + bundle), `npm run lint`, and `npm test`

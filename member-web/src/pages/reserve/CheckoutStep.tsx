@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type Ref } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
 import { Clock } from 'lucide-react';
@@ -56,7 +56,11 @@ export interface CheckoutStepProps {
   date: string;
   slots: string[];
   invites: InviteSelection;
-  onHoldCreated: (reservationId: string) => void;
+  /** Names a create attempt so the wizard can tell live holds from orphans. */
+  beginHoldAttempt: () => number;
+  onHoldCreated: (reservationId: string, attempt: number) => void;
+  /** True from payment submit until the charge is known NOT captured. */
+  onPaymentLock: (locked: boolean) => void;
   onConfirmed: (reservation: Reservation) => void;
   /** Slot taken / hold expired: release and return to the time step. */
   onPickAnotherTime: (message: string | null) => void;
@@ -68,7 +72,9 @@ export function CheckoutStep({
   date,
   slots,
   invites,
+  beginHoldAttempt,
   onHoldCreated,
+  onPaymentLock,
   onConfirmed,
   onPickAnotherTime,
 }: CheckoutStepProps) {
@@ -83,10 +89,14 @@ export function CheckoutStep({
   const create = useMutation({
     // The hold is reported from inside mutationFn, not onSuccess: the
     // request outlives this step if the member backs out mid-flight, and
-    // the wizard must learn about the hold to release it either way.
+    // the wizard must learn about the hold to release it either way. The
+    // attempt token lets the wizard tell whether the hold that lands is
+    // still the live one or an orphan to cancel (creates can resolve out
+    // of order across checkout entries).
     mutationFn: async (input: Parameters<typeof api.createReservation>[0]) => {
+      const attempt = beginHoldAttempt();
       const result = await api.createReservation(input);
-      onHoldCreated(result.reservation.id);
+      onHoldCreated(result.reservation.id, attempt);
       return result;
     },
   });
@@ -292,17 +302,25 @@ export function CheckoutStep({
           totalCents={held.totalCents}
         />
         {holdSecondsLeft !== null && (
-          <p
-            className={[
-              styles.holdHint,
-              holdSecondsLeft <= HOLD_WARNING_SECONDS ? styles.holdHintUrgent : '',
-            ].join(' ')}
-            role="status"
-          >
-            <Clock aria-hidden className={styles.holdHintIcon} />
-            {reservation.resource.name} is held for you for{' '}
-            <strong>{formatCountdown(holdSecondsLeft)}</strong>
-          </p>
+          <>
+            {/* The visible timer is NOT a live region: a per-second tick
+                in role=status would re-announce the whole sentence every
+                second for the entire hold, burying the payment form for
+                screen-reader users. Milestones are announced below. */}
+            <p
+              className={[
+                styles.holdHint,
+                holdSecondsLeft <= HOLD_WARNING_SECONDS ? styles.holdHintUrgent : '',
+              ].join(' ')}
+            >
+              <Clock aria-hidden className={styles.holdHintIcon} />
+              {reservation.resource.name} is held for you for{' '}
+              <strong>{formatCountdown(holdSecondsLeft)}</strong>
+            </p>
+            <p className="visually-hidden" role="status">
+              {holdAnnouncement(reservation.resource.name, holdSecondsLeft)}
+            </p>
+          </>
         )}
       </div>
 
@@ -315,6 +333,7 @@ export function CheckoutStep({
             onRetryConfirm={() => void handlePaid()}
             paying={paying}
             setPaying={setPaying}
+            onPaymentLock={onPaymentLock}
             onPaid={handlePaid}
             totalCents={held.totalCents}
           />
@@ -376,6 +395,7 @@ function BookingPaymentForm({
   onRetryConfirm,
   paying,
   setPaying,
+  onPaymentLock,
   onPaid,
   totalCents,
 }: {
@@ -385,6 +405,7 @@ function BookingPaymentForm({
   onRetryConfirm: () => void;
   paying: boolean;
   setPaying: (paying: boolean) => void;
+  onPaymentLock: (locked: boolean) => void;
   onPaid: () => Promise<void>;
   totalCents: number;
 }) {
@@ -398,6 +419,11 @@ function BookingPaymentForm({
     if (!stripe || !elements || paying) return;
     setPaying(true);
     setPayError(null);
+    // From here the charge may capture at Stripe. The wizard must not let
+    // Back/Close cancel the hold until the payment is known to have
+    // failed: a backend cancel of a paid hold settles the charge and
+    // refunds at the cancellation-policy percent (0% near start time).
+    onPaymentLock(true);
     try {
       const { error } = await stripe.confirmPayment({
         elements,
@@ -407,13 +433,18 @@ function BookingPaymentForm({
         redirect: 'if_required',
       });
       if (error) {
-        // Decline path: the hold stays live until its TTL, and retrying
-        // reuses the same PaymentIntent, so a retry can never double-charge.
-        setPayError(
-          error.type === 'card_error' || error.type === 'validation_error'
-            ? (error.message ?? 'Your payment could not be completed.')
-            : 'Payment failed. Please check your details and try again.',
-        );
+        if (error.type === 'card_error' || error.type === 'validation_error') {
+          // Definitive decline: nothing captured, the intent is back to
+          // requires_payment_method, so backing out may release the hold
+          // again. The hold stays live until its TTL, and retrying reuses
+          // the same PaymentIntent, so a retry can never double-charge.
+          onPaymentLock(false);
+          setPayError(error.message ?? 'Your payment could not be completed.');
+        } else {
+          // Ambiguous failure (network and the like): the charge state is
+          // unknown, so the lock stays on and the member retries here.
+          setPayError('Payment failed. Please check your details and try again.');
+        }
         return;
       }
       await onPaid();
@@ -469,19 +500,47 @@ function BookingPaymentForm({
 /**
  * Full-screen processing takeover (Figma loading-state 7:2845): shown
  * while the payment confirms and the hold flips to a confirmed booking.
+ *
+ * A native modal <dialog> (the Sheet pattern): focus moves into the top
+ * layer and the page behind it goes inert, so keyboard/screen-reader users
+ * cannot reach the wizard chrome and cancel a hold whose payment just
+ * went through. Escape is swallowed: there is nothing safe to go back to
+ * while the payment settles.
  */
 function ProcessingScreen({ resourceName, noun }: { resourceName?: string; noun: string }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) dialog.showModal();
+    // The dialog has no focusable content, so move focus onto it
+    // explicitly; the takeover is then announced via its label.
+    if (!dialog.contains(document.activeElement)) dialog.focus();
+    return () => dialog.close();
+  }, []);
+
   return (
-    <div className={styles.processingScreen} role="status">
+    <dialog
+      ref={dialogRef}
+      className={styles.processingScreen}
+      aria-labelledby={titleId}
+      aria-busy="true"
+      tabIndex={-1}
+      onCancel={(event) => event.preventDefault()}
+    >
       <Spinner size={40} />
-      <p className={styles.processingScreenTitle}>Processing your booking...</p>
+      <p id={titleId} className={styles.processingScreenTitle}>
+        Processing your booking...
+      </p>
       <p className={styles.processingScreenBody}>
         {resourceName
           ? `We're securing your spot on ${resourceName}`
           : `We're securing your ${noun}`}
       </p>
       <p className={styles.processingScreenNote}>Please do not close this page or refresh</p>
-    </div>
+    </dialog>
   );
 }
 
@@ -666,6 +725,22 @@ function formatCountdown(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
   return `${minutes}:${String(rest).padStart(2, '0')}`;
+}
+
+/**
+ * The screen-reader countdown: the text changes only at the 2-minute and
+ * 1-minute marks, so the role=status region announces milestones, never
+ * the per-second tick.
+ */
+function holdAnnouncement(resourceName: string, secondsLeft: number): string {
+  if (secondsLeft <= 0) return '';
+  if (secondsLeft <= 60) {
+    return `${resourceName} is held for less than a minute. Finish paying to keep it.`;
+  }
+  if (secondsLeft <= HOLD_WARNING_SECONDS) {
+    return `${resourceName} is held for less than ${HOLD_WARNING_SECONDS / 60} minutes. Finish paying to keep it.`;
+  }
+  return `${resourceName} is held for you while you complete payment.`;
 }
 
 /** Seconds until the ISO instant, ticking every second; null without one. */

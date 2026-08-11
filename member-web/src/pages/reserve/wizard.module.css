@@ -66,8 +66,15 @@
   cursor: pointer;
 }
 
-.chromeButton:hover {
+.chromeButton:hover:not(:disabled) {
   background: var(--color-surface-overlay);
+}
+
+/* Disabled while a submitted payment may have captured (leaving would
+   cancel a hold the member paid for). */
+.chromeButton:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .chromeButton > svg {
@@ -582,10 +589,17 @@
   color: var(--color-text-muted);
 }
 
-/* Full-screen processing takeover (Figma loading-state 7:2845). */
+/* Full-screen processing takeover (Figma loading-state 7:2845). A native
+   modal <dialog>: reset the UA dialog box so it fills the viewport. */
 .processingScreen {
   position: fixed;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: none;
   z-index: var(--z-sheet);
   display: flex;
   flex-direction: column;
@@ -594,7 +608,18 @@
   gap: var(--space-sm);
   padding: var(--space-lg) var(--gutter);
   background: var(--color-bg);
+  color: var(--color-text);
   text-align: center;
+}
+
+.processingScreen:not([open]) {
+  display: none;
+}
+
+/* The dialog itself takes focus (nothing inside is interactive); the
+   takeover needs no visible ring on its full-screen surface. */
+.processingScreen:focus {
+  outline: none;
 }
 
 .processingScreenTitle {

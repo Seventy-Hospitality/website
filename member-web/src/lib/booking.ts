@@ -63,6 +63,12 @@ export function dateKeyToDate(key: string): Date {
   return new Date(year, month - 1, day, 12, 0, 0, 0);
 }
 
+/**
+ * Known gap: this is DEVICE-local today, but the backend defines "today"
+ * and the booking horizon in VENUE_TIMEZONE, which the API does not expose
+ * yet. Near a date boundary a traveling member's date strip is off by one
+ * day; see docs/w3-booking-notes.md for the backend follow-up.
+ */
 export function todayDateKey(now: Date = new Date()): string {
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
