@@ -37,6 +37,26 @@ half-build a neighbor's page.
   `useSession()`, refresh it with `refreshSession()` after anything that
   changes the Principal (auth, onboarding completion, email verification).
 
+## Shared reservation surface (set by W3)
+
+W2 (home) and W4 (reservation detail) render the same serialized
+reservation shapes the booking flow consumes. Reuse, do not redefine:
+
+- Types: `Reservation`, `ReservationParticipant`, `AvailabilityDay`,
+  `ResourceTypeSummary`, `MemberSearchResult`, club summaries, in the
+  booking section of `src/lib/api.ts`.
+- Slot math + labels: `src/lib/booking.ts` (venue wall-clock "HH:MM"
+  helpers, `formatTimeRangeCompact`, `formatDuration`, `bookingRefLabel`,
+  date-key helpers). Invite chips: `src/lib/invites.ts`.
+- Components: `ReservationCard` and `ResourceTypeIcon` from
+  `src/components` (the checkout/confirmation cards; home cards and the
+  W4 detail header are the same surface).
+- Query keys: `['reservations', id]` (`reservationQuery` in
+  `src/pages/reserve/booking-data.ts`), `['availability', typeCode,
+  date]`, `['resource-types']`, `['clubs']`. Booking mutations invalidate
+  the `['reservations']`, `['home']`, and `['availability', typeCode]`
+  prefixes; do the same for reservation-changing mutations in W4.
+
 ## Loading / error / empty states are first-class
 
 The Figma omits them; we do not. Every screen ships all three:

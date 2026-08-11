@@ -81,9 +81,13 @@ export function CheckoutStep({
   });
 
   const create = useMutation({
-    mutationFn: api.createReservation,
-    onSuccess: (result) => {
+    // The hold is reported from inside mutationFn, not onSuccess: the
+    // request outlives this step if the member backs out mid-flight, and
+    // the wizard must learn about the hold to release it either way.
+    mutationFn: async (input: Parameters<typeof api.createReservation>[0]) => {
+      const result = await api.createReservation(input);
       onHoldCreated(result.reservation.id);
+      return result;
     },
   });
 

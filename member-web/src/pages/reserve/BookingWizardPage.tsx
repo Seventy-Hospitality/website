@@ -67,6 +67,11 @@ export function BookingWizardPage() {
 
   /** The live checkout hold; released when the user backs out of paying. */
   const heldIdRef = useRef<string | null>(null);
+  /** Mirrors `step` for callbacks that fire after a step change. */
+  const stepRef = useRef<WizardStep>(step);
+  useEffect(() => {
+    stepRef.current = step;
+  }, [step]);
 
   // Step changes move focus to the heading so keyboard and screen-reader
   // users land at the top of the new step.
@@ -81,6 +86,22 @@ export function BookingWizardPage() {
     // Fire and forget: releasing early is a courtesy, the hold TTL is the
     // backstop. Errors (already expired/cancelled) are fine.
     if (id) void api.cancelReservation(id).catch(() => undefined);
+  }, []);
+
+  const handleHoldCreated = useCallback((id: string) => {
+    const previous = heldIdRef.current;
+    if (previous && previous !== id) {
+      // A stale hold from an earlier checkout entry; free it.
+      void api.cancelReservation(previous).catch(() => undefined);
+    }
+    if (stepRef.current !== 3) {
+      // The member backed out of checkout while the hold request was in
+      // flight; release it immediately instead of squatting the slot.
+      heldIdRef.current = null;
+      void api.cancelReservation(id).catch(() => undefined);
+      return;
+    }
+    heldIdRef.current = id;
   }, []);
 
   // Leaving the wizard by any route (browser back included) releases a
@@ -358,9 +379,7 @@ export function BookingWizardPage() {
           date={date}
           slots={slots}
           invites={invites}
-          onHoldCreated={(id) => {
-            heldIdRef.current = id;
-          }}
+          onHoldCreated={handleHoldCreated}
           onConfirmed={handleConfirmed}
           onPickAnotherTime={backToTimeStep}
         />

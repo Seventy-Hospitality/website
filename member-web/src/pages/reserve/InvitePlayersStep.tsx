@@ -226,7 +226,7 @@ function ClubRow({
   added,
   onAdd,
 }: {
-  club: InviteClub & { memberCount: number };
+  club: InviteClub;
   added: boolean;
   onAdd: () => void;
 }) {
