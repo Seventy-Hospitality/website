@@ -1449,7 +1449,7 @@ describe('ReservationService.reissuePaymentIntent', () => {
     expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
   });
 
-  it('voids the replacement and reports the truth when the reservation resolved mid-reissue', async () => {
+  it('abandons the replacement WITHOUT canceling it when the reservation resolved mid-reissue', async () => {
     const reservationRepo = mockReservationRepo();
     const paymentPort = mockPaymentPort();
     (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
@@ -1465,9 +1465,138 @@ describe('ReservationService.reissuePaymentIntent', () => {
     await expect(
       service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
     ).rejects.toThrow(InvalidReservationStatusError);
-    // The replacement's secret never left the server; it is voided.
-    expect(paymentPort.cancelPaymentIntent).toHaveBeenNthCalledWith(2, 'pi_new');
+    // The per-attempt idempotency key is shared by construction, so a CAS
+    // loser can never prove it exclusively owns the replacement: canceling
+    // could kill the very intent a concurrent racer just recorded. The
+    // only cancel is the retire of the previous intent; the unrecorded
+    // replacement (no funds, secret never disclosed) is left inert.
+    expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledTimes(1);
+    expect(paymentPort.cancelPaymentIntent).toHaveBeenCalledWith('pi_1');
     expect(reservationRepo.addPayment).not.toHaveBeenCalled();
+  });
+
+  /** The committed state a concurrent winning reissue leaves behind: the
+   *  previous row failed, a new pending row recording pi_new (the SAME
+   *  intent the loser minted, via the shared per-attempt idempotency key). */
+  function holdWinnerDetail() {
+    return pendingHoldDetail({
+      payments: [
+        paymentRow({ status: 'failed' }),
+        paymentRow({
+          id: 'pay_2w',
+          stripePaymentIntentId: 'pi_new',
+          status: 'pending',
+          createdAt: new Date(NOW.getTime() + 500),
+        }),
+      ],
+    });
+  }
+
+  it('CONCURRENT DOUBLE-REISSUE: the CAS loser adopts the recorded twin of its own intent instead of canceling it', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    const audit = mockAudit();
+    const winner = holdWinnerDetail();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(pendingHoldDetail()) // getOwn (pre-race read)
+      .mockResolvedValue(winner); // in-tx fresh + adopted re-read
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new', // idempotent replay of the winner's mint
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort, audit });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    // Both callers of the double-tap get the same working secret.
+    expect(result).toMatchObject({
+      purpose: 'hold',
+      amountCents: 2000,
+      clientSecret: 'pi_new_secret',
+      alreadyPaid: false,
+    });
+    expect(result.expiresAt).toEqual(winner.claim!.expiresAt);
+    // The winner's live, recorded intent is NEVER canceled; the only
+    // cancel is the shared retire of the previous intent.
+    expect(
+      (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mock.calls.map(([id]) => id),
+    ).toEqual(['pi_1']);
+    // The loser writes nothing: the winner's transaction already did.
+    expect(reservationRepo.addPayment).not.toHaveBeenCalled();
+    expect(auditEventTypes(audit)).not.toContain('reservation.payment_intent_reissued');
+  });
+
+  it('adoption re-verifies with Stripe: a shared intent a third reissue retired meanwhile is a conflict, never a dead secret', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(pendingHoldDetail())
+      .mockResolvedValue(holdWinnerDetail());
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockImplementation(
+      async (id: string) => (id === 'pi_new' ? 'canceled' : 'requires_payment'),
+    );
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new',
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
+    ).rejects.toThrow(ReservationChangedError);
+    expect(
+      (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mock.calls.map(([id]) => id),
+    ).toEqual(['pi_1']);
+  });
+
+  it('NO DOUBLE CHARGE: an adopted intent that already captured settles as alreadyPaid through confirm', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(pendingHoldDetail())
+      .mockResolvedValue(holdWinnerDetail());
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockImplementation(
+      async (id: string) => (id === 'pi_new' ? 'succeeded' : 'requires_payment'),
+    );
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new',
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    expect(result.alreadyPaid).toBe(true);
+    expect(result.clientSecret).toBeNull();
+    expect(reservationRepo.confirmFrom).toHaveBeenCalled(); // settled, never re-charged
+    expect(
+      (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mock.calls.map(([id]) => id),
+    ).toEqual(['pi_1']);
+  });
+
+  it('treats a cancel refused because the intent is already canceled as retired and proceeds', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>).mockResolvedValue(pendingHoldDetail());
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('requires_payment') // pre-cancel check
+      .mockResolvedValueOnce('canceled'); // re-check after the refused cancel
+    (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('payment_intent_unexpected_state'),
+    );
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new',
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    // A concurrent flow beat us to the cancel: uncapturable is all the
+    // invariant needs, so the reissue completes instead of failing closed.
+    expect(result).toMatchObject({ clientSecret: 'pi_new_secret', alreadyPaid: false });
+    expect(reservationRepo.addPayment).toHaveBeenCalled();
   });
 
   it('is organizer-only (404-shaped for everyone else)', async () => {
@@ -1591,6 +1720,104 @@ describe('ReservationService.reissuePaymentIntent', () => {
       service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
     ).rejects.toThrow(ReservationChangedError);
     expect(paymentPort.createPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  /** Pre-race read of a live parked change awaiting its delta charge. */
+  function changeDetail() {
+    return detailFixture({
+      status: 'confirmed',
+      payments: [paymentRow(), deltaChargeRow()],
+      pendingChange: pendingChangeFixture(),
+    });
+  }
+
+  it('CONCURRENT DOUBLE-REISSUE (change delta): the CAS loser adopts the recorded twin of its own intent', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    // The winner's committed state: old delta row failed, new row pay_3
+    // recording pi_new (the loser's own mint, via the shared key), and the
+    // same parked change repointed at it.
+    const winner = detailFixture({
+      status: 'confirmed',
+      payments: [
+        paymentRow(),
+        deltaChargeRow({ status: 'failed' }),
+        paymentRow({
+          id: 'pay_3',
+          amountCents: 1000,
+          stripePaymentIntentId: 'pi_new',
+          status: 'pending',
+          createdAt: new Date(NOW.getTime() + 2000),
+        }),
+      ],
+      pendingChange: pendingChangeFixture({ chargePaymentId: 'pay_3' }),
+    });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(changeDetail()) // getOwn (pre-race read)
+      .mockResolvedValue(winner); // in-tx fresh + adopted re-read
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new',
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    const result = await service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW });
+
+    expect(result).toMatchObject({
+      purpose: 'change_delta',
+      amountCents: 1000,
+      clientSecret: 'pi_new_secret',
+      alreadyPaid: false,
+    });
+    // Only the shared retire of the previous delta intent; the winner's
+    // recorded intent is never canceled, and the loser writes nothing.
+    expect(
+      (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mock.calls.map(([id]) => id),
+    ).toEqual(['pi_2']);
+    expect(reservationRepo.addPayment).not.toHaveBeenCalled();
+    expect(reservationRepo.setPendingChangeCharge).not.toHaveBeenCalled();
+  });
+
+  it('change-delta CAS loss to a FOREIGN write abandons the replacement without canceling it', async () => {
+    const reservationRepo = mockReservationRepo();
+    const paymentPort = mockPaymentPort();
+    // A new PATCH superseded the parked change entirely: different change
+    // id, its charge row recording someone else's intent.
+    const superseded = detailFixture({
+      status: 'confirmed',
+      payments: [
+        paymentRow(),
+        deltaChargeRow({ status: 'failed' }),
+        paymentRow({
+          id: 'pay_9',
+          amountCents: 1500,
+          stripePaymentIntentId: 'pi_other',
+          status: 'pending',
+          createdAt: new Date(NOW.getTime() + 2000),
+        }),
+      ],
+      pendingChange: pendingChangeFixture({ id: 'pc_2', chargePaymentId: 'pay_9', deltaCents: 1500 }),
+    });
+    (reservationRepo.getDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(changeDetail())
+      .mockResolvedValue(superseded);
+    (paymentPort.getPaymentStatus as ReturnType<typeof vi.fn>).mockResolvedValue('requires_payment');
+    (paymentPort.createPaymentIntent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      paymentIntentId: 'pi_new',
+      clientSecret: 'pi_new_secret',
+    });
+    const { service } = buildService({ reservationRepo, paymentPort });
+
+    await expect(
+      service.reissuePaymentIntent('rsv_1', { memberId: 'mem_1', now: NOW }),
+    ).rejects.toThrow(ReservationChangedError);
+    // pi_new may be shared with a flow that recorded it (or is about to):
+    // never canceled. Only the retire of the previous delta intent ran.
+    expect(
+      (paymentPort.cancelPaymentIntent as ReturnType<typeof vi.fn>).mock.calls.map(([id]) => id),
+    ).toEqual(['pi_2']);
+    expect(reservationRepo.setPendingChangeCharge).not.toHaveBeenCalled();
   });
 });
 

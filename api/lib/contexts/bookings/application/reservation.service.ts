@@ -651,11 +651,25 @@ export class ReservationService {
    * the same debt; a previous intent that turns out CAPTURED — up front,
    * or discovered when Stripe refuses the cancel — is settled through the
    * normal confirm path and reported `alreadyPaid` instead of re-charged.
-   * A cancel failure that is not a capture aborts the reissue entirely
+   * A cancel failure that reveals the intent already canceled counts as
+   * retired; any other non-capture failure aborts the reissue entirely
    * (fail closed: no replacement while the old intent might still be
    * live). The row swap is CAS-guarded under the per-reservation advisory
-   * lock, and a replacement whose transaction loses the race is voided
-   * before its secret ever leaves the server.
+   * lock.
+   *
+   * A reissue that loses the CAS NEVER cancels its replacement. The
+   * per-attempt idempotency key is shared by construction: any caller that
+   * read the same ledger minted the SAME Stripe intent, so the loser
+   * cannot prove exclusive ownership, and canceling could kill an intent a
+   * concurrent transaction just recorded and handed to the member. When
+   * the recorded row turns out to reference the loser's own intent
+   * (decided inside the locked transaction, against committed state), the
+   * loser ADOPTS it, re-verifying the intent with Stripe first (a third
+   * reissue may have retired it meanwhile), and both callers of a
+   * double-tap get the same working secret. Otherwise the unrecorded
+   * replacement is simply abandoned: it holds no funds, its secret never
+   * left the server, and the next reissue re-adopts it through the same
+   * idempotency key.
    *
    * Organizer-only (the organizer is the payer); 404-shaped otherwise.
    */
@@ -717,14 +731,25 @@ export class ReservationService {
       attempt: detail.payments.length + 1,
     });
 
-    const applied = await this.uow.execute(async (tx) => {
+    let adoptedExpiresAt: Date | null = null;
+    const outcome = await this.uow.execute(async (tx): Promise<'applied' | 'adopted' | 'stale'> => {
       await this.reservationRepo.advisoryLockReservation(tx, id);
       const fresh = await this.reservationRepo.getDetail(id, tx);
-      if (!fresh || fresh.status !== 'pending_payment') return false;
+      if (!fresh || fresh.status !== 'pending_payment') return 'stale';
       const freshHold = fresh.claim?.status === 'active' ? fresh.claim.expiresAt : null;
-      if (!freshHold || freshHold.getTime() <= options.now.getTime()) return false;
+      if (!freshHold || freshHold.getTime() <= options.now.getTime()) return 'stale';
       const freshPrevious = [...fresh.payments].reverse().find((payment) => payment.kind === 'charge');
-      if ((freshPrevious?.id ?? null) !== (previous?.id ?? null)) return false; // raced another reissue
+      if ((freshPrevious?.id ?? null) !== (previous?.id ?? null)) {
+        // Raced another reissue. The shared per-attempt idempotency key
+        // means a racer that read the same ledger minted the SAME intent;
+        // when the committed row records OUR intent, that racer already
+        // finished this exact reissue: adopt it instead of failing.
+        if (freshPrevious?.status === 'pending' && freshPrevious.stripePaymentIntentId === intent.paymentIntentId) {
+          adoptedExpiresAt = freshHold;
+          return 'adopted';
+        }
+        return 'stale';
+      }
       if (freshPrevious && freshPrevious.status === 'pending') {
         await this.reservationRepo.setPaymentStatusIf(tx, freshPrevious.id, 'pending', 'failed');
       }
@@ -746,12 +771,27 @@ export class ReservationService {
         },
         actorId: options.actorId,
       });
-      return true;
+      return 'applied';
     });
 
-    if (!applied) {
-      // The secret never left the server, so a plain void suffices.
-      await this.paymentPort.cancelPaymentIntent(intent.paymentIntentId).catch(() => {});
+    if (outcome === 'adopted') {
+      return this.finishAdoptedReissue(id, {
+        purpose: 'hold',
+        intentId: intent.paymentIntentId,
+        clientSecret: intent.clientSecret,
+        amountCents,
+        expiresAt: adoptedExpiresAt,
+        actorId: options.actorId,
+      });
+    }
+
+    if (outcome === 'stale') {
+      // NEVER cancel the replacement here: under the shared per-attempt
+      // key this caller cannot prove exclusive ownership (a concurrent
+      // flow re-deriving the same key may record the very same intent), so
+      // canceling risks bricking a live, recorded charge. An unrecorded
+      // intent holds no funds and its secret never left the server; the
+      // next reissue re-adopts it through the same idempotency key.
       const fresh = await this.reservationRepo.getDetail(id);
       if (!fresh || fresh.status !== 'pending_payment') {
         throw new InvalidReservationStatusError(fresh?.status ?? 'missing', 'pending_payment');
@@ -809,12 +849,23 @@ export class ReservationService {
       attempt: detail.payments.length + 1,
     });
 
-    const applied = await this.uow.execute(async (tx) => {
+    const outcome = await this.uow.execute(async (tx): Promise<'applied' | 'adopted' | 'stale'> => {
       await this.reservationRepo.advisoryLockReservation(tx, id);
       const fresh = await this.reservationRepo.getDetail(id, tx);
-      if (!fresh || fresh.status !== 'confirmed') return false;
-      if (fresh.pendingChange?.id !== pending.id) return false;
-      if (fresh.pendingChange.chargePaymentId !== charge.id) return false; // raced another reissue
+      if (!fresh || fresh.status !== 'confirmed') return 'stale';
+      if (fresh.pendingChange?.id !== pending.id) return 'stale';
+      if (fresh.pendingChange.chargePaymentId !== charge.id) {
+        // Raced another reissue. Same shared-key reasoning as the hold
+        // path: when the committed charge row of the still-live change
+        // records OUR intent, the racer finished this reissue: adopt it.
+        const freshCharge = fresh.payments.find(
+          (payment) => payment.id === fresh.pendingChange!.chargePaymentId,
+        );
+        return freshCharge?.status === 'pending' &&
+          freshCharge.stripePaymentIntentId === intent.paymentIntentId
+          ? 'adopted'
+          : 'stale';
+      }
       await this.reservationRepo.setPaymentStatusIf(tx, charge.id, 'pending', 'failed');
       const row = await this.reservationRepo.addPayment(tx, {
         reservationId: id,
@@ -836,11 +887,23 @@ export class ReservationService {
         },
         actorId: options.actorId,
       });
-      return true;
+      return 'applied';
     });
 
-    if (!applied) {
-      await this.paymentPort.cancelPaymentIntent(intent.paymentIntentId).catch(() => {});
+    if (outcome === 'adopted') {
+      return this.finishAdoptedReissue(id, {
+        purpose: 'change_delta',
+        intentId: intent.paymentIntentId,
+        clientSecret: intent.clientSecret,
+        amountCents: pending.deltaCents,
+        expiresAt: pending.expiresAt,
+        actorId: options.actorId,
+      });
+    }
+
+    if (outcome === 'stale') {
+      // Never cancel the replacement (see the hold path): ownership of a
+      // shared-key intent cannot be proven, and an unrecorded one is inert.
       throw new ReservationChangedError();
     }
 
@@ -855,13 +918,57 @@ export class ReservationService {
   }
 
   /**
+   * A CAS loser whose intent the winner recorded (idempotent replay made
+   * the two mints the same Stripe intent) returns the winner's outcome as
+   * its own. The DB row alone is not proof the secret is alive (a third
+   * reissue may have retired the intent between the winner's commit and
+   * now), so Stripe is re-checked before the secret is handed out:
+   * still-payable returns it, captured settles through confirm (never a
+   * second charge), canceled reports the truthful conflict.
+   */
+  private async finishAdoptedReissue(
+    id: string,
+    params: {
+      purpose: 'hold' | 'change_delta';
+      intentId: string;
+      clientSecret: string;
+      amountCents: number;
+      expiresAt: Date | null;
+      actorId?: string;
+    },
+  ): Promise<ReissuePaymentIntentResult> {
+    const status = await this.paymentPort.getPaymentStatus(params.intentId);
+    if (status === 'succeeded') {
+      const reservation = await this.confirm(id, { actorId: params.actorId, source: 'reissue' });
+      return {
+        reservation,
+        purpose: params.purpose,
+        amountCents: params.amountCents,
+        clientSecret: null,
+        expiresAt: null,
+        alreadyPaid: true,
+      };
+    }
+    if (status === 'canceled') throw new ReservationChangedError();
+    return {
+      reservation: (await this.reservationRepo.getDetail(id))!,
+      purpose: params.purpose,
+      amountCents: params.amountCents,
+      clientSecret: params.clientSecret,
+      expiresAt: params.expiresAt,
+      alreadyPaid: false,
+    };
+  }
+
+  /**
    * NO-DOUBLE-CHARGE core of a reissue: retire the previous intent at
    * Stripe BEFORE any replacement exists. 'already_paid' means the intent
    * captured (settle it, never supersede it); 'retired' means it is now
    * guaranteed uncapturable. Stripe refuses to cancel a captured intent,
-   * so a cancel failure re-checks; a failure that is not a capture
-   * rethrows and the reissue aborts with the old intent still the only
-   * live one.
+   * so a cancel failure re-checks: captured settles, already-canceled (a
+   * concurrent flow retired it first) counts as retired, and anything
+   * else (a genuinely unknown outcome) rethrows so the reissue aborts
+   * with the old intent still the only live one.
    */
   private async retireIntentForReissue(intentId: string): Promise<'already_paid' | 'retired'> {
     const status = await this.paymentPort.getPaymentStatus(intentId);
@@ -871,7 +978,9 @@ export class ReservationService {
       await this.paymentPort.cancelPaymentIntent(intentId);
       return 'retired';
     } catch (error) {
-      if ((await this.paymentPort.getPaymentStatus(intentId)) === 'succeeded') return 'already_paid';
+      const after = await this.paymentPort.getPaymentStatus(intentId);
+      if (after === 'succeeded') return 'already_paid';
+      if (after === 'canceled') return 'retired';
       throw error;
     }
   }

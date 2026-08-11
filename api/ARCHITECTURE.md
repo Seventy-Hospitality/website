@@ -286,8 +286,21 @@ The bookings BC owns facility scheduling:
   same hold, same TTL, next `attempt` under the per-attempt idempotency
   keys. Money is never superseded: the previous intent is retired at
   Stripe BEFORE the replacement exists, a captured one settles through
-  confirm() and answers `alreadyPaid`, and a cancel failure that is not a
-  capture aborts the reissue (fail closed).
+  confirm() and answers `alreadyPaid`, an already-canceled one counts as
+  retired, and a cancel outcome that is genuinely unknown aborts the
+  reissue (fail closed). A reissue that loses the row-swap CAS never
+  cancels its replacement: the per-attempt key is shared by construction
+  (a concurrent caller reading the same ledger mints the SAME intent), so
+  the loser cannot prove exclusive ownership. When the committed row
+  records the loser's own intent it adopts the winner's outcome (after
+  re-verifying the intent with Stripe), so a double-tap returns the same
+  working secret twice; otherwise the unrecorded replacement is abandoned
+  inert (no funds, secret never disclosed) for the next reissue to
+  re-adopt via the same key. Known residual (durable fix would be
+  DB-allocated, slot-unique idempotency keys): the pre-existing
+  reschedule-grow park path still voids its own losing replacement, which
+  can collide with a reissue only when a lapsed change is re-parked at the
+  identical delta within the same attempt number.
 - **Events BC** claims courts exclusively through `ResourceClaimPort`; it
   never writes `slot_claims` directly.
 
