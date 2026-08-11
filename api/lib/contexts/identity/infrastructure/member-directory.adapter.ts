@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import { asPrismaTx } from '@/lib/infrastructure/prisma-tx';
 import type { TransactionContext } from '@/lib/kernel/unit-of-work';
+import { generateMemberNumber } from '@/lib/contexts/members';
 import type { MemberDirectory } from '../application/ports';
 
 /**
@@ -54,9 +55,29 @@ export class PrismaMemberDirectory implements MemberDirectory {
         firstName: input.firstName,
         lastName: input.lastName,
         phone: input.phone ?? null,
+        memberNumber: await this.pickFreeMemberNumber(tx),
       },
       select: { id: true },
     });
     return member;
+  }
+
+  /**
+   * A unique-violation retry loop would abort the caller's transaction, so
+   * candidates are pre-checked instead. The space is one letter x 100000, a
+   * simultaneous identical pick is astronomically unlikely; if it ever
+   * happens the transaction fails and the signup is retried.
+   */
+  private async pickFreeMemberNumber(tx: TransactionContext): Promise<string> {
+    let candidate = generateMemberNumber();
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const taken = await this.db(tx).member.findUnique({
+        where: { memberNumber: candidate },
+        select: { id: true },
+      });
+      if (!taken) return candidate;
+      candidate = generateMemberNumber();
+    }
+    return candidate;
   }
 }

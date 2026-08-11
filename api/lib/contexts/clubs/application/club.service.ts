@@ -67,13 +67,13 @@ export interface ClubDetail extends ClubSummary {
 }
 
 export interface RosterEntry {
-  /**
-   * The member's public id, as the directory search returns it. There is no
-   * separate member-number scheme yet; when one lands, this field carries it.
-   */
   memberId: string;
+  /** The human-facing member number ("#A12345" without the hash). */
+  memberNumber: string;
   firstName: string;
   lastName: string;
+  displayName: string | null;
+  avatarUrl: string | null;
   role: ClubRole;
   joinedAt: Date;
 }
@@ -163,8 +163,11 @@ export class ClubService {
       )
       .map((row) => ({
         memberId: row.memberId,
+        memberNumber: row.member.memberNumber,
         firstName: row.member.firstName,
         lastName: row.member.lastName,
+        displayName: row.member.displayName,
+        avatarUrl: row.member.avatarUrl,
         role: row.role,
         joinedAt: row.joinedAt,
       }));

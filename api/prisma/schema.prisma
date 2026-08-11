@@ -140,6 +140,18 @@ model Member {
   lastName  String
   phone     String?
 
+  // The stable human-facing member number ("#A12345"): one uppercase letter
+  // (I and O excluded) + five digits, generated at creation, retired forever
+  // on account deletion (the anonymized row keeps it, so the unique index
+  // guarantees it is never reassigned). Never an auth identifier.
+  memberNumber String  @unique
+  // Optional member-chosen display name; presentation falls back to
+  // "firstName lastName" when null.
+  displayName  String?
+  avatarUrl    String?
+  // Soft-delete marker set by the account-deletion pipeline after PII scrub.
+  deletedAt    DateTime?
+
   stripeCustomerId String? @unique
 
   createdAt DateTime @default(now())

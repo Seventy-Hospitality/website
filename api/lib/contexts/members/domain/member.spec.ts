@@ -1,4 +1,11 @@
-import { memberInvariants, noteInvariants, MemberValidationError } from './member';
+import {
+  generateMemberNumber,
+  memberDisplayName,
+  memberInvariants,
+  noteInvariants,
+  MEMBER_NUMBER_PATTERN,
+  MemberValidationError,
+} from './member';
 
 describe('memberInvariants', () => {
   describe('validateEmail', () => {
@@ -35,6 +42,54 @@ describe('memberInvariants', () => {
     it('blocks deletion with active membership', () => {
       expect(() => memberInvariants.canDelete(true)).toThrow(MemberValidationError);
     });
+  });
+});
+
+describe('generateMemberNumber', () => {
+  it('produces one uppercase letter plus five digits', () => {
+    for (let i = 0; i < 200; i++) {
+      expect(generateMemberNumber()).toMatch(MEMBER_NUMBER_PATTERN);
+    }
+  });
+
+  it('never uses the confusable letters I or O', () => {
+    for (let i = 0; i < 500; i++) {
+      expect(generateMemberNumber()[0]).not.toMatch(/[IO]/);
+    }
+  });
+
+  it('pads short digit runs to a fixed six-character width', () => {
+    // random() = 0 picks the first letter and 00000.
+    expect(generateMemberNumber(() => 0)).toBe('A00000');
+  });
+
+  it('covers the top of the range without overflowing', () => {
+    expect(generateMemberNumber(() => 0.9999999)).toBe('Z99999');
+  });
+});
+
+describe('memberDisplayName', () => {
+  const base = { firstName: 'June', lastName: 'Park' };
+
+  it('prefers the chosen display name', () => {
+    expect(memberDisplayName({ ...base, displayName: 'JP' })).toBe('JP');
+  });
+
+  it('falls back to first + last when unset or blank', () => {
+    expect(memberDisplayName({ ...base, displayName: null })).toBe('June Park');
+    expect(memberDisplayName({ ...base, displayName: '   ' })).toBe('June Park');
+  });
+});
+
+describe('validateDisplayName', () => {
+  it('accepts null (clearing) and reasonable names', () => {
+    expect(() => memberInvariants.validateDisplayName(null)).not.toThrow();
+    expect(() => memberInvariants.validateDisplayName('Junebug')).not.toThrow();
+  });
+
+  it('rejects blank and over-length names', () => {
+    expect(() => memberInvariants.validateDisplayName('   ')).toThrow(MemberValidationError);
+    expect(() => memberInvariants.validateDisplayName('x'.repeat(61))).toThrow(MemberValidationError);
   });
 });
 

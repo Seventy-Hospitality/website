@@ -72,11 +72,12 @@ function serializeDetail(detail: ClubDetail) {
 
 function serializeRosterEntry(entry: RosterEntry) {
   return {
-    // The member's public id: the same identifier the directory search
-    // returns (no separate member-number scheme exists yet).
     memberId: entry.memberId,
+    memberNumber: entry.memberNumber,
     firstName: entry.firstName,
     lastName: entry.lastName,
+    displayName: entry.displayName,
+    avatarUrl: entry.avatarUrl,
     role: entry.role,
     joinedAt: entry.joinedAt.toISOString(),
   };

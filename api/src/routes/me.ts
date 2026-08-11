@@ -33,6 +33,10 @@ function serializeMember(member: MemberProfile) {
     firstName: member.firstName,
     lastName: member.lastName,
     phone: member.phone,
+    memberNumber: member.memberNumber,
+    displayName: member.displayName,
+    avatarUrl: member.avatarUrl,
+    memberSince: member.createdAt.toISOString(),
     membership: member.membership
       ? {
           id: member.membership.id,

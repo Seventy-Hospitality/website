@@ -24,7 +24,14 @@ export interface ClubMemberRecord {
 }
 
 export interface ClubRosterRow extends ClubMemberRecord {
-  member: { id: string; firstName: string; lastName: string };
+  member: {
+    id: string;
+    memberNumber: string;
+    firstName: string;
+    lastName: string;
+    displayName: string | null;
+    avatarUrl: string | null;
+  };
 }
 
 export interface MyClubRow {
@@ -157,7 +164,18 @@ export class ClubRepository {
   async listRoster(clubId: string, tx?: TransactionContext): Promise<ClubRosterRow[]> {
     return this.db(tx).clubMember.findMany({
       where: { clubId },
-      include: { member: { select: { id: true, firstName: true, lastName: true } } },
+      include: {
+        member: {
+          select: {
+            id: true,
+            memberNumber: true,
+            firstName: true,
+            lastName: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
       orderBy: [{ joinedAt: 'asc' }, { memberId: 'asc' }],
     }) as Promise<ClubRosterRow[]>;
   }

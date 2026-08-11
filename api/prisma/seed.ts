@@ -5,6 +5,7 @@ import Stripe from 'stripe';
 import dotenv from 'dotenv';
 import path from 'path';
 import { zonedDateKey } from '../lib/kernel/venue-time';
+import { generateMemberNumber } from '../lib/contexts/members/domain/member';
 
 dotenv.config({ path: path.resolve(import.meta.dirname, '../.env') });
 
@@ -123,7 +124,7 @@ async function main() {
     const member = await prisma.member.upsert({
       where: { email: m.email },
       update: { stripeCustomerId: stripeCustomerId ?? undefined },
-      create: { ...m, stripeCustomerId },
+      create: { ...m, stripeCustomerId, memberNumber: generateMemberNumber() },
     });
     created.push(member);
   }
