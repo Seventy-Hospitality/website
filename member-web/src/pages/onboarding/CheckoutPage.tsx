@@ -81,7 +81,8 @@ export function CheckoutPage() {
 
   // "Payment landed at Stripe but the subscription is not active yet"
   // (async payment methods); offers a manual re-check instead of a retry
-  // that could double-charge.
+  // that could double-charge. Entered ONLY when the charge genuinely
+  // reached Stripe; a failed payment goes back to the form instead.
   const [processingHold, setProcessingHold] = useState(false);
   const [payNotice, setPayNotice] = useState<string | null>(null);
 
@@ -94,9 +95,11 @@ export function CheckoutPage() {
       if (data.activated) {
         await refreshSession();
         navigate('/onboarding/verify-identity', { replace: true });
-      } else {
-        setProcessingHold(true);
       }
+      // Not activated: the CALL SITE decides what the read-back means. A
+      // payment that reached Stripe enters the processing hold; a failed
+      // redirect returns to the payment form with the failure notice
+      // (holding there would misreport a declined charge as in flight).
     },
   });
 
@@ -132,8 +135,16 @@ export function CheckoutPage() {
   useEffect(() => {
     if (redirectStatus === null || redirectHandled.current) return;
     redirectHandled.current = true;
-    const failed = redirectStatus === 'failed';
+    // Stripe's redirect_status: 'failed' / 'requires_payment_method' mean
+    // the charge did NOT go through and the user must pay again; anything
+    // else ('succeeded', 'processing') means it reached Stripe and may
+    // still be clearing, which is what the processing hold is for.
+    const failed =
+      redirectStatus === 'failed' || redirectStatus === 'requires_payment_method';
     confirmMutate(undefined, {
+      onSuccess: (data) => {
+        if (!data.activated && !failed) setProcessingHold(true);
+      },
       onSettled: (data) => {
         if (data?.activated) return;
         setSearchParams(
@@ -172,7 +183,11 @@ export function CheckoutPage() {
     if (!subscribe.isSuccess || subscribe.data.clientSecret !== null) return;
     if (confirmedWithoutSecret.current) return;
     confirmedWithoutSecret.current = true;
-    confirmMutate(undefined);
+    confirmMutate(undefined, {
+      onSuccess: (data) => {
+        if (!data.activated) setProcessingHold(true);
+      },
+    });
   }, [subscribe.isSuccess, subscribe.data, confirmMutate]);
 
   if (redirectStatus !== null) {
@@ -241,6 +256,11 @@ export function CheckoutPage() {
 
           {stripeReady && processingHold && (
             <>
+              {payNotice && (
+                <p role="alert" className={styles.payAlert}>
+                  {payNotice}
+                </p>
+              )}
               <div className={styles.processing} role="status">
                 <p className={styles.processingTitle}>Your payment is processing</p>
                 <p className={styles.processingBody}>
@@ -316,7 +336,16 @@ export function CheckoutPage() {
                     onRetryConfirm={() => confirm.mutate(undefined)}
                     onPaid={async () => {
                       setPayNotice(null);
-                      await confirm.mutateAsync(undefined).catch(() => undefined);
+                      // confirmPayment succeeded inline, so the charge is at
+                      // Stripe: a non-activated read-back means it is still
+                      // clearing (async payment method), not a failure.
+                      await confirm
+                        .mutateAsync(undefined, {
+                          onSuccess: (data) => {
+                            if (!data.activated) setProcessingHold(true);
+                          },
+                        })
+                        .catch(() => undefined);
                     }}
                   />
                 </StripeProvider>

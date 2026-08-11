@@ -144,13 +144,15 @@
   background: none;
   padding: var(--space-2xs) var(--space-xs);
   border-radius: var(--radius-sm);
-  color: var(--color-text-subtle);
+  /* text/muted, not text/subtle: the quietest token that still meets
+     WCAG AA (4.5:1) for 14px text on bg/default. */
+  color: var(--color-text-muted);
   font-size: var(--text-sm-size);
   cursor: pointer;
 }
 
 .signOut:hover {
-  color: var(--color-text-muted);
+  color: var(--color-text);
   text-decoration: underline;
 }
 
