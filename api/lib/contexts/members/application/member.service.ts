@@ -30,8 +30,16 @@ export class MemberService {
   }
 
   /** Member-facing directory search: names only, never emails or staff. */
-  async search(query: string, limit: number) {
-    return this.repo.searchByNamePrefix(query, limit);
+  async search(query: string, limit: number, offset = 0) {
+    return this.repo.searchByNamePrefix(query, limit, offset);
+  }
+
+  /**
+   * Default (pre-search) directory page for the invite picker: alphabetical,
+   * the caller excluded, same names-only projection as search.
+   */
+  async browseDirectory(callerMemberId: string, limit: number, offset = 0) {
+    return this.repo.listDirectory({ excludeMemberId: callerMemberId, offset, limit });
   }
 
   async getById(id: string) {

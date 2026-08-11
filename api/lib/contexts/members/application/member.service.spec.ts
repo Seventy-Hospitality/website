@@ -14,6 +14,8 @@ function mockRepo(): MemberRepository {
     addNote: vi.fn(),
     setStripeCustomerId: vi.fn(),
     findByStripeCustomerId: vi.fn(),
+    searchByNamePrefix: vi.fn().mockResolvedValue([]),
+    listDirectory: vi.fn().mockResolvedValue([]),
   } as unknown as MemberRepository;
 }
 
@@ -159,6 +161,29 @@ describe('MemberService', () => {
 
       expect(repo.setAvatarUrl).toHaveBeenCalledWith('1', '/uploads/avatars/new.webp');
       expect(result).toEqual({ previousAvatarUrl: '/uploads/avatars/old.webp' });
+    });
+  });
+
+  describe('directory', () => {
+    it('search forwards the paging offset', async () => {
+      const repo = mockRepo();
+      const service = new MemberService(repo);
+
+      await service.search('bo', 10, 20);
+
+      expect(repo.searchByNamePrefix).toHaveBeenCalledWith('bo', 10, 20);
+    });
+
+    it('browseDirectory excludes the caller and pages alphabetically', async () => {
+      const repo = mockRepo();
+      const rows = [{ id: 'mem_2', firstName: 'Bob', lastName: 'Park' }];
+      (repo.listDirectory as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
+      const service = new MemberService(repo);
+
+      const result = await service.browseDirectory('mem_1', 10, 10);
+
+      expect(repo.listDirectory).toHaveBeenCalledWith({ excludeMemberId: 'mem_1', offset: 10, limit: 10 });
+      expect(result).toBe(rows);
     });
   });
 });

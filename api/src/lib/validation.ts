@@ -229,8 +229,11 @@ export const adminReservationsQuerySchema = z.object({
 });
 
 export const memberSearchQuerySchema = z.object({
-  q: z.string().trim().min(1).max(100),
+  /** Absent or empty: the default alphabetical directory page instead. */
+  q: z.string().trim().max(100).optional(),
   limit: z.coerce.number().int().positive().max(25).default(10),
+  /** 1-based page over either mode's ordering (offset = (page-1)*limit). */
+  page: z.coerce.number().int().positive().max(10000).default(1),
 });
 
 export const createResourceTypeSchema = z.object({

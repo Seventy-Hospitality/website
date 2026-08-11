@@ -16,12 +16,19 @@ export async function memberRoutes(app: FastifyInstance) {
   });
 
   // Member directory search for reservation invites. Members only, never
-  // staff (staff have no row here); names only, no emails leak.
+  // staff (staff have no row here); names only, no emails leak. Without a
+  // query it serves the default alphabetical directory page (the invite
+  // picker's pre-search list), which excludes the caller; a search keeps
+  // its historical behavior (caller included) for the existing clients.
   app.get('/search', { config: { policy: 'member' } }, async (req, reply) => {
     const parsed = memberSearchQuerySchema.safeParse(req.query);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
-    const results = await memberService.search(parsed.data.q, parsed.data.limit);
+    const { q, limit, page } = parsed.data;
+    const offset = (page - 1) * limit;
+    const results = q
+      ? await memberService.search(q, limit, offset)
+      : await memberService.browseDirectory(req.principal!.memberId!, limit, offset);
     return success(reply, results);
   });
 

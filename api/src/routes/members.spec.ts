@@ -5,6 +5,7 @@ const { mockMemberService, mockMembershipChecker, mockSessionService } = vi.hois
   mockMemberService: {
     list: vi.fn().mockResolvedValue({ data: [], total: 0, page: 1, limit: 20 }),
     search: vi.fn().mockResolvedValue([]),
+    browseDirectory: vi.fn().mockResolvedValue([]),
   },
   mockMembershipChecker: { hasActiveMembership: vi.fn().mockResolvedValue(true) },
   mockSessionService: { validateAccessToken: vi.fn(), refresh: vi.fn() },
@@ -64,14 +65,49 @@ describe('member directory search', () => {
     const res = await app.inject({ method: 'GET', url: '/api/members/search?q=bo', headers: AUTH });
 
     expect(res.statusCode).toBe(200);
-    expect(mockMemberService.search).toHaveBeenCalledWith('bo', 10);
+    expect(mockMemberService.search).toHaveBeenCalledWith('bo', 10, 0);
+    expect(mockMemberService.browseDirectory).not.toHaveBeenCalled();
     expect(res.json().data).toEqual([{ id: 'mem_2', firstName: 'Bob', lastName: 'Park' }]);
   });
 
-  it('rejects an empty query', async () => {
+  it('pages search results', async () => {
     signedInAs();
-    const res = await app.inject({ method: 'GET', url: '/api/members/search?q=', headers: AUTH });
-    expect(res.statusCode).toBe(400);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/members/search?q=bo&limit=5&page=3',
+      headers: AUTH,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockMemberService.search).toHaveBeenCalledWith('bo', 5, 10);
+  });
+
+  it('serves the default directory page (caller excluded) without a query', async () => {
+    signedInAs();
+    mockMemberService.browseDirectory.mockResolvedValue([
+      { id: 'mem_2', firstName: 'Bob', lastName: 'Park' },
+    ]);
+
+    const res = await app.inject({ method: 'GET', url: '/api/members/search', headers: AUTH });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockMemberService.browseDirectory).toHaveBeenCalledWith('mem_1', 10, 0);
+    expect(mockMemberService.search).not.toHaveBeenCalled();
+    expect(res.json().data).toEqual([{ id: 'mem_2', firstName: 'Bob', lastName: 'Park' }]);
+  });
+
+  it('treats an empty query as the directory page', async () => {
+    signedInAs();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/members/search?q=&page=2&limit=25',
+      headers: AUTH,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockMemberService.browseDirectory).toHaveBeenCalledWith('mem_1', 25, 25);
   });
 
   it('leaves the admin member list admin-only', async () => {

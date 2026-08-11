@@ -45,6 +45,16 @@ export interface MemberDirectoryEntry {
   avatarUrl: string | null;
 }
 
+/** The directory projection: names only, never emails or phone. */
+const DIRECTORY_SELECT = {
+  id: true,
+  memberNumber: true,
+  firstName: true,
+  lastName: true,
+  displayName: true,
+  avatarUrl: true,
+} as const;
+
 const memberInclude = {
   memberships: { include: { plan: true } },
   notes: { orderBy: { createdAt: 'desc' as const } },
@@ -120,7 +130,7 @@ export class MemberRepository {
    * construction: staff live in users, never in this table. Deleted
    * (anonymized) members never surface.
    */
-  async searchByNamePrefix(query: string, limit: number): Promise<MemberDirectoryEntry[]> {
+  async searchByNamePrefix(query: string, limit: number, offset = 0): Promise<MemberDirectoryEntry[]> {
     const terms = query.split(/\s+/).filter(Boolean);
     const nameMatch: Prisma.MemberWhereInput = {
       AND: terms.map((term) => ({
@@ -140,16 +150,33 @@ export class MemberRepository {
 
     return this.prisma.member.findMany({
       where: { deletedAt: null, OR: matchers },
-      select: {
-        id: true,
-        memberNumber: true,
-        firstName: true,
-        lastName: true,
-        displayName: true,
-        avatarUrl: true,
-      },
+      select: DIRECTORY_SELECT,
       orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      skip: offset,
       take: limit,
+    });
+  }
+
+  /**
+   * Default (pre-search) directory page: every live member alphabetically,
+   * optionally excluding the caller (an invite picker lists people to
+   * invite, not yourself). Same projection and exclusions as the search:
+   * members only by construction, deleted members never surface.
+   */
+  async listDirectory(options: {
+    excludeMemberId?: string;
+    offset: number;
+    limit: number;
+  }): Promise<MemberDirectoryEntry[]> {
+    return this.prisma.member.findMany({
+      where: {
+        deletedAt: null,
+        ...(options.excludeMemberId ? { id: { not: options.excludeMemberId } } : {}),
+      },
+      select: DIRECTORY_SELECT,
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      skip: options.offset,
+      take: options.limit,
     });
   }
 
