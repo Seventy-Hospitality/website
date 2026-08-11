@@ -1,4 +1,10 @@
-export { NotificationService, NotificationSettingsService, NotificationDispatchService } from './application';
+export {
+  NotificationService,
+  NotificationSettingsService,
+  NotificationDispatchService,
+  BookingReminderService,
+} from './application';
+export type { ReminderSource, ReminderRunResult } from './application';
 export type {
   NotificationSender,
   PushMessage,

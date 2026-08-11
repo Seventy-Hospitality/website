@@ -1198,6 +1198,14 @@ export class ReservationService {
   }
 
   /**
+   * Confirmed reservations starting inside [from, to): the booking-reminder
+   * cron's read (communications consumes it through a container-wired port).
+   */
+  async listConfirmedStartingBetween(from: Date, to: Date) {
+    return this.reservationRepo.listConfirmedStartingBetween(from, to);
+  }
+
+  /**
    * Club-linked reservations (the club's group-activity feed). The CALLER
    * must have established club membership first; the clubs context gates
    * that at the route seam.

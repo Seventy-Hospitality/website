@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import {
   accountDeletionService,
+  bookingReminderService,
   mediaService,
   membershipService,
   outboxDispatcher,
@@ -39,6 +40,20 @@ export async function cronRoutes(app: FastifyInstance) {
     config: { policy: 'cron' },
     handler: async (_req, reply) => {
       const result = await outboxDispatcher.dispatch();
+      return reply.send(result);
+    },
+  });
+
+  // Booking reminders: confirmed reservations starting within the next 24
+  // hours, reminding their confirmed participants per the
+  // bookingReminders/push/email toggles; idempotent per (reservation,
+  // member) via the booking_reminders markers.
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/send-booking-reminders',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await bookingReminderService.sendDueReminders();
       return reply.send(result);
     },
   });

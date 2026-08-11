@@ -29,6 +29,7 @@ import {
   PrismaMemberDirectory,
 } from '@/lib/contexts/identity/infrastructure';
 import {
+  BookingReminderRepository,
   DeliveredNotificationRepository,
   DeviceRepository,
   ExpoPushAdapter,
@@ -68,6 +69,7 @@ import {
 import { AccountDeletionService } from '@/lib/contexts/account/application';
 import { DeletionRequestRepository } from '@/lib/contexts/account/infrastructure';
 import {
+  BookingReminderService,
   NotificationDispatchService,
   NotificationService,
   NotificationSettingsService,
@@ -290,41 +292,43 @@ export const clubService = new ClubService(clubRepo, clubCoverStore, eventStore,
 // exactly as Resend does without RESEND_API_KEY.
 const pushSender = new ExpoPushAdapter(process.env.EXPO_PUSH_ACCESS_TOKEN?.trim() ?? '');
 
+// Shared read adapters for the dispatcher and the reminder cron.
+const recipientDirectory = {
+  getContact: async (memberId: string) => {
+    const member = await memberRepo.getById(memberId);
+    return member && !member.deletedAt
+      ? { memberId: member.id, email: member.email, firstName: member.firstName }
+      : null;
+  },
+};
+const toReservationNotificationView = (detail: NonNullable<Awaited<ReturnType<typeof reservationRepo.getDetail>>>) => ({
+  id: detail.id,
+  reference: detail.reference,
+  typeName: detail.resourceType.name,
+  resourceName: detail.resource.name,
+  localDate: detail.localDate,
+  startsAt: detail.startsAt,
+  endsAt: detail.endsAt,
+  organizerId: detail.organizerId,
+  seriesId: detail.seriesId,
+  participants: detail.participants.map((participant) => ({
+    memberId: participant.memberId,
+    role: participant.role,
+    status: participant.status,
+  })),
+});
+
 export const notificationDispatchService = new NotificationDispatchService(
   new DeliveredNotificationRepository(db),
   new NotificationPreferenceRepository(db),
   new DeviceRepository(db),
   resendAdapter,
   pushSender,
-  {
-    getContact: async (memberId: string) => {
-      const member = await memberRepo.getById(memberId);
-      return member && !member.deletedAt
-        ? { memberId: member.id, email: member.email, firstName: member.firstName }
-        : null;
-    },
-  },
+  recipientDirectory,
   {
     getNotificationView: async (reservationId: string) => {
       const detail = await reservationRepo.getDetail(reservationId);
-      return detail
-        ? {
-            id: detail.id,
-            reference: detail.reference,
-            typeName: detail.resourceType.name,
-            resourceName: detail.resource.name,
-            localDate: detail.localDate,
-            startsAt: detail.startsAt,
-            endsAt: detail.endsAt,
-            organizerId: detail.organizerId,
-            seriesId: detail.seriesId,
-            participants: detail.participants.map((participant) => ({
-              memberId: participant.memberId,
-              role: participant.role,
-              status: participant.status,
-            })),
-          }
-        : null;
+      return detail ? toReservationNotificationView(detail) : null;
     },
   },
   {
@@ -352,6 +356,23 @@ export const notificationDispatchService = new NotificationDispatchService(
 // undispatched rows to the notification consumer and marks only the
 // delivered ones dispatched (failed ones stay pending and retry).
 export const outboxDispatcher = new OutboxDispatcher(uow, new OutboxRepository(), notificationDispatchService);
+
+// Booking reminders (cron, hourly): confirmed reservations starting within
+// the next 24h, one reminder per (reservation, member) ever, channels per
+// the member's bookingReminders/push/email toggles.
+export const bookingReminderService = new BookingReminderService(
+  {
+    listConfirmedStartingBetween: async (from: Date, to: Date) =>
+      (await reservationService.listConfirmedStartingBetween(from, to)).map(toReservationNotificationView),
+  },
+  new BookingReminderRepository(db),
+  new NotificationPreferenceRepository(db),
+  new DeviceRepository(db),
+  resendAdapter,
+  pushSender,
+  recipientDirectory,
+  { timezone: VENUE_TIMEZONE },
+);
 
 // ── Billing services ──
 // Wired after the reservation service: billing drives bookings settlement

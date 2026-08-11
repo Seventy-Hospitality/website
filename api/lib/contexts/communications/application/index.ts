@@ -6,6 +6,11 @@ export {
   type DispatchResult,
   type NotificationDispatchConfig,
 } from './notification-dispatch.service';
+export {
+  BookingReminderService,
+  type ReminderSource,
+  type ReminderRunResult,
+} from './booking-reminder.service';
 export type {
   NotificationSender,
   PushMessage,

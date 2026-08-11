@@ -8,6 +8,7 @@ const {
   mockReservationService,
   mockOutboxDispatcher,
   mockReconciliationService,
+  mockBookingReminderService,
 } = vi.hoisted(() => ({
   mockMembershipService: {
     reconcileSubscriptionDrift: vi.fn().mockResolvedValue({ checked: 0, updated: 0, stale: 0, skipped: 0, orphanedLocal: 0 }),
@@ -34,7 +35,10 @@ const {
     expireStaleHolds: vi.fn().mockResolvedValue({ expired: 0, confirmed: 0 }),
   },
   mockOutboxDispatcher: {
-    dispatch: vi.fn().mockResolvedValue({ dispatched: 0 }),
+    dispatch: vi.fn().mockResolvedValue({ dispatched: 0, failed: 0 }),
+  },
+  mockBookingReminderService: {
+    sendDueReminders: vi.fn().mockResolvedValue({ reservations: 0, remindersSent: 0, skipped: 0, failed: 0 }),
   },
 }));
 
@@ -45,6 +49,7 @@ vi.mock('@/lib/container', () => ({
   reservationService: mockReservationService,
   outboxDispatcher: mockOutboxDispatcher,
   reconciliationService: mockReconciliationService,
+  bookingReminderService: mockBookingReminderService,
 }));
 
 vi.mock('@/lib/db', () => ({
@@ -104,6 +109,28 @@ describe('cron routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ dispatched: 5 });
+  });
+
+  it('sends due booking reminders behind the cron secret', async () => {
+    mockBookingReminderService.sendDueReminders.mockResolvedValue({
+      reservations: 3,
+      remindersSent: 5,
+      skipped: 1,
+      failed: 0,
+    });
+
+    const denied = await app.inject({ method: 'POST', url: '/send-booking-reminders' });
+    expect(denied.statusCode).toBe(401);
+    expect(mockBookingReminderService.sendDueReminders).not.toHaveBeenCalled();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/send-booking-reminders',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ reservations: 3, remindersSent: 5, skipped: 1, failed: 0 });
   });
 
   it('runs the nightly billing reconcile behind the cron secret (GET works for URL schedulers)', async () => {

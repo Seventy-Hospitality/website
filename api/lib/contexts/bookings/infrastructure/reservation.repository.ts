@@ -143,6 +143,16 @@ export class ReservationRepository {
     return records.map(toDetail);
   }
 
+  /** Confirmed reservations starting inside [from, to): the reminder read. */
+  async listConfirmedStartingBetween(from: Date, to: Date): Promise<ReservationDetailRecord[]> {
+    const records = await this.prisma.reservation.findMany({
+      where: { status: 'confirmed', startsAt: { gte: from, lt: to } },
+      include: detailInclude,
+      orderBy: { startsAt: 'asc' },
+    });
+    return records.map(toDetail);
+  }
+
   async countUpcomingForResources(resourceIds: string[], now: Date = new Date()): Promise<number> {
     if (resourceIds.length === 0) return 0;
     return this.prisma.reservation.count({
