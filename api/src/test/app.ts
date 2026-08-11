@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
+import { registerLenientJsonBodyParser } from '@/src/lib/json-body';
 import { assertRoutePolicy, authHook } from '@/src/middleware/auth';
 
 export type RouteRegistration = {
@@ -16,6 +17,8 @@ export type RouteRegistration = {
 export async function buildTestApp(...registrations: RouteRegistration[]): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   await app.register(cookie);
+  // Same lenient JSON parsing as server.ts (empty body -> undefined).
+  registerLenientJsonBodyParser(app);
 
   app.addHook('onRoute', assertRoutePolicy);
   app.addHook('preHandler', authHook);

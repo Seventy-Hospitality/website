@@ -497,6 +497,20 @@ describe('auth routes', () => {
       expect(res.statusCode).toBe(401);
       expect(mockSessionService.revoke).not.toHaveBeenCalled();
     });
+
+    it('tolerates an empty application/json body (no {} workaround needed)', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signout',
+        headers: { authorization: 'Bearer access_jwt', 'content-type': 'application/json' },
+        payload: '',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSessionService.revoke).toHaveBeenCalledWith('ses_1', 'signout');
+    });
   });
 
   describe('POST /api/auth/logout (legacy admin web)', () => {

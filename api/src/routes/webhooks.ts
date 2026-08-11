@@ -10,7 +10,10 @@ import type Stripe from 'stripe';
  * handled, deliberately-ignored and duplicate events.
  */
 export async function webhookRoutes(app: FastifyInstance) {
-  // Need raw body for Stripe signature verification
+  // Need raw body for Stripe signature verification. The inherited JSON
+  // parser (the lenient one from src/lib/json-body.ts) must be replaced in
+  // this scope, and Fastify refuses a duplicate add, so drop it first.
+  app.removeContentTypeParser('application/json');
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
     done(null, body);
   });

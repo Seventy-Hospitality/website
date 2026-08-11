@@ -7,6 +7,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import { SERVER_FASTIFY_OPTIONS } from './lib/server-options';
+import { registerLenientJsonBodyParser } from './lib/json-body';
 import { assertRoutePolicy, authHook } from './middleware/auth';
 import { memberRoutes } from './routes/members';
 import { authRoutes } from './routes/auth';
@@ -63,6 +64,10 @@ await app.register(rateLimit, {
 await app.register(cookie);
 
 await app.register(multipart);
+
+// Bodyless POSTs (signout, resend-verification, id-verification skip, ...)
+// must accept an empty application/json body; see src/lib/json-body.ts.
+registerLenientJsonBodyParser(app);
 
 // Authorization: the boot assertion must see every route that follows, so it
 // is installed before the first registration.
