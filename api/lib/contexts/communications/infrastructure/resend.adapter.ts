@@ -44,17 +44,17 @@ const SUBJECTS: Record<Notification['type'], string> = {
   'email-verification': 'Verify your Seventy email',
   'password-reset': 'Reset your Seventy password',
   'account-reauth': 'Confirm it\'s you — Seventy account deletion',
-  'booking-invite': 'You\'re invited to a booking — Seventy',
-  'booking-rescheduled': 'A booking you joined was rescheduled — Seventy',
-  'booking-confirmed': 'Booking confirmed — Seventy',
-  'booking-cancelled': 'Booking cancelled — Seventy',
-  'booking-reminder': 'Upcoming booking reminder — Seventy',
-  'series-booked': 'Your weekly booking is scheduled — Seventy',
-  'series-skipped': 'Your weekly booking could not be scheduled — Seventy',
-  'club-invite': 'You\'re invited to a club — Seventy',
-  'id-approved': 'Your ID is verified — Seventy',
-  'id-rejected': 'Your ID could not be verified — Seventy',
-  'staff-alert': 'Staff alert — Seventy',
+  'booking-invite': 'You\'re invited to a booking at Seventy',
+  'booking-rescheduled': 'Your Seventy booking was rescheduled',
+  'booking-confirmed': 'Your Seventy booking is confirmed',
+  'booking-cancelled': 'Your Seventy booking was cancelled',
+  'booking-reminder': 'Reminder: your upcoming Seventy booking',
+  'series-booked': 'Your weekly Seventy booking is scheduled',
+  'series-skipped': 'Your weekly Seventy booking could not be scheduled',
+  'club-invite': 'You\'re invited to a club at Seventy',
+  'id-approved': 'Your Seventy ID is verified',
+  'id-rejected': 'Your Seventy ID could not be verified',
+  'staff-alert': 'Seventy staff alert',
 };
 
 function getVariables(notification: Notification): Record<string, string> {
@@ -131,7 +131,7 @@ export class ResendAdapter implements NotificationSender {
     const templateId = TEMPLATE_IDS[notification.type];
     const subject =
       notification.type === 'staff-alert'
-        ? `Staff alert — ${notification.subject}`
+        ? `Seventy staff alert: ${notification.subject}`
         : SUBJECTS[notification.type];
 
     if (!this.resend) {

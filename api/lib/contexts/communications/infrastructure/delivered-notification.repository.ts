@@ -8,7 +8,7 @@ export type LedgerClaim = 'claimed' | 'already_sent';
  *
  * Deliberately NOT transactional with the dispatcher's outbox pass: a
  * "sent" mark must survive the dispatch transaction rolling back (that is
- * its whole purpose — a batch that fails halfway is retried, and the marks
+ * its whole purpose: a batch that fails halfway is retried, and the marks
  * are what stop the already-delivered notifications from being sent
  * twice). Every write here auto-commits on the plain client.
  *

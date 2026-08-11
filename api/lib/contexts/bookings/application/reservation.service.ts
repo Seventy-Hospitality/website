@@ -728,7 +728,8 @@ export class ReservationService {
         : await this.reservationRepo.setPaymentStatusIf(tx, row.id, 'pending', 'failed');
       if (flippedSucceeded || flippedPending) {
         await this.reservationRepo.adjustAmountPaid(tx, row.reservationId, row.amountCents);
-        // TODO(package-f): notify staff; an async-failed refund needs a human.
+        // The staff alert (an async-failed refund needs a human) rides this
+        // outbox row: reservation.refund_failed -> STAFF_ALERT_EMAIL.
         await this.audit.append(tx, {
           streamType: STREAM_TYPE,
           streamId: row.reservationId,
@@ -875,7 +876,9 @@ export class ReservationService {
     const reservationIds = await this.reservationRepo.markChargeDisputed(stripePaymentIntentId, now);
     for (const reservationId of reservationIds) {
       await this.uow.execute(async (tx) => {
-        // TODO(package-f): notify staff; a dispute always needs a human.
+        // Audit record of the freeze. The staff alert (a dispute always
+        // needs a human) rides billing.dispute_opened, appended by the
+        // webhook handler for linked AND unlinked disputes alike.
         await this.audit.append(tx, {
           streamType: STREAM_TYPE,
           streamId: reservationId,
@@ -2321,9 +2324,9 @@ export class ReservationService {
    * fails: the allocations are independent Stripe calls, and aborting the
    * batch would strand the untouched rows as pending-with-decremented-
    * balance owed to the member with nothing in flight. A failed allocation
-   * is marked failed with its amount restored (staff alert seam,
-   * TODO(package-f)); the first error is rethrown after the batch so a
-   * webhook caller still 500s and retries. Rows a crash leaves pending are
+   * is marked failed with its amount restored (the reservation.refund_failed
+   * outbox row alerts staff); the first error is rethrown after the batch so
+   * a webhook caller still 500s and retries. Rows a crash leaves pending are
    * re-driven by the nightly reconcile (redriveStalePendingRefunds) under
    * the same per-row idempotency keys.
    */

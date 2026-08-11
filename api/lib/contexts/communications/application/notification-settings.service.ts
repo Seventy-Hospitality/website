@@ -9,9 +9,9 @@ import type { NotificationPreferenceRepository } from '../infrastructure/notific
 
 /**
  * The member's delivery settings: notification toggles (saved
- * independently, on change) and push-token device registrations.
- * TODO(package-f): the outbox notification consumers read these to gate
- * and target delivery.
+ * independently, on change) and push-token device registrations. The
+ * outbox dispatcher and the reminder cron read them to gate and target
+ * delivery (planChannels in the domain).
  */
 export class NotificationSettingsService {
   constructor(

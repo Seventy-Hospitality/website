@@ -47,7 +47,8 @@ api/
 │   │   ├── bookings/        # Scheduling/reservations (pays via billing's adapter)
 │   │   ├── clubs/           # Member-created social clubs (invites, links, rosters)
 │   │   ├── identity/        # Users, credentials, OAuth identities, sessions, tokens
-│   │   └── communications/  # Email templates, notification delivery
+│   │   ├── home/            # Home-screen read aggregation (greeting, quick-book)
+│   │   └── communications/  # Notification delivery: outbox consumer, email + push, reminders
 │   ├── container.ts         # Composition root
 │   └── db.ts                # Prisma singleton
 └── prisma/                  # Schema + migrations + seed
@@ -78,7 +79,10 @@ web/
 - **Webhooks processed inline** (Stripe retries on failure).
 - **No NestJS** — vanilla TypeScript with composition root for DI.
 - **No Tailwind** — Octahedron design system.
-- **Communications BC** owns all outbound email. Other BCs call NotificationService.
+- **Communications BC** owns all outbound email and push. Other BCs call
+  NotificationService for direct sends; product notifications ride the
+  audit-log outbox and are delivered by its dispatcher (see
+  `api/docs/decisions-notifications.md`).
 
 ## Essential Commands
 

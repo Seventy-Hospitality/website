@@ -217,7 +217,7 @@ export class ClubService {
           inviteeMemberId,
         });
         if (!invitation) continue;
-        // TODO(package-f): notification send rides the outbox row below.
+        // The invitation notification rides the outbox row below (package F).
         await this.audit.append(tx, {
           streamType: STREAM_TYPE,
           streamId: created.id,
@@ -437,7 +437,7 @@ export class ClubService {
           inviteeMemberId,
         });
         if (!invitation) continue; // raced another inviter
-        // TODO(package-f): notification send rides the outbox row below.
+        // The invitation notification rides the outbox row below (package F).
         await this.audit.append(tx, {
           streamType: STREAM_TYPE,
           streamId: clubId,

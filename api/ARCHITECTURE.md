@@ -61,10 +61,13 @@ lib/
 │   │   ├── domain/               # Step list, backoff, steps-map (pure)
 │   │   ├── application/          # AccountDeletionService + ports into the other BCs
 │   │   └── infrastructure/       # deletion_requests repository (lease, step progress)
+│   ├── home/                     # Home-screen READ composition (no tables; see below)
+│   │   ├── domain/               # Greeting + quick-book heuristics (pure)
+│   │   └── application/          # HomeService + ports into bookings/clubs/events/members
 │   └── communications/
-│       ├── domain/               # Email templates (pure data), notification prefs, devices
-│       ├── application/          # NotificationService (what to send), NotificationSettingsService
-│       └── infrastructure/       # EmailAdapter (Resend), preference + device repositories
+│       ├── domain/               # Templates (pure data), prefs, devices, notification-decision matrix
+│       ├── application/          # NotificationService, settings, outbox dispatch, booking reminders
+│       └── infrastructure/       # Resend + Expo push adapters, prefs/devices/ledger repositories
 ├── container.ts                  # Composition root
 ├── db.ts                         # Prisma singleton
 ├── auth.ts                       # Transport: cookies/headers → IAM
@@ -150,14 +153,64 @@ Event { seq, streamType, streamId, eventType, data, occurredAt, recordedAt, acto
 2. **Transactional outbox**: rows with `dispatchedAt IS NULL` are pending.
    The dispatcher (`lib/infrastructure/outbox.ts`, exposed as
    `POST /api/cron/dispatch-outbox`) selects them with
-   `FOR UPDATE SKIP LOCKED`, hands them to an `OutboxSink` and marks them
-   dispatched in one transaction. The sink is a no-op until notifications
-   land (package F).
+   `FOR UPDATE SKIP LOCKED`, hands them to the `OutboxSink` and marks the
+   DELIVERED ones dispatched in the same transaction; events the sink
+   reports failed stay pending and retry. The sink is the communications
+   context's notification dispatcher (see Notifications below).
 
 Never use seq-cursor checkpoints for consumers: `seq` is assigned at insert
 but transactions commit out of order, so a cursor past N+1 can permanently
 skip N. Undispatched-row selection has no gap hazard and lets concurrent
 dispatchers share the backlog.
+
+## Notifications (outbox consumer, package F)
+
+The communications BC owns delivery end to end:
+
+- **Decision is pure domain** (`notification-decision.ts`): each outbox
+  event type maps to recipient references (literal member ids, or "the
+  reservation's organizer" / "the club invitation's inviter" resolved
+  later) and per-kind channels. Unmapped events notify nobody. The full
+  matrix lives in `docs/decisions-notifications.md`.
+- **Dispatch is application** (`NotificationDispatchService`, wired as the
+  outbox sink): resolves references through narrow container-wired read
+  ports over the members/bookings/clubs barrels, gates channels through
+  the member's push/email/bookingReminders toggles plus registered
+  devices, and renders email (Resend) and push (Expo-style adapter,
+  config-gated on `EXPO_PUSH_ACCESS_TOKEN` exactly as Resend degrades
+  keyless). Staff alerts (disputes, failed refunds, blocked deletions) go
+  to `STAFF_ALERT_EMAIL` and ignore member preferences.
+- **Idempotency = the `delivered_notifications` ledger**: one row per
+  (eventSeq, recipient, channel), claimed BEFORE sending and marked sent
+  after, auto-committed OUTSIDE the dispatch transaction so redelivery,
+  concurrent dispatchers, or a batch that fails halfway never double-send
+  while an unfinished claim retries (retry, never drop).
+- **Booking reminders** (`/api/cron/send-booking-reminders`, hourly):
+  confirmed reservations starting within 24h remind their confirmed
+  participants, once per (reservation, member) ever via the
+  `booking_reminders` markers.
+- **Weekly series** (`/api/cron/materialize-series`): active
+  `reservation_series` rows materialize into comp reservations inside the
+  type's booking horizon through the normal create path; a blocked
+  occurrence is skipped + the organizer notified exactly once (skip
+  markers + a partial unique on (seriesId, localDate)), never silently
+  shifted. Series creation/cancellation is admin-only
+  (`/api/admin/reservation-series`), plan OPEN decision 8.
+
+## Home (read-only aggregation, package F)
+
+`GET /api/me/home` serves the home screen from the `home` context: a
+composition-only read service (no tables) with pure greeting/quick-book
+domain logic, reaching bookings/clubs/events/members exclusively through
+container-wired ports, every read keyed on the principal's member id.
+Payload: greeting (first name + time-of-day, client tz honored when
+valid), upcoming reservations (viewer participation + `weekly` badge),
+pending booking invitations (distinct, inviter first name, inline
+accept/decline), pending club invitations, spotlight events, the
+deterministic quick-book suggestion (most-frequent type/weekday/time over
+90 days of history, availability-verified; fallback most-available
+amenity), and the empty-state amenity summary. Heuristic + shape
+decisions: `docs/decisions-notifications.md`.
 
 Why not event sourcing: the one invariant that matters (no overlapping
 claims) is cross-aggregate and lives in a Postgres exclusion constraint;
@@ -499,7 +552,11 @@ verb, is the guard):
 - `/api/cron/expire-holds` — release stale pending_payment holds
   (confirming instead when the payment actually succeeded)
 - `/api/cron/dispatch-outbox` — hand undispatched audit rows to the
-  outbox sink (a no-op until package F wires notifications)
+  notification dispatcher; failed deliveries stay pending and retry
+- `/api/cron/send-booking-reminders`: remind confirmed participants of
+  reservations starting within 24h (once per reservation+member ever)
+- `/api/cron/materialize-series`: weekly series to concrete comp
+  reservations inside the horizon (skip + notify once on collision)
 - `/api/cron/reconcile-billing` — nightly account-wide sweep of the last
   72h of charges, paid invoices and refunds into the ledger; re-drives
   bookings settlement (closes webhook gaps and the cancel-vs-pay TOCTOU);
