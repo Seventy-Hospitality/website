@@ -1,3 +1,5 @@
+import type { TransactionContext } from '@/lib/kernel';
+
 // Structural ports out of the billing context. The container wires the
 // real services (bookings' ReservationService, members' MemberRepository,
 // memberships' MembershipService/Repository) onto these narrow shapes, so
@@ -78,4 +80,23 @@ export interface MembershipBillingLookup {
     status: string;
     stripeScheduleId: string | null;
   } | null>;
+}
+
+/**
+ * Same-transaction audit trail plus outbox feed (satisfied by the shared
+ * EventStore): billing appends the events package F's notification
+ * dispatcher consumes (payment failures, disputes).
+ */
+export interface BillingAuditLog {
+  append(
+    tx: TransactionContext,
+    event: {
+      streamType: string;
+      streamId: string;
+      eventType: string;
+      data: unknown;
+      actorId?: string;
+      source?: string;
+    },
+  ): Promise<unknown>;
 }

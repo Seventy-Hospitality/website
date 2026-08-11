@@ -4,7 +4,7 @@ export { EventStore, type AppendEventParams, type AppendResult } from './event-s
 export {
   OutboxRepository,
   OutboxDispatcher,
-  NoopOutboxSink,
   type OutboxSink,
+  type OutboxSinkResult,
   type OutboxEventRecord,
 } from './outbox';

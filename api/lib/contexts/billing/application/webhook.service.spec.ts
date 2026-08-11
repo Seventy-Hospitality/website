@@ -107,6 +107,9 @@ function build() {
     setStripeCustomerId: vi.fn().mockResolvedValue(undefined),
   };
 
+  const audit = { append: vi.fn().mockResolvedValue({ id: 'evt_1', seq: 1 }) };
+  const uow = { execute: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({})) };
+
   const service = new WebhookService(
     gateway as never,
     webhookEvents as never,
@@ -116,8 +119,10 @@ function build() {
     membershipLookup,
     bookings,
     members,
+    audit,
+    uow as never,
   );
-  return { service, gateway, webhookEvents, ledger, paymentMethods, memberships, membershipLookup, bookings, members };
+  return { service, gateway, webhookEvents, ledger, paymentMethods, memberships, membershipLookup, bookings, members, audit, uow };
 }
 
 describe('WebhookService dedupe and outcomes', () => {
@@ -172,6 +177,25 @@ describe('subscription-shaped events', () => {
     const { service, memberships } = build();
     await service.process(ref({ kind: 'invoice_failed', subscriptionId: 'sub_1' } as never));
     expect(memberships.applySubscriptionState).toHaveBeenCalledWith('sub_1');
+  });
+
+  it('a failed renewal appends billing.payment_failed for the member (dunning rides the outbox)', async () => {
+    const { service, audit } = build();
+    await service.process(ref({ kind: 'invoice_failed', subscriptionId: 'sub_1' } as never));
+    expect(audit.append).toHaveBeenCalledWith(expect.anything(), {
+      streamType: 'billing',
+      streamId: 'mem_1',
+      eventType: 'billing.payment_failed',
+      data: { memberId: 'mem_1', stripeSubscriptionId: 'sub_1' },
+      source: 'webhook',
+    });
+  });
+
+  it('no billing.payment_failed row when the subscription resolves to no membership', async () => {
+    const { service, audit, membershipLookup } = build();
+    membershipLookup.getByStripeSubscriptionId.mockResolvedValue(null);
+    await service.process(ref({ kind: 'invoice_failed', subscriptionId: 'sub_unknown' } as never));
+    expect(audit.append).not.toHaveBeenCalled();
   });
 });
 
@@ -280,6 +304,32 @@ describe('dispute + payment methods', () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     await service.process(ref({ kind: 'dispute_created', chargeId: 'ch_1', paymentIntentId: 'pi_1' } as never));
     expect(bookings.freezeChargeForDispute).toHaveBeenCalledWith('pi_1', 'webhook');
+    errorSpy.mockRestore();
+  });
+
+  it('charge.dispute.created appends billing.dispute_opened (the staff alert rides the outbox)', async () => {
+    const { service, audit } = build();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await service.process(ref({ kind: 'dispute_created', chargeId: 'ch_1', paymentIntentId: 'pi_1' } as never));
+    expect(audit.append).toHaveBeenCalledWith(expect.anything(), {
+      streamType: 'billing',
+      streamId: 'ch_1',
+      eventType: 'billing.dispute_opened',
+      data: { chargeId: 'ch_1', paymentIntentId: 'pi_1', reservationIds: ['rsv_1'] },
+      source: 'webhook',
+    });
+    errorSpy.mockRestore();
+  });
+
+  it('an unlinked dispute (no payment intent) still alerts staff via the outbox row', async () => {
+    const { service, audit, bookings } = build();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await service.process(ref({ kind: 'dispute_created', chargeId: 'ch_2', paymentIntentId: null } as never));
+    expect(bookings.freezeChargeForDispute).not.toHaveBeenCalled();
+    expect(audit.append).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ eventType: 'billing.dispute_opened', streamId: 'ch_2' }),
+    );
     errorSpy.mockRestore();
   });
 

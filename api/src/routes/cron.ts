@@ -28,9 +28,11 @@ export async function cronRoutes(app: FastifyInstance) {
     },
   });
 
-  // Hand undispatched audit-log rows to the outbox sink and mark them
-  // dispatched (FOR UPDATE SKIP LOCKED; no seq-cursor checkpoints).
-  // TODO(package-f): the sink is a no-op until notifications land.
+  // Hand undispatched audit-log rows to the notification dispatcher and
+  // mark the delivered ones dispatched (FOR UPDATE SKIP LOCKED; no
+  // seq-cursor checkpoints). A row whose delivery failed stays pending and
+  // is retried next pass; the delivered-notifications ledger keeps the
+  // retry from double-sending what already went out.
   app.route({
     method: [...CRON_METHODS],
     url: '/dispatch-outbox',

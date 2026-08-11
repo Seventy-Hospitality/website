@@ -26,3 +26,51 @@ export interface PushMessage {
 export interface PushSender {
   send(messages: PushMessage[]): Promise<void>;
 }
+
+// ── Resolution ports for the outbox consumer (package F) ──
+// The dispatcher lives in communications and reaches the OTHER contexts
+// only through these narrow read ports, wired in the container over their
+// public barrels.
+
+export interface RecipientContact {
+  memberId: string;
+  email: string;
+  firstName: string;
+}
+
+/** Members context: resolve a live (non-deleted) recipient's contact. */
+export interface RecipientDirectory {
+  getContact(memberId: string): Promise<RecipientContact | null>;
+}
+
+/** Bookings context: everything a booking notification needs to render. */
+export interface ReservationNotificationView {
+  id: string;
+  reference: string;
+  typeName: string;
+  resourceName: string;
+  localDate: string;
+  startsAt: Date;
+  endsAt: Date;
+  organizerId: string;
+  seriesId: string | null;
+  participants: Array<{ memberId: string; role: string; status: string }>;
+}
+
+export interface ReservationDirectory {
+  getNotificationView(reservationId: string): Promise<ReservationNotificationView | null>;
+}
+
+/** Clubs context: club name + invitation graph for club notifications. */
+export interface ClubInvitationNotificationView {
+  invitationId: string;
+  clubId: string;
+  clubName: string;
+  inviterMemberId: string | null;
+  inviteeMemberId: string;
+}
+
+export interface ClubDirectory {
+  getClubName(clubId: string): Promise<string | null>;
+  getInvitationView(invitationId: string): Promise<ClubInvitationNotificationView | null>;
+}

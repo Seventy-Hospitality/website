@@ -23,6 +23,17 @@ const TEMPLATE_IDS: Record<Notification['type'], string> = {
   'email-verification': '',
   'password-reset': '',
   'account-reauth': '',
+  'booking-invite': '',
+  'booking-rescheduled': '',
+  'booking-confirmed': '',
+  'booking-cancelled': '',
+  'booking-reminder': '',
+  'series-booked': '',
+  'series-skipped': '',
+  'club-invite': '',
+  'id-approved': '',
+  'id-rejected': '',
+  'staff-alert': '',
 };
 
 const SUBJECTS: Record<Notification['type'], string> = {
@@ -33,6 +44,17 @@ const SUBJECTS: Record<Notification['type'], string> = {
   'email-verification': 'Verify your Seventy email',
   'password-reset': 'Reset your Seventy password',
   'account-reauth': 'Confirm it\'s you — Seventy account deletion',
+  'booking-invite': 'You\'re invited to a booking — Seventy',
+  'booking-rescheduled': 'A booking you joined was rescheduled — Seventy',
+  'booking-confirmed': 'Booking confirmed — Seventy',
+  'booking-cancelled': 'Booking cancelled — Seventy',
+  'booking-reminder': 'Upcoming booking reminder — Seventy',
+  'series-booked': 'Your weekly booking is scheduled — Seventy',
+  'series-skipped': 'Your weekly booking could not be scheduled — Seventy',
+  'club-invite': 'You\'re invited to a club — Seventy',
+  'id-approved': 'Your ID is verified — Seventy',
+  'id-rejected': 'Your ID could not be verified — Seventy',
+  'staff-alert': 'Staff alert — Seventy',
 };
 
 function getVariables(notification: Notification): Record<string, string> {
@@ -51,6 +73,47 @@ function getVariables(notification: Notification): Record<string, string> {
       return { resetUrl: notification.resetUrl };
     case 'account-reauth':
       return { token: notification.token };
+    case 'booking-invite':
+      return {
+        inviterFirstName: notification.inviterFirstName,
+        typeName: notification.typeName,
+        date: notification.date,
+        timeRange: notification.timeRange,
+        reference: notification.reference,
+      };
+    case 'booking-rescheduled':
+    case 'booking-cancelled':
+    case 'series-booked':
+      return {
+        typeName: notification.typeName,
+        date: notification.date,
+        timeRange: notification.timeRange,
+        reference: notification.reference,
+      };
+    case 'booking-confirmed':
+    case 'booking-reminder':
+      return {
+        firstName: notification.firstName,
+        typeName: notification.typeName,
+        resourceName: notification.resourceName,
+        date: notification.date,
+        timeRange: notification.timeRange,
+        reference: notification.reference,
+      };
+    case 'series-skipped':
+      return {
+        typeName: notification.typeName,
+        date: notification.date,
+        reason: notification.reason,
+      };
+    case 'club-invite':
+      return { inviterFirstName: notification.inviterFirstName, clubName: notification.clubName };
+    case 'id-approved':
+      return { firstName: notification.firstName };
+    case 'id-rejected':
+      return { firstName: notification.firstName, note: notification.note ?? '' };
+    case 'staff-alert':
+      return { subject: notification.subject, detail: notification.detail };
   }
 }
 
@@ -66,7 +129,10 @@ export class ResendAdapter implements NotificationSender {
   async send(notification: Notification): Promise<void> {
     const variables = getVariables(notification);
     const templateId = TEMPLATE_IDS[notification.type];
-    const subject = SUBJECTS[notification.type];
+    const subject =
+      notification.type === 'staff-alert'
+        ? `Staff alert — ${notification.subject}`
+        : SUBJECTS[notification.type];
 
     if (!this.resend) {
       console.log(`[email] ${notification.type} → ${notification.to}`, variables);
@@ -214,5 +280,81 @@ ${content}
 <tr><td style="font-size:12px;color:${EMAIL.muted};line-height:1.4">
   If you didn't request this, someone may have access to your account: change your password and sign out of all devices.
 </td></tr>`);
+
+    case 'booking-invite':
+      return wrapper(titleAndBody(
+        "You're invited",
+        `${variables.inviterFirstName} invited you to ${variables.typeName} on ${variables.date}, ${variables.timeRange} (booking ${variables.reference}). Open the Seventy app to accept or decline.`,
+      ));
+
+    case 'booking-rescheduled':
+      return wrapper(titleAndBody(
+        'Booking rescheduled',
+        `Booking ${variables.reference} (${variables.typeName}) moved to ${variables.date}, ${variables.timeRange}. Your earlier acceptance no longer applies: open the Seventy app to accept or decline the new time.`,
+      ));
+
+    case 'booking-confirmed':
+      return wrapper(titleAndBody(
+        'Booking confirmed',
+        `Hi ${variables.firstName}, your ${variables.typeName} booking is confirmed: ${variables.resourceName}, ${variables.date}, ${variables.timeRange}. Reference ${variables.reference}.`,
+      ));
+
+    case 'booking-cancelled':
+      return wrapper(titleAndBody(
+        'Booking cancelled',
+        `Booking ${variables.reference} (${variables.typeName}) on ${variables.date}, ${variables.timeRange} was cancelled.`,
+      ));
+
+    case 'booking-reminder':
+      return wrapper(titleAndBody(
+        'See you soon',
+        `Hi ${variables.firstName}, a reminder for your ${variables.typeName} booking: ${variables.resourceName}, ${variables.date}, ${variables.timeRange}. Reference ${variables.reference}.`,
+      ));
+
+    case 'series-booked':
+      return wrapper(titleAndBody(
+        'Weekly booking scheduled',
+        `Your weekly ${variables.typeName} booking is scheduled for ${variables.date}, ${variables.timeRange}. Reference ${variables.reference}.`,
+      ));
+
+    case 'series-skipped':
+      return wrapper(titleAndBody(
+        'Weekly booking skipped',
+        `Your weekly ${variables.typeName} booking could not be scheduled for ${variables.date} (${variables.reason === 'slot_unavailable' ? 'the slot is already taken' : variables.reason}). Nothing was booked for that date.`,
+      ));
+
+    case 'club-invite':
+      return wrapper(titleAndBody(
+        'Club invitation',
+        `${variables.inviterFirstName} invited you to join ${variables.clubName} on Seventy. Open the app to accept or decline.`,
+      ));
+
+    case 'id-approved':
+      return wrapper(titleAndBody(
+        'ID verified',
+        `Hi ${variables.firstName}, your identity has been verified. You're all set.`,
+      ));
+
+    case 'id-rejected':
+      return wrapper(titleAndBody(
+        'ID could not be verified',
+        `Hi ${variables.firstName}, we could not verify the ID you submitted${variables.note ? ` (${variables.note})` : ''}. Please upload a new photo in the app and submit again.`,
+      ));
+
+    case 'staff-alert':
+      return wrapper(titleAndBody(
+        variables.subject,
+        variables.detail,
+      ));
   }
+}
+
+function titleAndBody(title: string, body: string): string {
+  return `
+<tr><td style="text-align:center;padding-bottom:24px">
+  <span style="font-size:${EMAIL.fontTitle};font-weight:600;color:${EMAIL.text}">${title}</span>
+</td></tr>
+<tr><td style="font-size:${EMAIL.fontBody};color:${EMAIL.text};line-height:1.5">
+  ${body}
+</td></tr>`;
 }

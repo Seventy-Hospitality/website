@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { db } from './db';
 import { PrismaUnitOfWork } from './infrastructure/prisma-unit-of-work';
 import { EventStore } from './infrastructure/event-store';
-import { NoopOutboxSink, OutboxDispatcher, OutboxRepository } from './infrastructure/outbox';
+import { OutboxDispatcher, OutboxRepository } from './infrastructure/outbox';
 
 // Repositories + infrastructure
 import { IdVerificationRepository, MemberRepository } from '@/lib/contexts/members/infrastructure';
@@ -28,7 +28,13 @@ import {
   AppleTokenGateway,
   PrismaMemberDirectory,
 } from '@/lib/contexts/identity/infrastructure';
-import { DeviceRepository, NotificationPreferenceRepository, ResendAdapter } from '@/lib/contexts/communications/infrastructure';
+import {
+  DeliveredNotificationRepository,
+  DeviceRepository,
+  ExpoPushAdapter,
+  NotificationPreferenceRepository,
+  ResendAdapter,
+} from '@/lib/contexts/communications/infrastructure';
 import {
   ResourceTypeRepository,
   ResourceRepository,
@@ -61,7 +67,11 @@ import {
 } from '@/lib/contexts/identity/application';
 import { AccountDeletionService } from '@/lib/contexts/account/application';
 import { DeletionRequestRepository } from '@/lib/contexts/account/infrastructure';
-import { NotificationService, NotificationSettingsService } from '@/lib/contexts/communications/application';
+import {
+  NotificationDispatchService,
+  NotificationService,
+  NotificationSettingsService,
+} from '@/lib/contexts/communications/application';
 import { ReservationService, ResourceClaimService } from '@/lib/contexts/bookings/application';
 import { ClubEventService } from '@/lib/contexts/events/application';
 import { ClubService } from '@/lib/contexts/clubs/application';
@@ -71,10 +81,6 @@ import { MediaService } from '@/lib/contexts/media/application';
 
 export const uow = new PrismaUnitOfWork(db);
 export const eventStore = new EventStore();
-
-// Audit log doubles as the transactional outbox; the dispatcher marks rows
-// dispatched, and the sink is package F's seam (nothing is sent yet).
-export const outboxDispatcher = new OutboxDispatcher(uow, new OutboxRepository(), new NoopOutboxSink());
 
 // ── Venue ──
 // One venue, one wall clock: every reservation slot lives in this zone.
@@ -276,6 +282,77 @@ const clubCoverStore = {
 export const clubEventService = new ClubEventService(clubEventRepo, resourceClaimPort, eventImageStore, uow);
 export const clubService = new ClubService(clubRepo, clubCoverStore, eventStore, uow);
 
+// ── Notification delivery (package F) ──
+// The outbox consumer: pure decision matrix in the communications domain,
+// recipients resolved through the narrow read adapters below (public
+// barrel classes only), sends guarded by the delivered-notifications
+// ledger. Push degrades to a console log without EXPO_PUSH_ACCESS_TOKEN,
+// exactly as Resend does without RESEND_API_KEY.
+const pushSender = new ExpoPushAdapter(process.env.EXPO_PUSH_ACCESS_TOKEN?.trim() ?? '');
+
+export const notificationDispatchService = new NotificationDispatchService(
+  new DeliveredNotificationRepository(db),
+  new NotificationPreferenceRepository(db),
+  new DeviceRepository(db),
+  resendAdapter,
+  pushSender,
+  {
+    getContact: async (memberId: string) => {
+      const member = await memberRepo.getById(memberId);
+      return member && !member.deletedAt
+        ? { memberId: member.id, email: member.email, firstName: member.firstName }
+        : null;
+    },
+  },
+  {
+    getNotificationView: async (reservationId: string) => {
+      const detail = await reservationRepo.getDetail(reservationId);
+      return detail
+        ? {
+            id: detail.id,
+            reference: detail.reference,
+            typeName: detail.resourceType.name,
+            resourceName: detail.resource.name,
+            localDate: detail.localDate,
+            startsAt: detail.startsAt,
+            endsAt: detail.endsAt,
+            organizerId: detail.organizerId,
+            seriesId: detail.seriesId,
+            participants: detail.participants.map((participant) => ({
+              memberId: participant.memberId,
+              role: participant.role,
+              status: participant.status,
+            })),
+          }
+        : null;
+    },
+  },
+  {
+    getClubName: async (clubId: string) => (await clubRepo.getClub(clubId))?.name ?? null,
+    getInvitationView: async (invitationId: string) => {
+      const invitation = await clubRepo.getInvitation(invitationId);
+      if (!invitation) return null;
+      const club = await clubRepo.getClub(invitation.clubId);
+      return {
+        invitationId: invitation.id,
+        clubId: invitation.clubId,
+        clubName: club?.name ?? 'your club',
+        inviterMemberId: invitation.inviterId ?? null,
+        inviteeMemberId: invitation.inviteeMemberId,
+      };
+    },
+  },
+  {
+    timezone: VENUE_TIMEZONE,
+    staffAlertEmail: process.env.STAFF_ALERT_EMAIL?.trim() || null,
+  },
+);
+
+// Audit log doubles as the transactional outbox; the dispatcher hands
+// undispatched rows to the notification consumer and marks only the
+// delivered ones dispatched (failed ones stay pending and retry).
+export const outboxDispatcher = new OutboxDispatcher(uow, new OutboxRepository(), notificationDispatchService);
+
 // ── Billing services ──
 // Wired after the reservation service: billing drives bookings settlement
 // (webhook + reconcile) through the BookingSettlementPort shape it exposes.
@@ -289,6 +366,8 @@ export const webhookService = new WebhookService(
   membershipRepo,
   reservationService,
   memberRepo,
+  eventStore,
+  uow,
 );
 export const billingService = new BillingService(
   transactionRepo,

@@ -24,19 +24,24 @@ export interface OutboxEventRecord {
   actorId: string | null;
 }
 
-export interface OutboxSink {
-  /** Deliver a batch; throwing aborts the transaction so rows stay pending. */
-  deliver(events: OutboxEventRecord[]): Promise<void>;
+export interface OutboxSinkResult {
+  /**
+   * Event ids whose delivery failed: they are NOT marked dispatched, stay
+   * pending, and are retried on the next pass (retry, never drop). The
+   * sink's own idempotency ledger stops the retry from double-sending the
+   * notifications that did go out.
+   */
+  failedEventIds: string[];
 }
 
-/**
- * TODO(package-f): notifications replace this sink. Package B only persists
- * audit events and marks them dispatched; nothing is sent yet.
- */
-export class NoopOutboxSink implements OutboxSink {
-  async deliver(): Promise<void> {
-    // Intentionally nothing: the notification fan-out is package F.
-  }
+export interface OutboxSink {
+  /**
+   * Deliver a batch. Per-event failures are reported in the result;
+   * throwing outright aborts the transaction so the WHOLE batch stays
+   * pending. Implemented by the communications context's
+   * NotificationDispatchService.
+   */
+  deliver(events: OutboxEventRecord[]): Promise<OutboxSinkResult>;
 }
 
 export class OutboxRepository {
@@ -79,15 +84,21 @@ export class OutboxDispatcher {
     private readonly sink: OutboxSink,
   ) {}
 
-  /** One dispatch pass; returns how many rows were handed to the sink. */
-  async dispatch(limit = 100): Promise<{ dispatched: number }> {
+  /**
+   * One dispatch pass. Rows the sink delivered are marked dispatched in the
+   * same transaction that locked them; rows it reported failed keep
+   * dispatchedAt NULL and are picked up again next pass.
+   */
+  async dispatch(limit = 100): Promise<{ dispatched: number; failed: number }> {
     return this.uow.execute(async (tx) => {
       const batch = await this.repo.claimBatch(tx, limit);
-      if (batch.length === 0) return { dispatched: 0 };
+      if (batch.length === 0) return { dispatched: 0, failed: 0 };
 
-      await this.sink.deliver(batch);
-      await this.repo.markDispatched(tx, batch.map((event) => event.id));
-      return { dispatched: batch.length };
+      const result = await this.sink.deliver(batch);
+      const failed = new Set(result.failedEventIds);
+      const deliveredIds = batch.filter((event) => !failed.has(event.id)).map((event) => event.id);
+      await this.repo.markDispatched(tx, deliveredIds);
+      return { dispatched: deliveredIds.length, failed: failed.size };
     });
   }
 }

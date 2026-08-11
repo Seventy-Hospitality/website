@@ -10,7 +10,9 @@ import type { StripeGateway } from '../infrastructure/stripe.gateway';
 import type { TransactionRepository } from '../infrastructure/transaction.repository';
 import type { PaymentMethodRepository } from '../infrastructure/payment-method.repository';
 import type { WebhookEventRepository } from '../infrastructure/webhook-event.repository';
+import type { UnitOfWork } from '@/lib/kernel';
 import type {
+  BillingAuditLog,
   BookingSettlementPort,
   MemberBillingDirectory,
   MembershipBillingLookup,
@@ -45,6 +47,8 @@ export class WebhookService {
     private readonly membershipLookup: MembershipBillingLookup,
     private readonly bookings: BookingSettlementPort,
     private readonly members: MemberBillingDirectory,
+    private readonly audit: BillingAuditLog,
+    private readonly uow: UnitOfWork,
   ) {}
 
   async process(ref: StripeEventRef): Promise<WebhookOutcome> {
@@ -64,8 +68,24 @@ export class WebhookService {
       case 'invoice_failed':
         // SCA required or payment failed on a renewal: re-fetched state
         // carries past_due/incomplete; the member surface reads it there.
-        // TODO(package-f): notify the member ("your payment failed").
-        if (ref.subscriptionId) await this.memberships.applySubscriptionState(ref.subscriptionId);
+        // The dunning email rides the outbox: billing.payment_failed is
+        // consumed by the notification dispatcher (ledger-idempotent, so a
+        // webhook redelivery cannot double-send).
+        if (ref.subscriptionId) {
+          await this.memberships.applySubscriptionState(ref.subscriptionId);
+          const membership = await this.membershipLookup.getByStripeSubscriptionId(ref.subscriptionId);
+          if (membership) {
+            await this.uow.execute(async (tx) => {
+              await this.audit.append(tx, {
+                streamType: 'billing',
+                streamId: membership.memberId,
+                eventType: 'billing.payment_failed',
+                data: { memberId: membership.memberId, stripeSubscriptionId: ref.subscriptionId },
+                source: 'webhook',
+              });
+            });
+          }
+        }
         break;
       case 'payment_intent_succeeded':
         await this.handlePaymentIntentSucceeded(ref);
@@ -222,11 +242,28 @@ export class WebhookService {
   private async handleDisputeCreated(
     ref: Extract<StripeEventRef, { kind: 'dispute_created' }>,
   ): Promise<void> {
-    // TODO(package-f): staff notification; a dispute always needs a human.
     console.error(`[billing] dispute opened on charge ${ref.chargeId}; freezing linked reservation`);
+    let frozenReservationIds: string[] = [];
     if (ref.paymentIntentId) {
-      await this.bookings.freezeChargeForDispute(ref.paymentIntentId, 'webhook');
+      frozenReservationIds = await this.bookings.freezeChargeForDispute(ref.paymentIntentId, 'webhook');
     }
+    // A dispute always needs a human: the staff alert rides this outbox
+    // row (billing.dispute_opened -> staff email in the notification
+    // dispatcher). reservation.dispute_opened stays the audit record of
+    // the freeze itself.
+    await this.uow.execute(async (tx) => {
+      await this.audit.append(tx, {
+        streamType: 'billing',
+        streamId: ref.chargeId,
+        eventType: 'billing.dispute_opened',
+        data: {
+          chargeId: ref.chargeId,
+          paymentIntentId: ref.paymentIntentId ?? null,
+          reservationIds: frozenReservationIds,
+        },
+        source: 'webhook',
+      });
+    });
   }
 
   private async upsertPaymentMethodMirror(paymentMethodId: string): Promise<void> {
