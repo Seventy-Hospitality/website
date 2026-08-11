@@ -40,6 +40,7 @@ function build() {
     getProfile: vi.fn(async () => ({ id: 'mem_1', firstName: 'Alice', displayName: null })),
   };
   const bookings = {
+    hasActiveMembership: vi.fn(async () => true),
     listUpcomingForMember: vi.fn(async () => [] as never[]),
     listRecentConfirmedHistory: vi.fn(async () => [] as never[]),
     listAmenitiesForMember: vi.fn(async () => [amenity()]),
@@ -80,6 +81,15 @@ describe('HomeService.getHome: composition + IDOR safety', () => {
 
     const bogus = await service.getHome('mem_1', { now: NOW, timezone: 'Not/AZone' });
     expect(bogus.greeting).toEqual({ firstName: 'Alice', timeOfDay: 'morning', timezone: TZ });
+  });
+
+  it('canonicalizes the client timezone: the raw casing never flows downstream', async () => {
+    const { service } = build();
+
+    // Intl accepts any case-permutation; the raw string must not become a
+    // formatter-cache key (unbounded distinct valid inputs otherwise).
+    const home = await service.getHome('mem_1', { now: NOW, timezone: 'aSiA/hOnG_kOnG' });
+    expect(home.greeting).toEqual({ firstName: 'Alice', timeOfDay: 'evening', timezone: 'Asia/Hong_Kong' });
   });
 
   it('splits pending invitations out of the upcoming list by the VIEWER participation', async () => {
@@ -218,6 +228,25 @@ describe('HomeService quick-book', () => {
     const home = await service.getHome('mem_1', { now: NOW });
 
     expect(home.quickBook).toBeNull();
+  });
+
+  it('a lapsed membership suggests nothing: every amenity is unbookable regardless of tier', async () => {
+    const { service, bookings } = build();
+    bookings.hasActiveMembership.mockResolvedValue(false);
+    bookings.listRecentConfirmedHistory.mockResolvedValue(thursdayHistory as never);
+    bookings.listAvailableStarts.mockResolvedValue(['18:00', '18:30', '19:00']);
+
+    const home = await service.getHome('mem_1', { now: NOW });
+
+    // No quick-book (POST /api/reservations would 403 INACTIVE_MEMBERSHIP),
+    // and the empty-state summary shows the amenity locked with no slots.
+    expect(home.quickBook).toBeNull();
+    expect(home.emptyStateAmenities).toEqual([
+      expect.objectContaining({ typeCode: 'badminton_court', locked: true, availableSlotsToday: 0 }),
+    ]);
+    // The lapsed member's home never probes availability or quotes at all.
+    expect(bookings.listAvailableStarts).not.toHaveBeenCalled();
+    expect(bookings.fitsSingleResource).not.toHaveBeenCalled();
   });
 
   it('a habit for a now-locked amenity falls back instead of suggesting the locked type', async () => {

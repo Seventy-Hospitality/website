@@ -16,6 +16,7 @@ function reservation(overrides: Partial<ReservationNotificationView> = {}): Rese
     endsAt: new Date('2026-09-01T23:00:00.000Z'),
     organizerId: 'mem_org',
     seriesId: null,
+    status: 'confirmed',
     participants: [
       { memberId: 'mem_org', role: 'organizer', status: 'confirmed' },
       { memberId: 'mem_guest', role: 'guest', status: 'confirmed' },

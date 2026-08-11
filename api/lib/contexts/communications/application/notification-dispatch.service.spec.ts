@@ -49,6 +49,7 @@ function reservationView(overrides: Partial<ReservationNotificationView> = {}): 
     endsAt: new Date('2026-09-01T23:00:00.000Z'),
     organizerId: 'mem_org',
     seriesId: null,
+    status: 'confirmed',
     participants: [
       { memberId: 'mem_org', role: 'organizer', status: 'confirmed' },
       { memberId: 'mem_guest', role: 'guest', status: 'pending' },
@@ -375,6 +376,103 @@ describe('NotificationDispatchService: idempotency ledger', () => {
 
     expect(emailSender.send).not.toHaveBeenCalled();
     expect(pushSender.send).toHaveBeenCalledTimes(1); // push still owed
+  });
+
+  it('a persistently failing recipient never starves co-recipients (per-recipient isolation)', async () => {
+    const { service, emailSender, pushSender, reservations, devices } = build();
+    reservations.set(
+      'rsv_1',
+      reservationView({
+        status: 'cancelled',
+        participants: [
+          { memberId: 'mem_org', role: 'organizer', status: 'confirmed' },
+          { memberId: 'mem_guest', role: 'guest', status: 'confirmed' },
+          { memberId: 'mem_other', role: 'guest', status: 'confirmed' },
+        ],
+      }),
+    );
+    devices.set('mem_other', [{ token: 'tok-other' }]);
+    // mem_guest's push delivery fails on EVERY pass (e.g. rotated Expo token
+    // rejecting that batch); everyone else's sends succeed.
+    pushSender.send.mockImplementation(async (messages: Array<{ token: string }>) => {
+      if (messages.some((message) => message.token === 'tok-guest')) throw new Error('expo 401');
+    });
+
+    const cancelled = event({ eventType: 'reservation.cancelled', data: {}, actorId: 'mem_org' });
+    const first = await service.deliver([cancelled]);
+
+    // Both co-recipients got BOTH channels on the same pass despite the failure.
+    expect(first.failedEventIds).toEqual(['evt_1']);
+    expect(emailSender.send.mock.calls.map((call) => call[0].to).sort()).toEqual([
+      'guest@example.com',
+      'other@example.com',
+    ]);
+    expect(pushSender.send.mock.calls.flatMap((call) => call[0].map((m: { token: string }) => m.token)).sort()).toEqual(
+      ['tok-guest', 'tok-other'],
+    );
+
+    // The retry re-attempts ONLY the failed (recipient, channel) pair.
+    emailSender.send.mockClear();
+    pushSender.send.mockClear();
+    const second = await service.deliver([cancelled]);
+
+    expect(second.failedEventIds).toEqual(['evt_1']); // still failing, still pending
+    expect(emailSender.send).not.toHaveBeenCalled();
+    expect(pushSender.send).toHaveBeenCalledTimes(1);
+    expect(pushSender.send.mock.calls[0][0]).toEqual([expect.objectContaining({ token: 'tok-guest' })]);
+  });
+});
+
+describe('NotificationDispatchService: reservation-status dispatch gate', () => {
+  it('defers a booking invite while the reservation is a pending_payment hold, then delivers on confirm', async () => {
+    const { service, emailSender, pushSender, reservations } = build();
+    reservations.set('rsv_1', reservationView({ status: 'pending_payment' }));
+
+    const first = await service.deliver([event({})]);
+
+    // Not sent, event stays pending: no phantom invite for an unpaid hold.
+    expect(first.failedEventIds).toEqual(['evt_1']);
+    expect(emailSender.send).not.toHaveBeenCalled();
+    expect(pushSender.send).not.toHaveBeenCalled();
+
+    reservations.set('rsv_1', reservationView({ status: 'confirmed' }));
+    const second = await service.deliver([event({})]);
+
+    expect(second.failedEventIds).toEqual([]);
+    expect(emailSender.send).toHaveBeenCalledTimes(1);
+    expect(pushSender.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a booking invite whose reservation expired (abandoned checkout), dispatching clean', async () => {
+    const { service, emailSender, pushSender, reservations } = build();
+    reservations.set('rsv_1', reservationView({ status: 'expired' }));
+
+    const result = await service.deliver([event({})]);
+
+    expect(result.failedEventIds).toEqual([]);
+    expect(emailSender.send).not.toHaveBeenCalled();
+    expect(pushSender.send).not.toHaveBeenCalled();
+  });
+
+  it('still delivers the cancellation notice on the cancelled status it announces', async () => {
+    const { service, emailSender, reservations } = build();
+    reservations.set(
+      'rsv_1',
+      reservationView({
+        status: 'cancelled',
+        participants: [
+          { memberId: 'mem_org', role: 'organizer', status: 'confirmed' },
+          { memberId: 'mem_guest', role: 'guest', status: 'confirmed' },
+        ],
+      }),
+    );
+
+    const result = await service.deliver([
+      event({ eventType: 'reservation.cancelled', data: {}, actorId: 'mem_org' }),
+    ]);
+
+    expect(result.failedEventIds).toEqual([]);
+    expect(emailSender.send.mock.calls.map((call) => call[0].to)).toEqual(['guest@example.com']);
   });
 });
 

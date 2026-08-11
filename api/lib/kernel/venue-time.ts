@@ -24,6 +24,16 @@ export interface ZonedParts {
 
 const partsFormatters = new Map<string, Intl.DateTimeFormat>();
 
+/**
+ * Hard cap on cached formatters. There are only ~600 IANA zones, so a
+ * well-behaved process never reaches it; it exists so that a caller who
+ * feeds unexpected distinct strings (Intl accepts any case-permutation of
+ * a valid zone) cannot grow process memory without bound. Client-supplied
+ * zones must additionally be canonicalized before they get here (see
+ * home/domain/greeting.ts).
+ */
+const MAX_CACHED_FORMATTERS = 1024;
+
 function formatterFor(timeZone: string): Intl.DateTimeFormat {
   let formatter = partsFormatters.get(timeZone);
   if (!formatter) {
@@ -37,6 +47,7 @@ function formatterFor(timeZone: string): Intl.DateTimeFormat {
       second: '2-digit',
       hour12: false,
     });
+    if (partsFormatters.size >= MAX_CACHED_FORMATTERS) partsFormatters.clear();
     partsFormatters.set(timeZone, formatter);
   }
   return formatter;

@@ -16,10 +16,12 @@ export {
   CHANNEL_POLICIES,
   decideNotifications,
   planChannels,
+  reservationDispatchGate,
   type ChannelPlan,
   type ChannelPolicy,
   type NotificationDecision,
   type NotificationKind,
   type OutboxEventLike,
   type RecipientRef,
+  type ReservationDispatchGate,
 } from './notification-decision';

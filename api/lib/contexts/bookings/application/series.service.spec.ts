@@ -6,6 +6,7 @@ import {
   MaxReservationsExceededError,
   OutsideOperatingHoursError,
   ResourceTypeNotFoundError,
+  SeriesInactiveError,
   SeriesNotFoundError,
   SlotUnavailableError,
 } from '../domain';
@@ -271,6 +272,20 @@ describe('SeriesService.materializeDue', () => {
     const result = await service.materializeDue(NOW);
 
     expect(result).toEqual({ series: 1, created: 1, skipped: 0, alreadyHandled: 1 });
+  });
+
+  it('a series cancelled mid-pass (insert-time active re-check) stops materializing, records no skip', async () => {
+    const { service, seriesRepo, reservationService, audit } = build();
+    // The repository's in-transaction guard fired: an admin cancelled the
+    // series after this pass's listActive snapshot.
+    reservationService.create.mockRejectedValue(new SeriesInactiveError('ser_1'));
+
+    const result = await service.materializeDue(NOW);
+
+    expect(reservationService.create).toHaveBeenCalledTimes(1); // no second date tried
+    expect(seriesRepo.tryRecordSkip).not.toHaveBeenCalled();
+    expect(audit.append).not.toHaveBeenCalled(); // the organizer is not notified of anything
+    expect(result).toEqual({ series: 1, created: 0, skipped: 0, alreadyHandled: 1 });
   });
 
   it('an unexpected error propagates (cron 500s and retries) instead of being eaten as a skip', async () => {

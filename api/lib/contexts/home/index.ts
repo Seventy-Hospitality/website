@@ -21,6 +21,7 @@ export {
   deriveQuickBookPattern,
   timeOfDayFor,
   isValidTimeZone,
+  canonicalTimeZone,
   WEEKDAY_NAMES,
   type BookingHistoryEntry,
   type QuickBookPattern,

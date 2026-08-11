@@ -57,6 +57,7 @@ export {
   ReservationChangedError,
   SeriesNotFoundError,
   DuplicateSeriesOccurrenceError,
+  SeriesInactiveError,
   listSeriesOccurrenceDates,
   weekdayOfDateKey,
 } from './domain';

@@ -29,6 +29,12 @@ export interface HomeAmenity {
 }
 
 export interface HomeBookingsPort {
+  /**
+   * Whether the member's membership currently entitles them to book at all.
+   * Amenity `locked` is tier-only; a lapsed membership locks everything
+   * (quick-book must never suggest a slot the booking write rejects).
+   */
+  hasActiveMembership(memberId: string): Promise<boolean>;
   /** Everything the member organizes or participates in, soonest first. */
   listUpcomingForMember(memberId: string): Promise<ReservationDetailRecord[]>;
   /** Recent PAST confirmed bookings as organizer, most recent first. */

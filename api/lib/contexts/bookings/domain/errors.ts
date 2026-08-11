@@ -196,3 +196,17 @@ export class DuplicateSeriesOccurrenceError extends Error {
     this.name = 'DuplicateSeriesOccurrenceError';
   }
 }
+
+/**
+ * The series was deactivated (cancelled) between the materializer's active
+ * snapshot and the occurrence insert. The insert-time re-check under the
+ * series row lock makes cancel-vs-materialize serializable: no occurrence
+ * can be created for a cancelled series after cancel's future-occurrence
+ * sweep ran. Not a failure; there is simply nothing left to materialize.
+ */
+export class SeriesInactiveError extends Error {
+  constructor(seriesId: string) {
+    super(`Reservation series ${seriesId} is no longer active`);
+    this.name = 'SeriesInactiveError';
+  }
+}

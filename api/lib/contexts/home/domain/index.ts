@@ -1,4 +1,4 @@
-export { timeOfDayFor, isValidTimeZone, type TimeOfDay } from './greeting';
+export { timeOfDayFor, isValidTimeZone, canonicalTimeZone, type TimeOfDay } from './greeting';
 export {
   deriveQuickBookPattern,
   WEEKDAY_NAMES,

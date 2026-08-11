@@ -87,4 +87,5 @@ export {
   ReservationChangedError,
   SeriesNotFoundError,
   DuplicateSeriesOccurrenceError,
+  SeriesInactiveError,
 } from './errors';

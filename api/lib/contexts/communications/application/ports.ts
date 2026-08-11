@@ -54,6 +54,8 @@ export interface ReservationNotificationView {
   endsAt: Date;
   organizerId: string;
   seriesId: string | null;
+  /** Reservation status at read time; gates status-sensitive kinds at dispatch. */
+  status: string;
   participants: Array<{ memberId: string; role: string; status: string }>;
 }
 

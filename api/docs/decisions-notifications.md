@@ -210,6 +210,66 @@ as noted.
     since package E), nightly `reconcile-billing` / `subscription-drift`
     / `cleanup-event-images` unchanged.
 
+## Post-review fixes (recorded 2026-08-11)
+
+Resolved from the Package F code review; each is pinned by unit tests.
+
+18. **Send failures are isolated per (recipient, channel).** The
+    dispatcher no longer aborts an event's recipient loop when one send
+    throws: each (recipient, channel) pair runs claim -> send -> mark on
+    its own, a failure records on its pending claim, and the event stays
+    pending until EVERY owed send has delivered. Previously a
+    persistently failing recipient starved all co-recipients of a
+    multi-recipient event (cancellations, reschedule re-accepts) on
+    every retry pass, violating decision 3's "retry, never drop".
+
+19. **Resend API-level errors now throw.** The Resend SDK resolves with
+    an `{ error }` field instead of throwing (unverified sending domain,
+    invalid recipient, rate limits, even network failures). The adapter
+    inspects the result and throws on `error`, so the ledger claim stays
+    pending and the dispatcher retries. Before, every rejected email was
+    marked sent and silently dropped, which at launch (domain not yet
+    verified) would have dropped ALL email while recording it delivered.
+    The keyless console-log degrade is unchanged.
+
+20. **`booking_invite` is gated on reservation status at dispatch time**
+    (`reservationDispatchGate`, pure domain; the notification view now
+    carries `status`). Invite events are appended in the same
+    transaction that creates a pending_payment hold, so the dispatcher
+    DEFERS the invite (event stays pending, retried next pass) until the
+    reservation confirms, and DROPS it once the hold expired or the
+    booking was cancelled: no phantom invitations for abandoned
+    checkouts. Cancellation notices still deliver on the terminal status
+    they announce.
+
+21. **Materialize-vs-cancel race closed at the insert.** `createWithClaim`
+    re-checks `reservation_series.active` under the series row lock
+    (SELECT ... FOR UPDATE) in the same transaction as the occurrence
+    insert, throwing `SeriesInactiveError` (the materializer counts it as
+    already handled and stops that series). Either cancel's deactivate
+    waits for the in-flight insert and its future-occurrence sweep then
+    sees the new row, or the deactivate won and the insert aborts; a
+    cancelled series can no longer gain a live future occurrence from a
+    materialize pass running on a stale active snapshot.
+
+22. **Home treats a lapsed membership as everything-locked.** Amenity
+    `locked` is tier-only and `tierSatisfies(null, 'member')` is true,
+    so a lapsed member's base amenities read unlocked and quick-book or
+    the empty-state summary could suggest slots that POST
+    /api/reservations rejects with InactiveMembershipError. HomeService
+    now reads `hasActiveMembership` through the bookings port and treats
+    every amenity as locked for a lapsed member: no suggestion, no
+    availability or quote probes at all.
+
+23. **Client timezones are canonicalized and the formatter cache is
+    bounded.** Intl matches zone names case-insensitively, so `?tz=`
+    case-permutations of valid zones were unbounded distinct keys for
+    the kernel's per-zone formatter cache (a slow, authenticated
+    memory-exhaustion vector). `canonicalTimeZone` collapses every
+    accepted spelling via `resolvedOptions().timeZone` before the value
+    flows anywhere (and the greeting now echoes the canonical name), and
+    the kernel cache self-clears at a hard cap as defense in depth.
+
 ## Validation
 
 The full migration chain (through `20260811130000_notifications_series`)

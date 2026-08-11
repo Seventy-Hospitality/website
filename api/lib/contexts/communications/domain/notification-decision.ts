@@ -129,6 +129,26 @@ export function planChannels(
   };
 }
 
+export type ReservationDispatchGate = 'deliver' | 'defer' | 'drop';
+
+/**
+ * Some booking kinds only make sense against the reservation's status AT
+ * DISPATCH TIME, not at append time. The invite events are appended in the
+ * same transaction that creates a pending_payment hold, so an invite is
+ * DEFERRED (event stays pending, retried next pass) until the reservation
+ * confirms, and DROPPED once the hold expired or the booking was cancelled:
+ * nobody is invited to a booking that never happened. Cancellation notices
+ * deliver on the terminal status they announce; everything else delivers
+ * unconditionally.
+ */
+export function reservationDispatchGate(kind: NotificationKind, status: string): ReservationDispatchGate {
+  if (kind === 'booking_invite') {
+    if (status === 'pending_payment') return 'defer';
+    if (status === 'cancelled' || status === 'expired') return 'drop';
+  }
+  return 'deliver';
+}
+
 function asRecord(data: unknown): Record<string, unknown> {
   return typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {};
 }

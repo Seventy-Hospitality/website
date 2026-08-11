@@ -3,6 +3,7 @@ import {
   CHANNEL_POLICIES,
   decideNotifications,
   planChannels,
+  reservationDispatchGate,
   type NotificationDecision,
   type NotificationKind,
   type OutboxEventLike,
@@ -57,6 +58,11 @@ export interface NotificationDispatchConfig {
  * drop). Per-event failures are reported to the dispatcher, which leaves
  * exactly those events pending.
  *
+ * Failures are isolated per (recipient, channel): one persistently failing
+ * send never starves co-recipients of the same event (every recipient and
+ * channel is attempted on every pass), and the event stays pending until
+ * EVERY owed send has been delivered.
+ *
  * A recipient or subject that no longer resolves (deleted member, deleted
  * reservation or club) means there is nothing to say: the decision
  * evaporates and the event dispatches as audit-only.
@@ -90,36 +96,62 @@ export class NotificationDispatchService {
     return { failedEventIds };
   }
 
+  /** Throws when any owed send is still undelivered, keeping the event pending. */
   private async deliverOne(event: DispatchableEvent): Promise<void> {
     const decisions = decideNotifications(event);
+    let undelivered = 0;
     for (const decision of decisions) {
-      if (decision.recipient.kind === 'staff') {
-        await this.deliverStaffAlert(event, decision.kind);
-        continue;
-      }
-      await this.deliverToMembers(event, decision);
+      undelivered +=
+        decision.recipient.kind === 'staff'
+          ? await this.deliverStaffAlert(event, decision.kind)
+          : await this.deliverToMembers(event, decision);
     }
+    if (undelivered > 0) {
+      throw new Error(`${undelivered} send(s) still owed; their ledger claims stay pending`);
+    }
+  }
+
+  /**
+   * claim -> send -> mark for ONE (recipient, channel), isolating failure to
+   * that pair: a throw from the sender records the failure on the pending
+   * claim and reports 1 undelivered send instead of unwinding the loop over
+   * the event's other recipients and channels.
+   */
+  private async guardedSend(
+    event: DispatchableEvent,
+    recipient: string,
+    channel: 'email' | 'push',
+    send: () => Promise<void>,
+  ): Promise<number> {
+    if ((await this.ledger.claim(event.seq, recipient, channel)) === 'already_sent') return 0;
+    try {
+      await send();
+    } catch (error) {
+      await this.recordFailure(event.seq, recipient, channel, error);
+      console.error(
+        `[notifications] ${channel} send failed for event seq=${event.seq} (${event.eventType}), recipient=${recipient}; will retry`,
+        error,
+      );
+      return 1;
+    }
+    await this.ledger.markSent(event.seq, recipient, channel);
+    return 0;
   }
 
   // ── Staff alerts ──
 
-  private async deliverStaffAlert(event: DispatchableEvent, kind: NotificationKind): Promise<void> {
+  private async deliverStaffAlert(event: DispatchableEvent, kind: NotificationKind): Promise<number> {
     const to = this.config.staffAlertEmail;
     if (!to) {
       console.warn(
         `[notifications] STAFF_ALERT_EMAIL not configured; dropping staff alert for ${event.eventType} (seq=${event.seq})`,
       );
-      return;
+      return 0;
     }
 
-    if ((await this.ledger.claim(event.seq, 'staff', 'email')) === 'already_sent') return;
-    try {
-      await this.emailSender.send(this.buildStaffAlert(event, kind, to));
-    } catch (error) {
-      await this.recordFailure(event.seq, 'staff', 'email', error);
-      throw error;
-    }
-    await this.ledger.markSent(event.seq, 'staff', 'email');
+    return this.guardedSend(event, 'staff', 'email', () =>
+      this.emailSender.send(this.buildStaffAlert(event, kind, to)),
+    );
   }
 
   private buildStaffAlert(event: DispatchableEvent, kind: NotificationKind, to: string): Notification {
@@ -160,20 +192,37 @@ export class NotificationDispatchService {
 
   // ── Member notifications ──
 
-  private async deliverToMembers(event: DispatchableEvent, decision: NotificationDecision): Promise<void> {
+  /** Returns how many owed sends are still undelivered (0 = event settled). */
+  private async deliverToMembers(event: DispatchableEvent, decision: NotificationDecision): Promise<number> {
     const policy = CHANNEL_POLICIES[decision.kind];
 
     // Booking kinds render from (and resolve recipients through) the
     // reservation; a reservation that no longer exists has nothing to say.
     const needsReservation = decision.kind.startsWith('booking_') || decision.kind === 'series_booked';
     const reservation = needsReservation ? await this.reservations.getNotificationView(event.streamId) : null;
-    if (needsReservation && !reservation) return;
+    if (needsReservation && !reservation) return 0;
+
+    // Some kinds only make sense against the reservation's status at
+    // dispatch time: an invite during a pending_payment checkout waits for
+    // the reservation to confirm, and evaporates if the hold expires (no
+    // phantom invitations to a booking that never happened).
+    if (reservation) {
+      const gate = reservationDispatchGate(decision.kind, reservation.status);
+      if (gate === 'drop') return 0;
+      if (gate === 'defer') {
+        console.log(
+          `[notifications] deferring ${decision.kind} for event seq=${event.seq}: reservation ${reservation.id} is ${reservation.status}`,
+        );
+        return 1;
+      }
+    }
 
     let memberIds = await this.resolveMemberIds(decision.recipient, reservation);
     if (policy.suppressActor && event.actorId) {
       memberIds = memberIds.filter((memberId) => memberId !== event.actorId);
     }
 
+    let undelivered = 0;
     for (const memberId of [...new Set(memberIds)]) {
       const contact = await this.recipients.getContact(memberId);
       if (!contact) continue; // deleted or unknown member: nothing to deliver
@@ -184,36 +233,25 @@ export class NotificationDispatchService {
 
       if (plan.email) {
         const email = await this.buildEmail(event, decision.kind, contact.email, contact.firstName, reservation);
-        if (email && (await this.ledger.claim(event.seq, memberId, 'email')) === 'claimed') {
-          try {
-            await this.emailSender.send(email);
-          } catch (error) {
-            await this.recordFailure(event.seq, memberId, 'email', error);
-            throw error;
-          }
-          await this.ledger.markSent(event.seq, memberId, 'email');
+        if (email) {
+          undelivered += await this.guardedSend(event, memberId, 'email', () => this.emailSender.send(email));
         }
       }
 
       if (plan.push) {
         const content = await this.buildPush(event, decision.kind, reservation);
-        if (content && (await this.ledger.claim(event.seq, memberId, 'push')) === 'claimed') {
-          try {
-            const messages: PushMessage[] = memberDevices.map((device) => ({
-              token: device.token,
-              title: content.title,
-              body: content.body,
-              data: content.data,
-            }));
-            await this.pushSender.send(messages);
-          } catch (error) {
-            await this.recordFailure(event.seq, memberId, 'push', error);
-            throw error;
-          }
-          await this.ledger.markSent(event.seq, memberId, 'push');
+        if (content) {
+          const messages: PushMessage[] = memberDevices.map((device) => ({
+            token: device.token,
+            title: content.title,
+            body: content.body,
+            data: content.data,
+          }));
+          undelivered += await this.guardedSend(event, memberId, 'push', () => this.pushSender.send(messages));
         }
       }
     }
+    return undelivered;
   }
 
   private async resolveMemberIds(

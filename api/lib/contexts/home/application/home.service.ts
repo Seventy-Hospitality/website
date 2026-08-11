@@ -11,8 +11,8 @@ import type { ReservationDetailRecord } from '@/lib/contexts/bookings';
 import type { PendingInvitationItem } from '@/lib/contexts/clubs';
 import type { ClubEvent } from '@/lib/contexts/events';
 import {
+  canonicalTimeZone,
   deriveQuickBookPattern,
-  isValidTimeZone,
   timeOfDayFor,
   WEEKDAY_NAMES,
   type QuickBookPattern,
@@ -94,16 +94,23 @@ export class HomeService {
   ): Promise<HomeView> {
     const now = options.now ?? new Date();
 
-    const [profile, upcoming, clubInvitations, spotlightEvents, amenities] = await Promise.all([
+    const [profile, upcoming, clubInvitations, spotlightEvents, rawAmenities, canBook] = await Promise.all([
       this.members.getProfile(memberId),
       this.bookings.listUpcomingForMember(memberId),
       this.clubs.listPendingInvitations(memberId),
       this.events.listUpcoming(),
       this.bookings.listAmenitiesForMember(memberId),
+      this.bookings.hasActiveMembership(memberId),
     ]);
     if (!profile) throw new MemberNotFoundError(memberId);
 
-    const greetingTimezone = isValidTimeZone(options.timezone) ? options.timezone : this.venueTimezone;
+    // Amenity `locked` is tier-only; a lapsed membership makes EVERYTHING
+    // unbookable, so quick-book and the empty-state summary treat every
+    // amenity as locked rather than suggesting slots that POST
+    // /api/reservations would reject with InactiveMembershipError.
+    const amenities = canBook ? rawAmenities : rawAmenities.map((amenity) => ({ ...amenity, locked: true }));
+
+    const greetingTimezone = canonicalTimeZone(options.timezone) ?? this.venueTimezone;
 
     const statusOf = (reservation: ReservationDetailRecord) =>
       reservation.participants.find((participant) => participant.memberId === memberId)?.status;

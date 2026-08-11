@@ -14,13 +14,25 @@ export function timeOfDayFor(now: Date, timeZone: string): TimeOfDay {
   return 'evening';
 }
 
+/**
+ * Canonicalize a client-supplied IANA zone name, null when invalid.
+ *
+ * Intl zone matching is case-insensitive ("aMeRiCa/nEw_yOrK" is accepted),
+ * so the RAW client string must never flow further in: downstream keys a
+ * formatter cache per distinct zone string, and the case-permutations of
+ * every valid zone would grow it without bound. resolvedOptions() collapses
+ * every accepted spelling to the one canonical name ("America/New_York").
+ */
+export function canonicalTimeZone(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 64) return null;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: value }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether a client-supplied string names a real IANA timezone. */
 export function isValidTimeZone(value: unknown): value is string {
-  if (typeof value !== 'string' || value.length === 0) return false;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: value });
-    return true;
-  } catch {
-    return false;
-  }
+  return canonicalTimeZone(value) !== null;
 }

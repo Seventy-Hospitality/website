@@ -327,6 +327,7 @@ const toReservationNotificationView = (detail: NonNullable<Awaited<ReturnType<ty
   endsAt: detail.endsAt,
   organizerId: detail.organizerId,
   seriesId: detail.seriesId,
+  status: detail.status,
   participants: detail.participants.map((participant) => ({
     memberId: participant.memberId,
     role: participant.role,
@@ -387,6 +388,7 @@ export const homeService = new HomeService(
     },
   },
   {
+    hasActiveMembership: (memberId: string) => membershipChecker.hasActiveMembership(memberId),
     listUpcomingForMember: (memberId: string) => reservationService.listForMember(memberId, 'upcoming'),
     listRecentConfirmedHistory: (memberId: string) => reservationService.listRecentConfirmedHistory(memberId),
     listAmenitiesForMember: async (memberId: string) =>

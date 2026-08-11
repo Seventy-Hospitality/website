@@ -139,7 +139,12 @@ export class ResendAdapter implements NotificationSender {
       return;
     }
 
-    await this.resend.emails.send({
+    // The Resend SDK does NOT throw on API-level failures (unverified
+    // domain, invalid recipient, rate limit, even network errors): it
+    // resolves with an `error` field. Swallowing it would mark the email
+    // sent in the delivery ledger and silently drop it forever; throwing
+    // keeps the claim pending so the dispatcher retries (retry, never drop).
+    const { error } = await this.resend.emails.send({
       from: this.fromAddress,
       to: notification.to,
       subject,
@@ -147,6 +152,9 @@ export class ResendAdapter implements NotificationSender {
         ? { template: { id: templateId, variables } }
         : { html: renderEmail(notification.type, variables) }),
     });
+    if (error) {
+      throw new Error(`Resend send failed (${error.name}): ${error.message}`);
+    }
   }
 }
 

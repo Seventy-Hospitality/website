@@ -10,6 +10,7 @@ import {
   InviteeNotFoundError,
   MaxReservationsExceededError,
   ResourceTypeNotFoundError,
+  SeriesInactiveError,
   SeriesNotFoundError,
   SlotUnavailableError,
 } from '../domain';
@@ -200,6 +201,12 @@ export class SeriesService {
           if (error instanceof DuplicateSeriesOccurrenceError) {
             result.alreadyHandled += 1;
             continue;
+          }
+          if (error instanceof SeriesInactiveError) {
+            // Cancelled mid-pass (insert-time active re-check): nothing
+            // more to materialize for this series.
+            result.alreadyHandled += 1;
+            break;
           }
           const reason = skipReasonFor(error);
           if (!reason) throw error;

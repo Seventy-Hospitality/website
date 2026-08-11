@@ -1,5 +1,5 @@
 import { deriveQuickBookPattern, type BookingHistoryEntry } from './quick-book';
-import { isValidTimeZone, timeOfDayFor } from './greeting';
+import { canonicalTimeZone, isValidTimeZone, timeOfDayFor } from './greeting';
 
 // History entries are most-recent-first, matching the bookings read.
 function entry(overrides: Partial<BookingHistoryEntry> = {}): BookingHistoryEntry {
@@ -78,5 +78,18 @@ describe('greeting helpers', () => {
     expect(isValidTimeZone('Not/AZone')).toBe(false);
     expect(isValidTimeZone('')).toBe(false);
     expect(isValidTimeZone(undefined)).toBe(false);
+  });
+
+  it('canonicalizes every accepted spelling to ONE zone name (cache-key safety)', () => {
+    // Intl matches zones case-insensitively; the raw client string must
+    // never key a cache, or its case-permutations grow it without bound.
+    expect(canonicalTimeZone('America/New_York')).toBe('America/New_York');
+    expect(canonicalTimeZone('aMeRiCa/nEw_yOrK')).toBe('America/New_York');
+    expect(canonicalTimeZone('AMERICA/NEW_YORK')).toBe('America/New_York');
+    expect(canonicalTimeZone('Not/AZone')).toBeNull();
+    expect(canonicalTimeZone('')).toBeNull();
+    expect(canonicalTimeZone(undefined)).toBeNull();
+    expect(canonicalTimeZone(42)).toBeNull();
+    expect(canonicalTimeZone(`America/${'x'.repeat(80)}`)).toBeNull(); // length-capped before Intl
   });
 });

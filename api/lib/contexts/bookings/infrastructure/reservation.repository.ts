@@ -13,7 +13,7 @@ import type {
   ReservationStatus,
   ResourceType,
 } from '../domain';
-import { DuplicateSeriesOccurrenceError, SlotUnavailableError } from '../domain';
+import { DuplicateSeriesOccurrenceError, SeriesInactiveError, SlotUnavailableError } from '../domain';
 import { isClaimConflictError, isSeriesOccurrenceConflict } from './pg-errors';
 
 export interface ParticipantWithMember extends ReservationParticipant {
@@ -319,6 +319,21 @@ export class ReservationRepository {
    */
   async createWithClaim(tx: TransactionContext, input: CreateReservationInput): Promise<ReservationDetailRecord> {
     const prisma = asPrismaTx(tx);
+
+    // Series occurrences re-assert the series is STILL active, under its
+    // row lock, atomically with the insert. This closes the TOCTOU between
+    // the materializer's listActive snapshot and a concurrent series
+    // cancel: either the cancel's deactivate waits for this transaction
+    // (and its occurrence sweep then sees the new row), or the deactivate
+    // won and this insert aborts.
+    if (input.seriesId) {
+      const series = await prisma.$queryRaw<Array<{ active: boolean }>>`
+        SELECT "active" FROM "reservation_series" WHERE "id" = ${input.seriesId} FOR UPDATE
+      `;
+      if (series.length === 0 || !series[0].active) {
+        throw new SeriesInactiveError(input.seriesId);
+      }
+    }
 
     let reservation: { id: string };
     try {
