@@ -56,6 +56,13 @@ reservation shapes the booking flow consumes. Reuse, do not redefine:
   date]`, `['resource-types']`, `['clubs']`. Booking mutations invalidate
   the `['reservations']`, `['home']`, and `['availability', typeCode]`
   prefixes; do the same for reservation-changing mutations in W4.
+- Invitation responses (W4; W2 home renders the same inline actions):
+  `useRespondToReservation()` in `src/lib/reservation-respond.ts` is THE
+  respond mutation: optimistic flip of the viewer's row in the
+  `['reservations', id]` cache with rollback, conflict re-fetch, and the
+  standard invalidation. Policy mirrors (participant transitions, the
+  cancellation refund tiers, reschedule delta/dirty helpers) live in
+  `src/lib/reservation-policy.ts`; the server response stays authoritative.
 
 ## Loading / error / empty states are first-class
 
