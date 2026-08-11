@@ -117,4 +117,32 @@ describe('MemberRepository.searchByNamePrefix', () => {
     const where = findMany.mock.calls[0][0].where;
     expect(where.OR).toHaveLength(1);
   });
+
+  it('orders with a unique id tiebreaker so offset pages never duplicate or drop same-name members', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repo = new MemberRepository({ member: { findMany } } as any);
+
+    await repo.searchByNamePrefix('june', 10, 20);
+
+    expect(findMany.mock.calls[0][0].orderBy).toEqual([
+      { firstName: 'asc' },
+      { lastName: 'asc' },
+      { id: 'asc' },
+    ]);
+  });
+});
+
+describe('MemberRepository.listDirectory', () => {
+  it('pages the live directory with the same total order (unique id tiebreaker) and exclusions', async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const repo = new MemberRepository({ member: { findMany } } as any);
+
+    await repo.listDirectory({ excludeMemberId: 'mem_me', offset: 25, limit: 25 });
+
+    const args = findMany.mock.calls[0][0];
+    expect(args.where).toEqual({ deletedAt: null, id: { not: 'mem_me' } });
+    expect(args.orderBy).toEqual([{ firstName: 'asc' }, { lastName: 'asc' }, { id: 'asc' }]);
+    expect(args.skip).toBe(25);
+    expect(args.take).toBe(25);
+  });
 });

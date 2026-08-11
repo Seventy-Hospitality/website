@@ -151,7 +151,10 @@ export class MemberRepository {
     return this.prisma.member.findMany({
       where: { deletedAt: null, OR: matchers },
       select: DIRECTORY_SELECT,
-      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      // The unique id tiebreaker makes the order total: without it, two
+      // members sharing both names have undefined relative order and can
+      // duplicate or vanish across offset-paged requests.
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }, { id: 'asc' }],
       skip: offset,
       take: limit,
     });
@@ -174,7 +177,9 @@ export class MemberRepository {
         ...(options.excludeMemberId ? { id: { not: options.excludeMemberId } } : {}),
       },
       select: DIRECTORY_SELECT,
-      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      // Same total order as the search (unique id tiebreaker): stable
+      // offset pagination among same-name members.
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }, { id: 'asc' }],
       skip: options.offset,
       take: options.limit,
     });
