@@ -292,8 +292,11 @@ export function CheckoutPage() {
                       variant="secondary"
                       size="sm"
                       onClick={() => {
-                        startedForPlan.current = null;
-                        subscribe.reset();
+                        startedForPlan.current = activePlan.id;
+                        subscribe.mutate({
+                          planId: activePlan.id,
+                          termsVersion: TERMS_VERSION,
+                        });
                       }}
                     >
                       Try again
