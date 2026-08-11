@@ -8,6 +8,7 @@ import {
   formatStripDay,
   pruneSelection,
   resourceNoun,
+  timeLabelToMinutes,
   todayDateKey,
   toggleSlot,
 } from '../../lib/booking';
@@ -28,6 +29,18 @@ export interface SelectTimeStepProps {
   notice: string | null;
   onDismissNotice: () => void;
   onContinue: () => void;
+  /** Heading override ("Edit booking" in W4's reschedule wizard). */
+  title?: string;
+  /**
+   * Slots treated as bookable on top of the fetched availability, for the
+   * CURRENT date. W4's edit wizard passes the reservation's own slots: the
+   * availability endpoint reads its claim as taken, but to itself it is
+   * free (the backend reschedule self-excludes it).
+   */
+  extraAvailable?: string[];
+  continueLabel?: string;
+  /** Extra gating on top of "at least one slot" (W4's dirty check). */
+  continueDisabled?: boolean;
 }
 
 /**
@@ -46,6 +59,10 @@ export function SelectTimeStep({
   notice,
   onDismissNotice,
   onContinue,
+  title,
+  extraAvailable,
+  continueLabel = 'Continue',
+  continueDisabled = false,
 }: SelectTimeStepProps) {
   const strip = useMemo(
     () => buildDateStrip(todayDateKey(), type.maxAdvanceDays),
@@ -56,7 +73,13 @@ export function SelectTimeStep({
 
   const availability = useQuery(availabilityQuery(type.code, date));
   const day = availability.data?.[0];
-  const available = useMemo(() => day?.slots.map((slot) => slot.start) ?? [], [day]);
+  const available = useMemo(() => {
+    const fetched = day?.slots.map((slot) => slot.start) ?? [];
+    if (!extraAvailable || extraAvailable.length === 0) return fetched;
+    const merged = new Set(fetched);
+    for (const slot of extraAvailable) merged.add(slot);
+    return [...merged].sort((a, b) => timeLabelToMinutes(a) - timeLabelToMinutes(b));
+  }, [day, extraAvailable]);
 
   // An availability refetch can remove a selected slot (someone else booked
   // it); prune so the selection never holds a time we cannot book.
@@ -70,7 +93,7 @@ export function SelectTimeStep({
   return (
     <div className={styles.step}>
       <h1 ref={headingRef} tabIndex={-1} className={styles.stepTitle}>
-        Book a {resourceNoun(type.name)}
+        {title ?? `Book a ${resourceNoun(type.name)}`}
       </h1>
 
       {notice && (
@@ -145,8 +168,8 @@ export function SelectTimeStep({
       )}
 
       <div className={styles.stepFooter}>
-        <Button fullWidth disabled={slots.length === 0} onClick={onContinue}>
-          Continue
+        <Button fullWidth disabled={slots.length === 0 || continueDisabled} onClick={onContinue}>
+          {continueLabel}
         </Button>
       </div>
     </div>

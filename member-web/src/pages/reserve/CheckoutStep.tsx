@@ -14,6 +14,7 @@ import { formatAmountWithCents } from '../../lib/plan-pricing';
 import { inviteesPayload, type InviteSelection } from '../../lib/invites';
 import { getStripe } from '../../lib/stripe';
 import { StripeProvider } from '../../lib/StripeProvider';
+import { useCountdown } from './use-countdown';
 import {
   Button,
   Card,
@@ -388,17 +389,7 @@ function bookingReturnUrl(typeCode: string, reservationId: string): string {
   return `${window.location.origin}/reserve/${encodeURIComponent(typeCode)}?reservation=${encodeURIComponent(reservationId)}`;
 }
 
-function BookingPaymentForm({
-  returnUrl,
-  confirmError,
-  confirmPending,
-  onRetryConfirm,
-  paying,
-  setPaying,
-  onPaymentLock,
-  onPaid,
-  totalCents,
-}: {
+export interface BookingPaymentFormProps {
   returnUrl: string;
   confirmError: boolean;
   confirmPending: boolean;
@@ -408,7 +399,26 @@ function BookingPaymentForm({
   onPaymentLock: (locked: boolean) => void;
   onPaid: () => Promise<void>;
   totalCents: number;
-}) {
+  /** Submit label override (W4's reschedule-grow uses "Save changes"). */
+  submitLabel?: ReactNode;
+}
+
+/**
+ * The booking Payment Element form (shared surface: W3 checkout and W4's
+ * reschedule-grow delta collect through the same decline/SCA/lock rules).
+ */
+export function BookingPaymentForm({
+  returnUrl,
+  confirmError,
+  confirmPending,
+  onRetryConfirm,
+  paying,
+  setPaying,
+  onPaymentLock,
+  onPaid,
+  totalCents,
+  submitLabel,
+}: BookingPaymentFormProps) {
   const stripe = useStripe();
   const elements = useElements();
   const [ready, setReady] = useState(false);
@@ -490,7 +500,7 @@ function BookingPaymentForm({
           disabled={!ready || !stripe}
           loading={paying || confirmPending}
         >
-          Confirm &amp; pay {formatAmountWithCents(totalCents)}
+          {submitLabel ?? <>Confirm &amp; pay {formatAmountWithCents(totalCents)}</>}
         </Button>
       </div>
     </form>
@@ -499,7 +509,9 @@ function BookingPaymentForm({
 
 /**
  * Full-screen processing takeover (Figma loading-state 7:2845): shown
- * while the payment confirms and the hold flips to a confirmed booking.
+ * while the payment confirms and the hold flips to a confirmed booking
+ * (W4's reschedule reuses it while the change delta settles, overriding
+ * title/body).
  *
  * A native modal <dialog> (the Sheet pattern): focus moves into the top
  * layer and the page behind it goes inert, so keyboard/screen-reader users
@@ -507,7 +519,17 @@ function BookingPaymentForm({
  * went through. Escape is swallowed: there is nothing safe to go back to
  * while the payment settles.
  */
-function ProcessingScreen({ resourceName, noun }: { resourceName?: string; noun: string }) {
+export function ProcessingScreen({
+  resourceName,
+  noun,
+  title,
+  body,
+}: {
+  resourceName?: string;
+  noun: string;
+  title?: string;
+  body?: string;
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
 
@@ -532,12 +554,13 @@ function ProcessingScreen({ resourceName, noun }: { resourceName?: string; noun:
     >
       <Spinner size={40} />
       <p id={titleId} className={styles.processingScreenTitle}>
-        Processing your booking...
+        {title ?? 'Processing your booking...'}
       </p>
       <p className={styles.processingScreenBody}>
-        {resourceName
-          ? `We're securing your spot on ${resourceName}`
-          : `We're securing your ${noun}`}
+        {body ??
+          (resourceName
+            ? `We're securing your spot on ${resourceName}`
+            : `We're securing your ${noun}`)}
       </p>
       <p className={styles.processingScreenNote}>Please do not close this page or refresh</p>
     </dialog>
@@ -743,14 +766,3 @@ function holdAnnouncement(resourceName: string, secondsLeft: number): string {
   return `${resourceName} is held for you while you complete payment.`;
 }
 
-/** Seconds until the ISO instant, ticking every second; null without one. */
-function useCountdown(expiresAt: string | null): number | null {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!expiresAt) return;
-    const handle = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(handle);
-  }, [expiresAt]);
-  if (!expiresAt) return null;
-  return Math.max(0, Math.floor((new Date(expiresAt).getTime() - now) / 1000));
-}

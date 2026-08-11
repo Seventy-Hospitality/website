@@ -44,10 +44,14 @@ export interface ReservationCardProps {
    * Label/value facts about the reservation. `layout="columns"` puts them
    * side by side (checkout: Date / Time / Duration); `layout="rows"` stacks
    * them with dividers (confirmation: Date / Time / Booking ref / Amount).
+   * An empty array renders the head only.
    */
   rows: ReservationCardRow[];
   layout?: 'columns' | 'rows';
   className?: string;
+  /** Extra content below the fact rows, inside the card (W4's old -> new
+      change rows on the reschedule confirm screen). */
+  children?: ReactNode;
 }
 
 /**
@@ -62,6 +66,7 @@ export function ReservationCard({
   rows,
   layout = 'columns',
   className,
+  children,
 }: ReservationCardProps) {
   return (
     <Card className={[styles.card, className ?? ''].join(' ')}>
@@ -75,25 +80,28 @@ export function ReservationCard({
         </div>
       </div>
 
-      {layout === 'columns' ? (
-        <dl className={styles.columns}>
-          {rows.map((row) => (
-            <div key={row.label} className={styles.column}>
-              <dt className={styles.label}>{row.label}</dt>
-              <dd className={styles.value}>{row.value}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : (
-        <dl className={styles.rows}>
-          {rows.map((row) => (
-            <div key={row.label} className={styles.row}>
-              <dt className={styles.label}>{row.label}</dt>
-              <dd className={styles.value}>{row.value}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+      {rows.length > 0 &&
+        (layout === 'columns' ? (
+          <dl className={styles.columns}>
+            {rows.map((row) => (
+              <div key={row.label} className={styles.column}>
+                <dt className={styles.label}>{row.label}</dt>
+                <dd className={styles.value}>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <dl className={styles.rows}>
+            {rows.map((row) => (
+              <div key={row.label} className={styles.row}>
+                <dt className={styles.label}>{row.label}</dt>
+                <dd className={styles.value}>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ))}
+
+      {children}
     </Card>
   );
 }

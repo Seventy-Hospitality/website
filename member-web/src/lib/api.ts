@@ -268,6 +268,33 @@ export interface ReservationInvitees {
   clubIds?: string[];
 }
 
+/**
+ * POST /api/reservations/:id/reschedule-quote: the money delta of moving
+ * the reservation to the new slots, priced at the SNAPSHOT hourly rate.
+ * Positive deltaCents is an additional charge; negative is a refund.
+ */
+export interface RescheduleQuote {
+  date: string;
+  slots: string[];
+  durationMinutes: number;
+  newTotalCents: number;
+  netPaidCents: number;
+  deltaCents: number;
+}
+
+/**
+ * PATCH /api/reservations/:id (reschedule). Shrink/equal applies
+ * immediately (clientSecret null, deltaCents <= 0, refund already on its
+ * way). Grow parks the change as `reservation.pendingChange` and returns
+ * the delta PaymentIntent's clientSecret; the move applies only once the
+ * delta is paid and POST :id/confirm settles it.
+ */
+export interface RescheduleResult {
+  reservation: Reservation;
+  deltaCents: number;
+  clientSecret: string | null;
+}
+
 /** Member directory hit (GET /api/members/search); names only, no emails. */
 export interface MemberSearchResult {
   id: string;
@@ -560,6 +587,39 @@ export const api = {
       `/api/reservations/${encodeURIComponent(id)}/participants`,
       { method: 'POST', body: JSON.stringify(invitees) },
     ),
+  /** Organizer removes a guest from the roster (never the organizer row). */
+  removeReservationParticipant: (id: string, memberId: string) =>
+    request<{ removed: true }>(
+      `/api/reservations/${encodeURIComponent(id)}/participants/${encodeURIComponent(memberId)}`,
+      { method: 'DELETE' },
+    ),
+  /**
+   * Invitation response (W4 detail; W2 home renders the same actions).
+   * accept: pending -> confirmed. decline: pending -> declined, or
+   * confirmed -> withdrawn (withdraw after accept). Idempotent server-side;
+   * declined/withdrawn + accept is rejected (re-invite required).
+   */
+  respondToReservation: (id: string, response: 'accept' | 'decline') =>
+    request<{ status: ReservationParticipantStatus }>(
+      `/api/reservations/${encodeURIComponent(id)}/respond`,
+      { method: 'POST', body: JSON.stringify({ response }) },
+    ),
+  /** Prices a reschedule without applying it (delta at the snapshot rate). */
+  rescheduleQuote: (id: string, change: { date: string; slots: string[] }) =>
+    request<RescheduleQuote>(
+      `/api/reservations/${encodeURIComponent(id)}/reschedule-quote`,
+      { method: 'POST', body: JSON.stringify(change) },
+    ),
+  /**
+   * Reschedule (organizer, confirmed reservations). Confirmed guests are
+   * reset to pending when the move applies; see RescheduleResult for the
+   * two money paths.
+   */
+  rescheduleReservation: (id: string, change: { date: string; slots: string[] }) =>
+    request<RescheduleResult>(`/api/reservations/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(change),
+    }),
   /** Member directory search by name prefix or member number (min 1 char). */
   searchMembers: (q: string, limit = 10) => {
     const query = new URLSearchParams({ q, limit: String(limit) });
