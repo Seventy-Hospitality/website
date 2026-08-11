@@ -24,7 +24,9 @@
   color: var(--color-text);
 }
 
+/* Selected pill per the Figma choose-membership Tabs: overlay green with
+   white bold text (verified against frame 68:1559), not the accent lime. */
 .selected {
-  background: var(--color-accent);
-  color: var(--color-text-on-accent);
+  background: var(--color-surface-overlay);
+  color: var(--color-text);
 }
