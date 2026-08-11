@@ -1,0 +1,106 @@
+/* Shared frame for the full-screen onboarding steps (Figma phone frames:
+   24px gutters, single column; centered on desktop like the auth screens). */
+
+.page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding: var(--space-lg) var(--gutter);
+}
+
+.column {
+  width: 100%;
+  max-width: 25rem;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  flex: 1;
+}
+
+@media (min-width: 768px) {
+  .page {
+    justify-content: center;
+    padding: var(--space-2xl) var(--gutter);
+  }
+
+  .column {
+    flex: 0 1 auto;
+  }
+}
+
+.title {
+  padding-top: var(--space-lg);
+}
+
+/* Pinned bottom area on mobile (link + primary button per the Figma);
+   flows with the column on desktop. */
+.footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding-top: var(--space-lg);
+}
+
+@media (min-width: 768px) {
+  .footer {
+    margin-top: var(--space-md);
+  }
+}
+
+.footerLink {
+  align-self: center;
+  border: none;
+  background: none;
+  padding: var(--space-2xs) var(--space-xs);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-link);
+  font-size: var(--text-body-size);
+  font-weight: 700;
+  cursor: pointer;
+  text-align: center;
+}
+
+.footerLink:hover {
+  text-decoration: underline;
+}
+
+/* Inline retryable error state (CONVENTIONS: message + Try again). */
+.errorBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* Full-screen variant for the gate. */
+.gateError {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: var(--space-lg) var(--gutter);
+}
+
+.gateErrorColumn {
+  width: 100%;
+  max-width: 28rem;
+  margin: 0 auto;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-sm);
+}

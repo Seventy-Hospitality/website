@@ -1,0 +1,156 @@
+/* Figma onboarding/checkout (26:841 empty, 32:569 filled). Single column
+   on mobile per the phone frame; summary + payment form side by side from
+   the lg breakpoint. */
+
+.checkoutColumn {
+  max-width: 25rem;
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.grid {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+@media (min-width: 1024px) {
+  .checkoutColumn {
+    max-width: 56rem;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+    gap: var(--space-xl);
+    align-items: start;
+  }
+
+  .summary {
+    position: sticky;
+    top: var(--space-xl);
+  }
+}
+
+/* ── Order summary card ── */
+
+.summaryTitle {
+  font-family: var(--font-body);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  font-weight: 600;
+  letter-spacing: var(--text-caption-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-md);
+}
+
+.summaryRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.summaryLabel {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.summaryPrice {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.summaryPeriod {
+  font-size: var(--text-sm-size);
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.summaryCaption {
+  margin-top: var(--space-2xs);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.divider {
+  margin: var(--space-md) 0;
+  border: none;
+  border-top: 1px solid var(--color-border);
+}
+
+.totalLabel {
+  color: var(--color-text-muted);
+}
+
+.totalValue {
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+/* ── Payment area ── */
+
+.paymentArea {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.paymentForm {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+/* Keep the Payment Element mounted (it must load) but invisible until it
+   reports ready, while the skeleton holds the layout. */
+.paymentHidden {
+  visibility: hidden;
+  height: 0;
+  overflow: hidden;
+}
+
+.payAlert {
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* Async payment method still settling. */
+.processing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.processingTitle {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.processingBody {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}

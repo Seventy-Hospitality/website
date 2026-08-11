@@ -1,0 +1,195 @@
+/* Figma onboarding/upload-photo-modal (26:1037 empty, 40:490 with photo). */
+
+/* Bare page behind the sheet; the dialog backdrop dims it. */
+.backdrop {
+  min-height: 100dvh;
+  background: var(--color-bg);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+/* "Welcome to Club70": Figma Heading 2 (Manrope Bold 32/44). */
+.welcome {
+  font-size: var(--text-h1-size);
+  line-height: var(--text-h1-line);
+  font-weight: var(--text-h1-weight);
+  letter-spacing: var(--text-h1-spacing);
+}
+
+.intro {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.loadingZone {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Upload zone ── */
+
+.zoneButton,
+.zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  min-height: 13rem;
+  padding: var(--space-lg);
+  background: var(--color-bg-elevated);
+  border: 1px dashed var(--color-border-active);
+  border-radius: var(--radius-lg);
+}
+
+.zoneButton {
+  cursor: pointer;
+  color: inherit;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.zoneButton:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.zoneButton:disabled {
+  cursor: progress;
+}
+
+.cameraCircle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 4rem;
+  height: 4rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+  color: var(--color-text-dark);
+}
+
+.cameraCircle > svg {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.zoneLabel {
+  color: var(--color-text);
+}
+
+/* ── Uploaded state ── */
+
+.fileName {
+  font-weight: 600;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.preview {
+  max-height: 9rem;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+/* Resumed session: the photo is in private storage and never comes back
+   down, so show a neutral tile instead of a preview. */
+.previewFallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 5rem;
+  height: 5rem;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-overlay);
+  color: var(--color-text-muted);
+}
+
+.previewFallback > svg {
+  width: 2rem;
+  height: 2rem;
+}
+
+.uploadError {
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* ── Tips ── */
+
+.tips {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.tip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.tipIcon {
+  flex-shrink: 0;
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--color-accent);
+}
+
+/* ── Submitted / verified / rejected ── */
+
+.statusPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--space-sm);
+  padding: var(--space-xl) var(--space-lg);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-lg);
+}
+
+.statusIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 4rem;
+  height: 4rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-overlay);
+  color: var(--color-accent);
+}
+
+.statusIcon > svg {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+.statusTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: var(--text-h2-weight);
+  color: var(--color-text);
+}
+
+.statusBody {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
