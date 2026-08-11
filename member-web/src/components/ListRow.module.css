@@ -1,0 +1,76 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-sm);
+  background: var(--color-surface-card);
+  border: none;
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  text-align: left;
+  text-decoration: none;
+}
+
+.interactive {
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.interactive:hover {
+  background: var(--color-surface-overlay);
+  text-decoration: none;
+}
+
+.leading {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.iconTile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-overlay);
+  color: var(--color-accent);
+}
+
+.iconTile > svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  font-size: var(--text-body-size);
+  line-height: var(--text-sm-line);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subtitle {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trailing {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}

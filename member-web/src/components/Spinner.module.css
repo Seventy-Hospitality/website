@@ -1,0 +1,29 @@
+.spinner {
+  animation: spin 800ms linear infinite;
+}
+
+.track {
+  opacity: 0.2;
+}
+
+.head {
+  opacity: 1;
+}
+
+.accent {
+  color: var(--color-accent);
+}
+
+.fullScreen {
+  flex: 1;
+  min-height: 50dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

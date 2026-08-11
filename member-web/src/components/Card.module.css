@@ -1,0 +1,28 @@
+.surface {
+  border-radius: var(--radius-lg);
+}
+
+.card {
+  background: var(--color-surface-card);
+}
+
+.overlay {
+  background: var(--color-surface-overlay);
+}
+
+.outline {
+  background: transparent;
+  border: 1px solid var(--color-border);
+}
+
+.padMd {
+  padding: var(--space-md);
+}
+
+.padLg {
+  padding: var(--space-lg);
+}
+
+.padNone {
+  padding: 0;
+}
