@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode, type Ref } from 'react';
+import { useCallback, useRef, useState, type ReactNode, type Ref, type RefObject } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -66,14 +66,19 @@ export function HomePage() {
   // Responding unmounts the pressed Accept/Decline control (the optimistic
   // write moves or removes the card), which would drop keyboard focus to
   // the body; park it on the owning section heading instead (W4's focus
-  // pattern). The toast announces the saved outcome.
+  // pattern). When the response empties the whole section, that heading
+  // unmounts too, so focus goes to the page heading, which survives every
+  // layout swap (the transient "Nothing coming up" state and the refetched
+  // amenity empty state included). Which target survives is decided from
+  // the cached feed at click time: the section heading can still be
+  // mounted when the timer fires and only unmount afterwards, so checking
+  // ref.current inside the timer is not enough. The toast announces the
+  // saved outcome.
+  const pageHeadingRef = useRef<HTMLHeadingElement>(null);
   const upcomingHeadingRef = useRef<HTMLHeadingElement>(null);
   const clubsHeadingRef = useRef<HTMLHeadingElement>(null);
-  const focusUpcomingHeading = useCallback(() => {
-    window.setTimeout(() => upcomingHeadingRef.current?.focus(), 0);
-  }, []);
-  const focusClubsHeading = useCallback(() => {
-    window.setTimeout(() => clubsHeadingRef.current?.focus(), 0);
+  const parkFocus = useCallback((target: RefObject<HTMLHeadingElement | null>) => {
+    window.setTimeout(() => (target.current ?? pageHeadingRef.current)?.focus(), 0);
   }, []);
 
   // Both respond mutations live at the page level: the pressed card
@@ -82,7 +87,16 @@ export function HomePage() {
   const respond = useRespondToReservation();
   const respondToInvitation = useCallback(
     (reservation: Reservation, response: 'accept' | 'decline') => {
-      focusUpcomingHeading();
+      // Declining the only pending invitation with nothing else upcoming
+      // unmounts the whole "Upcoming reservations" section (accepting
+      // never does: the card moves within the same section).
+      const current = home.data;
+      const emptiesSection =
+        response === 'decline' &&
+        current !== undefined &&
+        current.pendingInvitations.length === 1 &&
+        current.upcomingReservations.length === 0;
+      parkFocus(emptiesSection ? pageHeadingRef : upcomingHeadingRef);
       respond.mutate(
         { reservationId: reservation.id, response },
         {
@@ -106,13 +120,17 @@ export function HomePage() {
         },
       );
     },
-    [respond, toast, focusUpcomingHeading],
+    [home.data, respond, toast, parkFocus],
   );
 
   const clubRespond = useRespondToClubInvitation();
   const respondToClubInvitation = useCallback(
     (invitation: ClubInvitation, response: 'accept' | 'decline') => {
-      focusClubsHeading();
+      // Responding removes the card on accept AND decline; the last one
+      // unmounts the whole "Club invitations" section.
+      const current = home.data;
+      const emptiesSection = current !== undefined && current.clubInvitations.length === 1;
+      parkFocus(emptiesSection ? pageHeadingRef : clubsHeadingRef);
       clubRespond.mutate(
         { invitationId: invitation.id, response },
         {
@@ -136,7 +154,7 @@ export function HomePage() {
         },
       );
     },
-    [clubRespond, toast, focusClubsHeading],
+    [home.data, clubRespond, toast, parkFocus],
   );
 
   if (home.isPending) {
@@ -186,6 +204,7 @@ export function HomePage() {
       <PageHeader
         eyebrow={isEmpty ? 'Welcome,' : GREETINGS[feed.greeting.timeOfDay]}
         title={feed.greeting.firstName}
+        headingRef={pageHeadingRef}
         actions={
           <button
             type="button"

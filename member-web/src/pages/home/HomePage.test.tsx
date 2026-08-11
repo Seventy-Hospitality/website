@@ -16,7 +16,9 @@ import { HomePage } from './HomePage';
 /**
  * Home feed composition (upcoming vs invitations vs the empty state), the
  * inline invitation respond flow (optimistic move + rollback), the club
- * invitation respond flow, and the greeting timezone pass-through.
+ * invitation respond flow, respond focus parking (section heading, or the
+ * page heading when the section itself unmounts), and the greeting
+ * timezone pass-through.
  */
 
 vi.mock('../../lib/api', async (importOriginal) => {
@@ -368,5 +370,71 @@ describe('club invitation respond', () => {
       await screen.findByText('This club invitation is no longer open.'),
     ).toBeInTheDocument();
     expect(screen.getByText('baddies')).toBeInTheDocument();
+  });
+});
+
+describe('respond focus parking', () => {
+  // Responding unmounts the pressed button; focus must land on the owning
+  // section heading, or on the page heading when the response empties the
+  // section and the section heading unmounts with it.
+
+  it('keeps focus on the section heading while other cards remain', async () => {
+    // One pending invitation + one upcoming reservation: declining leaves
+    // the section mounted.
+    getHome.mockResolvedValue(feed({ clubInvitations: [] }));
+    const pending = deferred<{ status: 'declined' }>();
+    respondToReservation.mockReturnValue(pending.promise);
+    renderHome();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Decline' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Upcoming reservations' })).toHaveFocus();
+    });
+
+    pending.resolve({ status: 'declined' });
+    expect(await screen.findByText('Invitation declined.')).toBeInTheDocument();
+  });
+
+  it('moves focus to the page heading when declining the only invitation empties the section', async () => {
+    getHome.mockResolvedValue(feed({ upcomingReservations: [], clubInvitations: [] }));
+    const pending = deferred<{ status: 'declined' }>();
+    respondToReservation.mockReturnValue(pending.promise);
+    renderHome();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Decline' }));
+
+    // The optimistic write swaps the whole section for the transient
+    // "Nothing coming up" state; focus must survive on the page heading.
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Upcoming reservations' })).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 1, name: 'Olivia' })).toHaveFocus();
+    });
+
+    pending.resolve({ status: 'declined' });
+    expect(await screen.findByText('Invitation declined.')).toBeInTheDocument();
+  });
+
+  it('moves focus to the page heading when answering the only club invitation', async () => {
+    getHome.mockResolvedValue(feed({ pendingInvitations: [] }));
+    const pending = deferred<{ status: string; clubId: string }>();
+    respondToClubInvitation.mockReturnValue(pending.promise);
+    renderHome();
+
+    await screen.findByText('baddies');
+    await userEvent.click(screen.getByRole('button', { name: 'Accept' }));
+
+    // Accepting removes the last club card, unmounting the whole section.
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Club invitations' })).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { level: 1, name: 'Olivia' })).toHaveFocus();
+    });
+
+    pending.resolve({ status: 'accepted', clubId: 'club1' });
+    expect(await screen.findByText('You joined baddies.')).toBeInTheDocument();
   });
 });

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { House, CalendarRange, Users, CircleUserRound } from 'lucide-react';
 import { BrandMark } from './BrandMark';
@@ -72,15 +72,24 @@ export interface PageHeaderProps {
   title: string;
   /** Right-aligned actions (the QR button on home). */
   actions?: ReactNode;
+  /**
+   * Programmatic focus target: when set, the h1 takes tabIndex -1 so a
+   * page can park keyboard focus on its own title when a more local
+   * target (a section heading, a pressed button) unmounts. See the W2
+   * home respond flow.
+   */
+  headingRef?: Ref<HTMLHeadingElement>;
 }
 
 /** Page header per the Figma home: eyebrow + display title, actions right. */
-export function PageHeader({ eyebrow, title, actions }: PageHeaderProps) {
+export function PageHeader({ eyebrow, title, actions, headingRef }: PageHeaderProps) {
   return (
     <header className={styles.pageHeader}>
       <div>
         {eyebrow && <p className={styles.eyebrow}>{eyebrow}</p>}
-        <h1>{title}</h1>
+        <h1 tabIndex={headingRef ? -1 : undefined} ref={headingRef}>
+          {title}
+        </h1>
       </div>
       {actions && <div className={styles.headerActions}>{actions}</div>}
     </header>

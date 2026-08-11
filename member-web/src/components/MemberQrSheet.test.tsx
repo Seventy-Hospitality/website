@@ -6,8 +6,9 @@ import { MemberQrSheet } from './MemberQrSheet';
 
 /**
  * The membership QR card: fetches the short-lived token only while open,
- * renders it as a labelled QR with the member-number text fallback, and
- * re-requests a fresh token before the current one expires.
+ * renders it as a labelled QR with the member-number text fallback,
+ * re-requests a fresh token before the current one expires, and never
+ * shows a previous open's (likely expired) token after a reopen.
  */
 
 vi.mock('../lib/api', async (importOriginal) => {
@@ -30,11 +31,28 @@ function qrToken(token: string, ttlMs: number) {
 
 function renderSheet(open: boolean) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const ui = (isOpen: boolean) => (
     <QueryClientProvider client={client}>
-      <MemberQrSheet open={open} onClose={() => {}} memberName="Olivia Zha" memberNumber="A12345" />
-    </QueryClientProvider>,
+      <MemberQrSheet
+        open={isOpen}
+        onClose={() => {}}
+        memberName="Olivia Zha"
+        memberNumber="A12345"
+      />
+    </QueryClientProvider>
   );
+  const view = render(ui(open));
+  return { ...view, setOpen: (isOpen: boolean) => view.rerender(ui(isOpen)) };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -73,6 +91,30 @@ describe('MemberQrSheet', () => {
     await waitFor(() => expect(getMemberQr).toHaveBeenCalledTimes(2), { timeout: 3_000 });
     // Still exactly one QR on screen, now encoding the fresh token.
     expect(screen.getByRole('img', { name: /Check-in QR code/ })).toBeInTheDocument();
+  });
+
+  it('never shows the previous token after a close and reopen', async () => {
+    // The sheet stays mounted between opens (the home page keeps it in the
+    // tree), so this exercises the close-time cache removal: the reopened
+    // card must show the loading skeleton, not the earlier (likely
+    // expired) code, until the fresh token lands.
+    getMemberQr.mockResolvedValueOnce(qrToken('previous-open-token', 60_000));
+    const fresh = deferred<ReturnType<typeof qrToken>>();
+    getMemberQr.mockReturnValueOnce(fresh.promise);
+    const view = renderSheet(true);
+
+    await screen.findByRole('img', { name: /Check-in QR code/ });
+
+    view.setOpen(false);
+    view.setOpen(true);
+
+    // While the fresh token is in flight, the old QR must not be painted.
+    expect(screen.queryByRole('img', { name: /Check-in QR code/ })).not.toBeInTheDocument();
+    expect(screen.getByText('Loading your check-in code')).toBeInTheDocument();
+
+    fresh.resolve(qrToken('fresh-open-token', 60_000));
+    expect(await screen.findByRole('img', { name: /Check-in QR code/ })).toBeInTheDocument();
+    expect(getMemberQr).toHaveBeenCalledTimes(2);
   });
 
   it('shows a retryable error when the token fetch fails', async () => {
