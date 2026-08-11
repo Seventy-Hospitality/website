@@ -12,6 +12,7 @@ const {
   mockMemberRepo,
   mockMemberService,
   mockMembershipService,
+  mockIdVerificationService,
   mockMembershipChecker,
   mockPlanRepo,
   mockSessionService,
@@ -39,6 +40,17 @@ const {
   mockMembershipService: {
     createCheckoutSession: vi.fn(),
     createPortalSession: vi.fn(),
+    getOverview: vi.fn().mockResolvedValue({ membership: null, plan: null, pendingPlan: null }),
+  },
+  mockIdVerificationService: {
+    getStatus: vi.fn().mockResolvedValue({
+      status: 'not_submitted',
+      hasPhoto: false,
+      skippedAt: null,
+      submittedAt: null,
+      reviewedAt: null,
+      note: null,
+    }),
   },
   mockMembershipChecker: { hasActiveMembership: vi.fn().mockResolvedValue(true) },
   mockPlanRepo: { list: vi.fn().mockResolvedValue([]) },
@@ -55,6 +67,7 @@ vi.mock('@/lib/container', () => ({
   memberRepo: mockMemberRepo,
   memberService: mockMemberService,
   membershipService: mockMembershipService,
+  idVerificationService: mockIdVerificationService,
   membershipChecker: mockMembershipChecker,
   planRepo: mockPlanRepo,
   sessionService: mockSessionService,
@@ -163,6 +176,15 @@ describe('me routes', () => {
     mockClubEventService.list.mockResolvedValue([]);
     mockHomeService.getHome.mockResolvedValue(fixtureHome());
     mockPlanRepo.list.mockResolvedValue([]);
+    mockMembershipService.getOverview.mockResolvedValue({ membership: null, plan: null, pendingPlan: null });
+    mockIdVerificationService.getStatus.mockResolvedValue({
+      status: 'not_submitted',
+      hasPhoto: false,
+      skippedAt: null,
+      submittedAt: null,
+      reviewedAt: null,
+      note: null,
+    });
     app = await buildTestApp({ routes: meRoutes, prefix: '/api/me' });
   });
 
@@ -246,6 +268,101 @@ describe('me routes', () => {
       const res = await app.inject({ method: 'GET', url: '/api/me/profile', headers: AUTH });
 
       expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe('onboarding resume state', () => {
+    it('requires a session', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/me/onboarding' });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('serves a claim-pending signup (no member profile) without touching the member reads', async () => {
+      signedInAs({ memberId: null, emailVerified: false });
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/onboarding', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toEqual({
+        emailVerified: false,
+        membership: null,
+        idVerification: null,
+        nextStep: 'verify-email',
+      });
+      expect(mockMembershipService.getOverview).not.toHaveBeenCalled();
+      expect(mockIdVerificationService.getStatus).not.toHaveBeenCalled();
+    });
+
+    it('resumes at plan with no membership', async () => {
+      signedInAs();
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/onboarding', headers: AUTH });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockMembershipService.getOverview).toHaveBeenCalledWith('mem_1');
+      expect(mockIdVerificationService.getStatus).toHaveBeenCalledWith('mem_1');
+      expect(res.json().data).toEqual({
+        emailVerified: true,
+        membership: null,
+        idVerification: { status: 'not_submitted', skippedAt: null },
+        nextStep: 'plan',
+      });
+    });
+
+    it('resumes an unpaid subscription at checkout (everLive false)', async () => {
+      signedInAs();
+      mockMembershipService.getOverview.mockResolvedValue({
+        membership: { status: 'incomplete' },
+        plan: null,
+        pendingPlan: null,
+      });
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/onboarding', headers: AUTH });
+
+      expect(res.json().data).toMatchObject({
+        membership: { status: 'incomplete', everLive: false },
+        nextStep: 'checkout',
+      });
+    });
+
+    it('gates a paid member on the ID step until answered', async () => {
+      signedInAs();
+      mockMembershipService.getOverview.mockResolvedValue({
+        membership: { status: 'active' },
+        plan: null,
+        pendingPlan: null,
+      });
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/onboarding', headers: AUTH });
+
+      expect(res.json().data).toMatchObject({
+        membership: { status: 'active', everLive: true },
+        nextStep: 'identity',
+      });
+    });
+
+    it('reports done once the ID step was skipped', async () => {
+      signedInAs();
+      mockMembershipService.getOverview.mockResolvedValue({
+        membership: { status: 'active' },
+        plan: null,
+        pendingPlan: null,
+      });
+      mockIdVerificationService.getStatus.mockResolvedValue({
+        status: 'not_submitted',
+        hasPhoto: false,
+        skippedAt: new Date('2026-08-01T00:00:00Z'),
+        submittedAt: null,
+        reviewedAt: null,
+        note: null,
+      });
+
+      const res = await app.inject({ method: 'GET', url: '/api/me/onboarding', headers: AUTH });
+
+      expect(res.json().data).toMatchObject({
+        idVerification: { status: 'not_submitted', skippedAt: '2026-08-01T00:00:00.000Z' },
+        nextStep: 'done',
+      });
     });
   });
 

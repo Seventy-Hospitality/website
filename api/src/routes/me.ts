@@ -3,6 +3,7 @@ import {
   accountLinkingService,
   clubEventService,
   homeService,
+  idVerificationService,
   memberRepo,
   memberService,
   membershipService,
@@ -22,6 +23,7 @@ import {
   serializeLegacyBooking,
   serializeReservation,
 } from '@/src/lib/reservations';
+import { membershipEverLive, resolveOnboardingNextStep } from '@/src/lib/onboarding';
 import { createSelfBookingSchema, linkProviderSchema, meCheckoutSchema, myReservationsQuerySchema, updateMyProfileSchema } from '@/src/lib/validation';
 
 type MemberProfile = Awaited<ReturnType<typeof memberService.getById>>;
@@ -140,6 +142,61 @@ export async function meRoutes(app: FastifyInstance) {
       if (err instanceof MemberValidationError) return error(reply, 'VALIDATION_ERROR', err.message, 422);
       return handleMemberError(reply, err);
     }
+  });
+
+  // ── Onboarding resume state ──
+  // One read replacing the client-side resolver over three endpoints.
+  // Policy `authenticated`, not `member`: a claim-pending signup (email
+  // matched a staff-created member row, profile claimed only on email
+  // verification) has no member profile yet and its next step IS
+  // verify-email; the membership/id reads simply do not apply to it.
+  // Derivation semantics live in src/lib/onboarding.ts.
+  app.get('/onboarding', { config: { policy: 'authenticated' } }, async (req, reply) => {
+    const principal = req.principal!;
+    if (!principal.memberId) {
+      return success(reply, {
+        emailVerified: principal.emailVerified,
+        membership: null,
+        idVerification: null,
+        nextStep: resolveOnboardingNextStep({
+          emailVerified: principal.emailVerified,
+          hasMemberProfile: false,
+          membershipStatus: null,
+          idVerificationStatus: 'not_submitted',
+          idVerificationSkipped: false,
+        }),
+      });
+    }
+
+    const [overview, idStatus] = await Promise.all([
+      membershipService.getOverview(principal.memberId),
+      idVerificationService.getStatus(principal.memberId),
+    ]);
+    const membershipStatus = overview.membership?.status ?? null;
+
+    return success(reply, {
+      emailVerified: principal.emailVerified,
+      membership: overview.membership
+        ? {
+            status: overview.membership.status,
+            // Past the purchase steps at least once (lapsed = renewal
+            // concern, not onboarding); incomplete/incomplete_expired never
+            // got there.
+            everLive: membershipEverLive(membershipStatus),
+          }
+        : null,
+      idVerification: {
+        status: idStatus.status,
+        skippedAt: idStatus.skippedAt?.toISOString() ?? null,
+      },
+      nextStep: resolveOnboardingNextStep({
+        emailVerified: principal.emailVerified,
+        hasMemberProfile: true,
+        membershipStatus,
+        idVerificationStatus: idStatus.status,
+        idVerificationSkipped: idStatus.skippedAt !== null,
+      }),
+    });
   });
 
   // The home aggregation (package F): one payload with greeting, upcoming
