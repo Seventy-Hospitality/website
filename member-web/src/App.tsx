@@ -10,6 +10,8 @@ import { ResetPasswordPage } from './pages/auth/ResetPasswordPage';
 import { VerifyEmailPage } from './pages/auth/VerifyEmailPage';
 import { AuthCallbackPage } from './pages/auth/AuthCallbackPage';
 import { HomePage } from './pages/home/HomePage';
+import { ReservePage } from './pages/reserve/ReservePage';
+import { BookingWizardPage } from './pages/reserve/BookingWizardPage';
 import { AccountPage } from './pages/account/AccountPage';
 import { OnboardingGate } from './pages/onboarding/OnboardingGate';
 import { ChoosePlanPage } from './pages/onboarding/ChoosePlanPage';
@@ -53,18 +55,13 @@ export default function App() {
             <Route path="/onboarding/checkout" element={<CheckoutPage />} />
             <Route path="/onboarding/verify-identity" element={<VerifyIdentityPage />} />
 
+            {/* Booking wizard (W3): full-screen, outside the tab shell,
+                per the Figma frames (back arrow + close + progress). */}
+            <Route path="/reserve/:typeCode" element={<BookingWizardPage />} />
+
             <Route element={<AppShell />}>
               <Route path="/" element={<HomePage />} />
-              <Route
-                path="/reserve/*"
-                element={
-                  <PlaceholderPage
-                    title="Reserve"
-                    ownerPackage="W3"
-                    description="Pick an activity, choose your slots, invite players, and pay"
-                  />
-                }
-              />
+              <Route path="/reserve" element={<ReservePage />} />
               <Route
                 path="/reservations/:reservationId"
                 element={

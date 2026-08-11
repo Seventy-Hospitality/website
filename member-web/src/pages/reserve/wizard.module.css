@@ -1,0 +1,711 @@
+/* Booking wizard frame + steps (Figma "Booking badminton court" 26:630).
+   Phone frames are 1:1: 24px gutters, single column, pinned bottom action.
+   Desktop centers the flow; checkout goes two-column from the lg
+   breakpoint like the W1 checkout. */
+
+.page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  padding: var(--space-lg) var(--gutter);
+}
+
+.column {
+  width: 100%;
+  max-width: 25rem;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+@media (min-width: 768px) {
+  .column {
+    max-width: 30rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  /* Checkout's two-column grid needs the room; the earlier steps keep
+     their reading width via their own max-widths below. */
+  .column {
+    max-width: 56rem;
+  }
+
+  .step {
+    max-width: 30rem;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .stepCheckout {
+    max-width: none;
+  }
+}
+
+/* ── Chrome: back / close + progress ── */
+
+.chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chromeButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin: 0 calc(-1 * var(--space-xs));
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.chromeButton:hover {
+  background: var(--color-surface-overlay);
+}
+
+.chromeButton > svg {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+.progress {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+.progressSegment {
+  flex: 1;
+  height: 0.25rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-overlay);
+}
+
+.progressActive {
+  background: var(--color-accent);
+}
+
+.progressDone {
+  background: var(--color-success);
+}
+
+/* ── Step scaffolding ── */
+
+.step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.stepTitle {
+  margin-top: var(--space-lg);
+}
+
+.stepTitle:focus-visible {
+  /* Programmatic focus target on step change; the ring is unnecessary. */
+  box-shadow: none;
+  outline: none;
+}
+
+.stepSubtitle {
+  margin-top: var(--space-2xs);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.stepFooter {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  padding: var(--space-md) 0 var(--space-xs);
+  background: linear-gradient(to top, var(--color-bg) 70%, transparent);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin: var(--space-lg) 0 var(--space-sm);
+}
+
+.sectionLabel {
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  font-weight: 600;
+  letter-spacing: var(--text-caption-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.sectionCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  padding: 0 var(--space-2xs);
+  margin-left: var(--space-2xs);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-overlay);
+  color: var(--color-text);
+  letter-spacing: normal;
+}
+
+.sectionLink {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--color-accent);
+  font-size: var(--text-sm-size);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sectionLink:hover {
+  text-decoration: underline;
+}
+
+/* ── Alerts ── */
+
+.errorBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.noticeBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-active);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.payAlert {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* ── Step 1: date strip ── */
+
+.dateStrip {
+  display: flex;
+  gap: var(--space-sm);
+  overflow-x: auto;
+  padding-bottom: var(--space-2xs);
+  scrollbar-width: thin;
+}
+
+.dateTile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2xs);
+  min-width: 4rem;
+  padding: var(--space-sm) var(--space-md);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-text);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.dateTileWeekday {
+  font-size: var(--text-xs-size);
+  line-height: var(--text-xs-line);
+  letter-spacing: var(--text-xs-spacing);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.dateTileDay {
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: 700;
+}
+
+.dateTileSelected {
+  background: var(--color-surface-muted);
+  color: var(--color-text-dark);
+}
+
+.dateTileSelected .dateTileWeekday {
+  color: var(--color-text-dark);
+}
+
+/* ── Step 1: slot list ── */
+
+.slotList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+@media (min-width: 768px) {
+  .slotList {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
+  }
+}
+
+.slotOption {
+  padding: var(--space-md);
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-text-muted);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.slotOption:hover {
+  background: var(--color-surface-overlay);
+  color: var(--color-text);
+}
+
+.slotOptionSelected,
+.slotOptionSelected:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text-dark);
+  font-weight: 600;
+}
+
+/* ── Step 2: invite players ── */
+
+.searchBox {
+  position: relative;
+  margin-top: var(--space-lg);
+}
+
+.searchIcon {
+  position: absolute;
+  top: 50%;
+  left: var(--space-md);
+  width: 1.125rem;
+  height: 1.125rem;
+  transform: translateY(-50%);
+  color: var(--color-text-subtle);
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  padding: var(--space-sm) var(--space-md) var(--space-sm) 2.75rem;
+  background: var(--color-surface-card);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+}
+
+.searchInput::placeholder {
+  color: var(--color-text-subtle);
+}
+
+.searchInput:focus {
+  outline: none;
+  border-color: var(--color-border-active);
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin: var(--space-md) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inviteList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inviteRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) 0;
+}
+
+.inviteRowText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.inviteRowTitle {
+  font-size: var(--text-body-size);
+  line-height: var(--text-sm-line);
+  font-weight: 600;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inviteRowSubtitle {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.inviteRowAdded {
+  font-size: var(--text-sm-size);
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.inviteCheck {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1.5px solid var(--color-border-active);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-dark);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.inviteCheck > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.inviteCheckSelected {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+/* ── Step 3: checkout ── */
+
+.checkoutLoading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+}
+
+.checkoutGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  margin-top: var(--space-lg);
+  flex: 1;
+}
+
+@media (min-width: 1024px) {
+  .checkoutGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 22rem) minmax(0, 1fr);
+    gap: var(--space-xl);
+    align-items: start;
+  }
+}
+
+.checkoutSummary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+@media (min-width: 1024px) {
+  .checkoutSummary {
+    position: sticky;
+    top: var(--space-xl);
+  }
+}
+
+.checkoutPayment {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.paymentForm {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+/* Keep the Payment Element mounted (it must load) but invisible until it
+   reports ready, while the skeleton holds the layout. */
+.paymentHidden {
+  visibility: hidden;
+  height: 0;
+  overflow: hidden;
+}
+
+.orderSummary {
+  display: flex;
+  flex-direction: column;
+}
+
+.orderSummaryTitle {
+  font-family: var(--font-body);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  font-weight: 600;
+  letter-spacing: var(--text-caption-spacing);
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-md);
+}
+
+.orderSummaryRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
+.orderSummaryLabel {
+  color: var(--color-text);
+}
+
+.orderSummaryRate {
+  text-align: right;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.orderSummaryRate span {
+  color: var(--color-text-muted);
+  font-weight: 400;
+  font-size: var(--text-sm-size);
+}
+
+.orderSummaryDivider {
+  margin: var(--space-md) 0;
+  border: none;
+  border-top: 1px solid var(--color-border);
+}
+
+.orderSummaryTotalLabel {
+  color: var(--color-text-muted);
+}
+
+.orderSummaryTotal {
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+.holdHint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.holdHintUrgent {
+  color: var(--color-danger-strong);
+}
+
+.holdHintIcon {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+/* Async payment method still settling (panel). */
+.processing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  margin-top: var(--space-lg);
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.processingTitle {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.processingBody {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+/* Full-screen processing takeover (Figma loading-state 7:2845). */
+.processingScreen {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-sheet);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-lg) var(--gutter);
+  background: var(--color-bg);
+  text-align: center;
+}
+
+.processingScreenTitle {
+  margin-top: var(--space-md);
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.processingScreenBody {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.processingScreenNote {
+  position: absolute;
+  bottom: var(--space-xl);
+  left: 0;
+  right: 0;
+  color: var(--color-text-subtle);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* ── Confirmation sheet ── */
+
+.confirmation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.confirmationTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-h1-size);
+  line-height: var(--text-h1-line);
+  font-weight: 700;
+  letter-spacing: var(--text-h1-spacing);
+  text-align: center;
+  margin-top: var(--space-sm);
+}
+
+.confirmationCaption {
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  margin-top: calc(-1 * var(--space-xs));
+}
+
+.confirmationRoster {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: var(--space-md);
+  list-style: none;
+  background: var(--color-surface-card);
+  border-radius: var(--radius-lg);
+}
+
+.confirmationPlayer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.confirmationPlayerName {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirmationStatus {
+  font-size: var(--text-xs-size);
+  line-height: var(--text-xs-line);
+  letter-spacing: var(--text-xs-spacing);
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.confirmationStatusConfirmed {
+  color: var(--color-success);
+}
+
+.confirmationActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+.confirmationLink {
+  align-self: center;
+  border: none;
+  background: none;
+  padding: var(--space-2xs) var(--space-xs);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-link);
+  font-size: var(--text-body-size);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.confirmationLink:hover {
+  text-decoration: underline;
+}
