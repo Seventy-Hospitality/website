@@ -500,7 +500,14 @@ const googleVerifier = new GoogleIdTokenVerifier(
     .map((id) => id.trim())
     .filter(Boolean),
 );
-const appleVerifier = new AppleIdTokenVerifier(process.env.APPLE_BUNDLE_ID?.trim() || undefined);
+// Accepted Apple `aud` values: the native bundle ID (Sign in with Apple on
+// device) and the web services ID (Sign in with Apple JS). Either alone works;
+// with neither set the verifier throws NOT_CONFIGURED when used.
+const appleVerifier = new AppleIdTokenVerifier(
+  [process.env.APPLE_BUNDLE_ID, process.env.APPLE_WEB_SERVICES_ID]
+    .map((aud) => aud?.trim() ?? '')
+    .filter(Boolean),
+);
 const appleGateway = new AppleTokenGateway({
   teamId: process.env.APPLE_TEAM_ID?.trim() || undefined,
   keyId: process.env.APPLE_KEY_ID?.trim() || undefined,

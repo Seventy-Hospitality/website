@@ -12,18 +12,23 @@ function appleBool(value: unknown): boolean {
 }
 
 /**
- * Verifies an Apple identity token from Sign in with Apple on device.
+ * Verifies an Apple identity token from Sign in with Apple — on device (aud
+ * is the native bundle ID) or via Sign in with Apple JS on the web (aud is
+ * the web services ID). `audiences` is the explicit aud allowlist built from
+ * whichever of the two is configured.
  * Note: fullName never appears in the token; the client sends it separately
  * on first authorization and the linking service persists it then.
  */
 export class AppleIdTokenVerifier implements FederatedIdTokenVerifier {
   private jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 
-  constructor(private readonly bundleId: string | undefined) {}
+  constructor(private readonly audiences: string[]) {}
 
   async verify(idToken: string, expectedNonceHash: string): Promise<ProviderAssertion> {
-    if (!this.bundleId) {
-      throw new IdentityConfigError('APPLE_BUNDLE_ID is not configured');
+    if (this.audiences.length === 0) {
+      throw new IdentityConfigError(
+        'Apple Sign in is not configured (set APPLE_BUNDLE_ID and/or APPLE_WEB_SERVICES_ID)',
+      );
     }
 
     this.jwks ??= createRemoteJWKSet(new URL(APPLE_JWKS_URL));
@@ -32,7 +37,7 @@ export class AppleIdTokenVerifier implements FederatedIdTokenVerifier {
     try {
       ({ payload } = await jwtVerify(idToken, this.jwks, {
         issuer: APPLE_ISSUER,
-        audience: this.bundleId,
+        audience: this.audiences,
         clockTolerance: 5,
       }));
     } catch {
