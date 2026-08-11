@@ -134,6 +134,66 @@ describe('auth routes', () => {
       );
     });
 
+    it('sets httpOnly session cookies and returns no tokens for the web client', async () => {
+      mockAuthenticationService.signUp.mockResolvedValue(fixtureIssued({ client: 'member_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        headers: { 'x-client-type': 'web' },
+        payload: { name: 'Alice Chen', email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(201);
+      const body = res.json();
+      expect(body.data.user.email).toBe('alice@example.com');
+      expect(body.data.accessToken).toBeUndefined();
+      expect(body.data.refreshToken).toBeUndefined();
+      expect(mockAuthenticationService.signUp).toHaveBeenCalledWith(
+        expect.objectContaining({ email: 'alice@example.com' }),
+        'member_web',
+        expect.anything(),
+      );
+
+      const cookies = Object.fromEntries(res.cookies.map((c) => [c.name, c]));
+      expect(cookies.seventy_access.value).toBe('access_jwt');
+      expect(cookies.seventy_refresh.value).toBe('refresh_raw');
+      expect(cookies.seventy_access.httpOnly).toBe(true);
+      expect(cookies.seventy_refresh.httpOnly).toBe(true);
+    });
+
+    it('keeps the bearer contract for an explicit mobile header', async () => {
+      mockAuthenticationService.signUp.mockResolvedValue(fixtureIssued());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        headers: { 'x-client-type': 'mobile' },
+        payload: { name: 'Alice Chen', email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.json().data.accessToken).toBe('access_jwt');
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(mockAuthenticationService.signUp).toHaveBeenCalledWith(
+        expect.anything(),
+        'member_mobile',
+        expect.anything(),
+      );
+    });
+
+    it('rejects an unknown X-Client-Type value', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        headers: { 'x-client-type': 'desktop' },
+        payload: { name: 'Alice Chen', email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.signUp).not.toHaveBeenCalled();
+    });
+
     it('rejects a weak password', async () => {
       const res = await app.inject({
         method: 'POST',
@@ -170,6 +230,31 @@ describe('auth routes', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.json().data.accessToken).toBe('access_jwt');
+    });
+
+    it('sets session cookies and returns no tokens for the web client', async () => {
+      mockAuthenticationService.signIn.mockResolvedValue(fixtureIssued({ client: 'member_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signin',
+        headers: { 'x-client-type': 'web' },
+        payload: { email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.accessToken).toBeUndefined();
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(res.json().data.user.email).toBe('alice@example.com');
+      expect(mockAuthenticationService.signIn).toHaveBeenCalledWith(
+        'alice@example.com',
+        'hunter2hunter2',
+        'member_web',
+        expect.anything(),
+      );
+      const cookieNames = res.cookies.map((c) => c.name);
+      expect(cookieNames).toContain('seventy_access');
+      expect(cookieNames).toContain('seventy_refresh');
     });
 
     it('maps invalid credentials to 401', async () => {
@@ -216,6 +301,29 @@ describe('auth routes', () => {
         'member_mobile',
         expect.anything(),
       );
+    });
+
+    it('sets session cookies and returns no tokens for the web client', async () => {
+      mockAccountLinkingService.signInWithGoogle.mockResolvedValue(fixtureIssued({ client: 'member_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/oauth/google',
+        headers: { 'x-client-type': 'web' },
+        payload: { idToken: 'google_id_token', nonce: 'raw_nonce' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.accessToken).toBeUndefined();
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(mockAccountLinkingService.signInWithGoogle).toHaveBeenCalledWith(
+        { idToken: 'google_id_token', nonce: 'raw_nonce' },
+        'member_web',
+        expect.anything(),
+      );
+      const cookieNames = res.cookies.map((c) => c.name);
+      expect(cookieNames).toContain('seventy_access');
+      expect(cookieNames).toContain('seventy_refresh');
     });
 
     it('maps an invalid token or burned nonce to 401', async () => {
@@ -272,6 +380,29 @@ describe('auth routes', () => {
         expect.anything(),
       );
     });
+
+    it('sets session cookies and returns no tokens for the web client', async () => {
+      mockAccountLinkingService.signInWithApple.mockResolvedValue(fixtureIssued({ client: 'member_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/oauth/apple',
+        headers: { 'x-client-type': 'web' },
+        payload: { identityToken: 'apple_token', nonce: 'raw_nonce' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.accessToken).toBeUndefined();
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(mockAccountLinkingService.signInWithApple).toHaveBeenCalledWith(
+        expect.objectContaining({ identityToken: 'apple_token' }),
+        'member_web',
+        expect.anything(),
+      );
+      const cookieNames = res.cookies.map((c) => c.name);
+      expect(cookieNames).toContain('seventy_access');
+      expect(cookieNames).toContain('seventy_refresh');
+    });
   });
 
   describe('POST /api/auth/refresh', () => {
@@ -306,6 +437,26 @@ describe('auth routes', () => {
       const cookieNames = res.cookies.map((c) => c.name);
       expect(cookieNames).toContain('seventy_access');
       expect(cookieNames).toContain('seventy_refresh');
+    });
+
+    it('rotates a member_web session from the cookie the same way', async () => {
+      mockSessionService.refresh.mockResolvedValue(
+        fixtureIssued({ client: 'member_web', refreshToken: 'rotated_raw' }),
+      );
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/refresh',
+        cookies: { seventy_refresh: 'member_cookie_refresh' },
+        payload: {},
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSessionService.refresh).toHaveBeenCalledWith('member_cookie_refresh');
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(res.json().data.user.email).toBe('alice@example.com');
+      const rotated = res.cookies.find((c) => c.name === 'seventy_refresh');
+      expect(rotated?.value).toBe('rotated_raw');
     });
 
     it('requires a token from body or cookie', async () => {
@@ -500,6 +651,34 @@ describe('auth routes', () => {
       expect(res.statusCode).toBe(400);
     });
 
+    it('mints a member-web link for the web client (no admin requirement)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/magic-link',
+        headers: { 'x-client-type': 'web' },
+        payload: { email: 'alice@example.com' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ data: { sent: true } });
+      expect(mockAuthenticationService.sendMagicLink).toHaveBeenCalledWith(
+        'alice@example.com',
+        { redirectTo: undefined, client: 'member_web' },
+      );
+    });
+
+    it('refuses a native redirectTo from the web client', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/magic-link',
+        headers: { 'x-client-type': 'web' },
+        payload: { email: 'alice@example.com', redirectTo: 'seventy://auth/callback' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.sendMagicLink).not.toHaveBeenCalled();
+    });
+
     it('rejects disallowed mobile redirect target', async () => {
       const res = await app.inject({
         method: 'POST',
@@ -550,7 +729,7 @@ describe('auth routes', () => {
   });
 
   describe('GET /api/auth/verify', () => {
-    it('sets session cookies and redirects to /members on valid token', async () => {
+    it('sets session cookies and redirects to the admin app on valid token', async () => {
       mockAuthenticationService.verifyMagicLink.mockResolvedValue(
         fixtureIssued({ client: 'admin_web', user: fixtureUser({ staffRole: 'admin' }) }),
       );
@@ -561,7 +740,7 @@ describe('auth routes', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe('https://app.test/members');
+      expect(res.headers.location).toBe('https://app.test/admin/members');
       expect(mockAuthenticationService.verifyMagicLink).toHaveBeenCalledWith(
         'valid_token',
         'admin_web',
@@ -581,7 +760,7 @@ describe('auth routes', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe('https://app.test/sign-in?error=invalid_token');
+      expect(res.headers.location).toBe('https://app.test/admin/sign-in?error=invalid_token');
     });
 
     it('redirects with unknown error for non-token errors', async () => {
@@ -593,7 +772,7 @@ describe('auth routes', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe('https://app.test/sign-in?error=unknown');
+      expect(res.headers.location).toBe('https://app.test/admin/sign-in?error=unknown');
     });
 
     it('redirects to sign-in with error when token is missing', async () => {
@@ -603,7 +782,7 @@ describe('auth routes', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe('https://app.test/sign-in?error=missing_token');
+      expect(res.headers.location).toBe('https://app.test/admin/sign-in?error=missing_token');
     });
 
     it('refuses to redirect the token to a prefix-extension host', async () => {
@@ -613,6 +792,62 @@ describe('auth routes', () => {
         method: 'GET',
         url: '/api/auth/verify?token=valid_token&redirectTo=' +
           encodeURIComponent('https://auth.expo.io.attacker.tld/'),
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.verifyMagicLink).not.toHaveBeenCalled();
+    });
+
+    it('issues member_web cookies for a plain member on the web flow', async () => {
+      // staffRole stays null: magic link on web must work for ordinary
+      // members, not just admins.
+      mockAuthenticationService.verifyMagicLink.mockResolvedValue(
+        fixtureIssued({ client: 'member_web' }),
+      );
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=valid_token&client=member_web',
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('https://app.test/');
+      expect(mockAuthenticationService.verifyMagicLink).toHaveBeenCalledWith(
+        'valid_token',
+        'member_web',
+        expect.anything(),
+      );
+      const cookies = Object.fromEntries(res.cookies.map((c) => [c.name, c.value]));
+      expect(cookies.seventy_access).toBe('access_jwt');
+      expect(cookies.seventy_refresh).toBe('refresh_raw');
+    });
+
+    it('redirects web-flow failures to the member sign-in page', async () => {
+      mockAuthenticationService.verifyMagicLink.mockRejectedValue(new InvalidTokenError());
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=bad_token&client=member_web',
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('https://app.test/sign-in?error=invalid_token');
+    });
+
+    it('rejects an unknown client marker', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=valid_token&client=member_mobile',
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.verifyMagicLink).not.toHaveBeenCalled();
+    });
+
+    it('rejects a link carrying both client and redirectTo', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=valid_token&client=member_web&redirectTo=seventy%3A%2F%2Fauth%2Fcallback',
       });
 
       expect(res.statusCode).toBe(400);
@@ -663,6 +898,21 @@ describe('auth routes', () => {
           client: 'admin_web',
         },
       });
+    });
+
+    it('reports the member_web client for a member web session', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(
+        principal({ client: 'member_web', memberId: 'mem_1' }),
+      );
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/me',
+        cookies: { seventy_access: 'valid_jwt' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toMatchObject({ client: 'member_web', memberId: 'mem_1' });
     });
 
     it('supports bearer authentication', async () => {

@@ -12,6 +12,10 @@ export interface SessionPolicy {
 
 export const SESSION_POLICIES: Record<Client, SessionPolicy> = {
   admin_web: { idleTtlMs: 12 * HOUR, absoluteTtlMs: 30 * DAY, maxSessions: 5 },
+  // Member browsers: shorter than the native app (a shared or public computer
+  // is likelier than a shared phone) but long enough that a weekly visitor
+  // never re-authenticates; same transport and cookies as admin_web.
+  member_web: { idleTtlMs: 14 * DAY, absoluteTtlMs: 90 * DAY, maxSessions: 10 },
   member_mobile: { idleTtlMs: 60 * DAY, absoluteTtlMs: 180 * DAY, maxSessions: 10 },
 };
 

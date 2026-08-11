@@ -1,8 +1,9 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authenticationService, accountLinkingService, sessionService } from '@/lib/container';
 import {
   REFRESH_COOKIE_NAME,
   InvalidTokenError,
+  type Client,
   type IssuedSession,
   type IdentityUser,
 } from '@/lib/contexts/identity';
@@ -114,18 +115,60 @@ function requestMeta(req: FastifyRequest) {
   return { ip: req.ip ?? null };
 }
 
+/**
+ * Which member client is signing in, from the explicit `X-Client-Type`
+ * header: `web` selects the cookie-transport `member_web` client, `mobile`
+ * the bearer `member_mobile` one. No header means mobile, preserving the
+ * deployed native app, which predates the header. Anything else is a caller
+ * bug; routes reject it rather than guessing a transport.
+ */
+function memberClientFromHeader(req: FastifyRequest): Client | null {
+  const raw = req.headers['x-client-type'];
+  if (raw === undefined) return 'member_mobile';
+  if (typeof raw !== 'string') return null;
+
+  const value = raw.trim().toLowerCase();
+  if (value === 'mobile') return 'member_mobile';
+  if (value === 'web') return 'member_web';
+  return null;
+}
+
+const UNSUPPORTED_CLIENT_TYPE = 'X-Client-Type must be "web" or "mobile"';
+
+/**
+ * Web clients get httpOnly cookies and a token-free body (same contract as
+ * the cookie branch of /refresh); mobile clients get the bearer token pair.
+ */
+function respondWithSession(reply: FastifyReply, issued: IssuedSession, status = 200) {
+  if (issued.client === 'member_web') {
+    setSessionCookies(reply, issued);
+    return success(
+      reply,
+      {
+        user: serializeUser(issued.user),
+        accessTokenExpiresAt: issued.accessTokenExpiresAt.toISOString(),
+      },
+      status,
+    );
+  }
+  return success(reply, serializeSession(issued), status);
+}
+
 export async function authRoutes(app: FastifyInstance) {
   // ── Password ──
 
   app.post('/signup', {
     config: { policy: 'public', rateLimit: CREDENTIAL_RATE_LIMIT },
   }, async (req, reply) => {
+    const client = memberClientFromHeader(req);
+    if (!client) return error(reply, 'VALIDATION_ERROR', UNSUPPORTED_CLIENT_TYPE);
+
     const parsed = signUpSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
     try {
-      const issued = await authenticationService.signUp(parsed.data, 'member_mobile', requestMeta(req));
-      return success(reply, serializeSession(issued), 201);
+      const issued = await authenticationService.signUp(parsed.data, client, requestMeta(req));
+      return respondWithSession(reply, issued, 201);
     } catch (err) {
       return handleIdentityError(reply, err);
     }
@@ -134,6 +177,9 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/signin', {
     config: { policy: 'public', rateLimit: CREDENTIAL_RATE_LIMIT },
   }, async (req, reply) => {
+    const client = memberClientFromHeader(req);
+    if (!client) return error(reply, 'VALIDATION_ERROR', UNSUPPORTED_CLIENT_TYPE);
+
     const parsed = signInSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -141,10 +187,10 @@ export async function authRoutes(app: FastifyInstance) {
       const issued = await authenticationService.signIn(
         parsed.data.email,
         parsed.data.password,
-        'member_mobile',
+        client,
         requestMeta(req),
       );
-      return success(reply, serializeSession(issued));
+      return respondWithSession(reply, issued);
     } catch (err) {
       return handleIdentityError(reply, err);
     }
@@ -162,12 +208,15 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/oauth/google', {
     config: { policy: 'public', rateLimit: CREDENTIAL_RATE_LIMIT },
   }, async (req, reply) => {
+    const client = memberClientFromHeader(req);
+    if (!client) return error(reply, 'VALIDATION_ERROR', UNSUPPORTED_CLIENT_TYPE);
+
     const parsed = oauthGoogleSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
     try {
-      const issued = await accountLinkingService.signInWithGoogle(parsed.data, 'member_mobile', requestMeta(req));
-      return success(reply, serializeSession(issued));
+      const issued = await accountLinkingService.signInWithGoogle(parsed.data, client, requestMeta(req));
+      return respondWithSession(reply, issued);
     } catch (err) {
       return handleIdentityError(reply, err);
     }
@@ -176,12 +225,15 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/oauth/apple', {
     config: { policy: 'public', rateLimit: CREDENTIAL_RATE_LIMIT },
   }, async (req, reply) => {
+    const client = memberClientFromHeader(req);
+    if (!client) return error(reply, 'VALIDATION_ERROR', UNSUPPORTED_CLIENT_TYPE);
+
     const parsed = oauthAppleSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
     try {
-      const issued = await accountLinkingService.signInWithApple(parsed.data, 'member_mobile', requestMeta(req));
-      return success(reply, serializeSession(issued));
+      const issued = await accountLinkingService.signInWithApple(parsed.data, client, requestMeta(req));
+      return respondWithSession(reply, issued);
     } catch (err) {
       return handleIdentityError(reply, err);
     }
@@ -286,14 +338,23 @@ export async function authRoutes(app: FastifyInstance) {
     return success(reply, { sent: true });
   });
 
-  // ── Magic link (admin web sign-in) ──
+  // ── Magic link (admin web sign-in + member recovery, web and mobile) ──
 
   app.post('/magic-link', {
     config: { policy: 'public', rateLimit: { max: 5, timeWindow: '15 minutes' } },
   }, async (req, reply) => {
+    const client = memberClientFromHeader(req);
+    if (!client) return error(reply, 'VALIDATION_ERROR', UNSUPPORTED_CLIENT_TYPE);
+
     const body = sendMagicLinkSchema.safeParse(req.body);
     if (!body.success) {
       return error(reply, 'VALIDATION_ERROR', 'Invalid sign-in request');
+    }
+
+    // redirectTo is the native deep-link flow; a web caller gets cookies from
+    // /verify instead, so combining the two signals is a caller bug.
+    if (client === 'member_web' && body.data.redirectTo) {
+      return error(reply, 'VALIDATION_ERROR', 'redirectTo is not supported for web clients');
     }
 
     if (body.data.redirectTo && !isAllowedRedirectTo(body.data.redirectTo)) {
@@ -303,30 +364,45 @@ export async function authRoutes(app: FastifyInstance) {
     // Always return success to prevent email enumeration
     await authenticationService.sendMagicLink(body.data.email, {
       redirectTo: body.data.redirectTo,
+      client: client === 'member_web' ? 'member_web' : undefined,
     }).catch((e) => req.log.error(e, 'magic link send failed'));
     return success(reply, { sent: true });
   });
 
-  // Verify magic link token
+  // Verify magic link token. Three flows, decided by how /magic-link minted
+  // the link: `redirectTo` -> native deep link carrying body tokens;
+  // `client=member_web` -> member web cookies, landing on the member app at
+  // `/`; neither -> admin web cookies, landing on the admin app at `/admin`.
   app.get('/verify', { config: { policy: 'public' } }, async (req, reply) => {
-    const query = req.query as { token?: string; redirectTo?: string };
+    const query = req.query as { token?: string; redirectTo?: string; client?: string };
     const redirectTo = query.redirectTo;
 
     if (redirectTo && !isAllowedRedirectTo(redirectTo)) {
       return error(reply, 'VALIDATION_ERROR', 'Unsupported mobile redirect target');
     }
+    if (query.client !== undefined && query.client !== 'member_web') {
+      return error(reply, 'VALIDATION_ERROR', 'Unsupported client');
+    }
+    if (redirectTo && query.client) {
+      return error(reply, 'VALIDATION_ERROR', 'redirectTo and client are mutually exclusive');
+    }
+
+    const webClient: Client = query.client === 'member_web' ? 'member_web' : 'admin_web';
+    const webBase = authenticationService.getWebUrl();
+    const signInUrl = webClient === 'member_web' ? `${webBase}/sign-in` : `${webBase}/admin/sign-in`;
+    const landingUrl = webClient === 'member_web' ? `${webBase}/` : `${webBase}/admin/members`;
 
     if (!query.token) {
       if (redirectTo) {
         return reply.redirect(buildRedirectUrl(redirectTo, { error: 'missing_token' }));
       }
-      return reply.redirect(`${authenticationService.getWebUrl()}/sign-in?error=missing_token`);
+      return reply.redirect(`${signInUrl}?error=missing_token`);
     }
 
     try {
       const issued = await authenticationService.verifyMagicLink(
         query.token,
-        redirectTo ? 'member_mobile' : 'admin_web',
+        redirectTo ? 'member_mobile' : webClient,
         requestMeta(req),
       );
 
@@ -341,13 +417,13 @@ export async function authRoutes(app: FastifyInstance) {
       }
 
       setSessionCookies(reply, issued);
-      return reply.redirect(`${authenticationService.getWebUrl()}/members`);
+      return reply.redirect(landingUrl);
     } catch (e) {
       const errorCode = e instanceof InvalidTokenError ? 'invalid_token' : 'unknown';
       if (redirectTo) {
         return reply.redirect(buildRedirectUrl(redirectTo, { error: errorCode }));
       }
-      return reply.redirect(`${authenticationService.getWebUrl()}/sign-in?error=${errorCode}`);
+      return reply.redirect(`${signInUrl}?error=${errorCode}`);
     }
   });
 

@@ -27,6 +27,14 @@ describe('SESSION_POLICIES', () => {
     });
   });
 
+  it('gives member web 14d idle / 90d absolute / 10 sessions', () => {
+    expect(SESSION_POLICIES.member_web).toEqual({
+      idleTtlMs: 14 * 24 * 60 * 60 * 1000,
+      absoluteTtlMs: 90 * 24 * 60 * 60 * 1000,
+      maxSessions: 10,
+    });
+  });
+
   it('gives member mobile 60d idle / 180d absolute / 10 sessions', () => {
     expect(SESSION_POLICIES.member_mobile).toEqual({
       idleTtlMs: 60 * 24 * 60 * 60 * 1000,

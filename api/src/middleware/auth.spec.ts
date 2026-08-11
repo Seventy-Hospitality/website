@@ -292,6 +292,19 @@ describe('policy enforcement', () => {
     expect(adminRoute.statusCode).toBe(403);
   });
 
+  it('keeps member_web sessions out of staff and admin routes too', async () => {
+    // The new web client shares cookie transport with admin_web; sharing the
+    // transport must not share the ladder. Only staffRole opens those rungs.
+    const staffRoute = await callAs('staff', { client: 'member_web', memberId: 'mem_1' });
+    expect(staffRoute.statusCode).toBe(403);
+
+    const adminRoute = await callAs('admin', { client: 'member_web', memberId: 'mem_1' });
+    expect(adminRoute.statusCode).toBe(403);
+
+    const memberRoute = await callAs('member', { client: 'member_web', memberId: 'mem_1' });
+    expect(memberRoute.statusCode).toBe(200);
+  });
+
   it('separates staff from admin', async () => {
     const staffOnStaff = await callAs('staff', { staffRole: 'staff' });
     expect(staffOnStaff.statusCode).toBe(200);

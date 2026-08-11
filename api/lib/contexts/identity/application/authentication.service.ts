@@ -240,8 +240,16 @@ export class AuthenticationService {
    * Send a magic link email to any active account: it is the recovery path
    * when a member has neither their password nor their provider to hand.
    * Does not reveal whether the email exists — always returns silently.
+   *
+   * The link itself encodes which flow minted it, because GET /verify is a
+   * bare browser navigation that carries no headers: `redirectTo` marks the
+   * native deep-link flow, `client=member_web` the member web cookie flow,
+   * and a plain link is the admin web flow.
    */
-  async sendMagicLink(email: string, options?: { redirectTo?: string | null }): Promise<void> {
+  async sendMagicLink(
+    email: string,
+    options?: { redirectTo?: string | null; client?: 'member_web' },
+  ): Promise<void> {
     const normalized = normalizeEmail(email);
     const user = await this.users.findByEmail(normalized);
     if (!user || user.status !== 'active') return; // Silent — no enumeration
@@ -258,6 +266,8 @@ export class AuthenticationService {
     verifyUrl.searchParams.set('token', token);
     if (options?.redirectTo) {
       verifyUrl.searchParams.set('redirectTo', options.redirectTo);
+    } else if (options?.client === 'member_web') {
+      verifyUrl.searchParams.set('client', 'member_web');
     }
 
     await this.notifications.sendMagicLink(normalized, verifyUrl.toString());

@@ -75,7 +75,7 @@ model AuthIdentity {
 model AuthSession {
   id                String    @id @default(cuid())
   userId            String
-  client            String // "admin_web" | "member_mobile"
+  client            String // "admin_web" | "member_web" | "member_mobile"
   refreshTokenHash  String    @unique // sha256
   previousTokenHash String? // rotation grace window
   rotatedAt         DateTime?

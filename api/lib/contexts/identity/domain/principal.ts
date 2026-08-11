@@ -1,4 +1,4 @@
-export type Client = 'admin_web' | 'member_mobile';
+export type Client = 'admin_web' | 'member_web' | 'member_mobile';
 
 export type StaffRole = 'staff' | 'admin';
 

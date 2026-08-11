@@ -451,6 +451,26 @@ describe('AuthenticationService', () => {
       expect(notifications.sendMagicLink).toHaveBeenCalled();
     });
 
+    it('marks a member-web link so /verify issues cookies for the member app', async () => {
+      const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user()) });
+      const { service, notifications } = createService({ users });
+
+      await service.sendMagicLink('alice@example.com', { client: 'member_web' });
+      const sendArgs = (notifications.sendMagicLink as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(sendArgs[1]).toContain('client=member_web');
+      expect(sendArgs[1]).not.toContain('redirectTo=');
+    });
+
+    it('never marks a native deep-link with the web client', async () => {
+      const users = mockUsers({ findByEmail: vi.fn().mockResolvedValue(user()) });
+      const { service, notifications } = createService({ users });
+
+      await service.sendMagicLink('alice@example.com', { redirectTo: 'seventy://auth/callback' });
+      const sendArgs = (notifications.sendMagicLink as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(sendArgs[1]).toContain('redirectTo=');
+      expect(sendArgs[1]).not.toContain('client=');
+    });
+
     it('silently skips unknown and suspended accounts', async () => {
       const { service, tokens, notifications } = createService();
       await service.sendMagicLink('nobody@example.com');
