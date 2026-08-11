@@ -22,7 +22,6 @@ import {
   availabilityCountLabel,
   formatDateCompact,
   formatDateLong,
-  formatDuration,
   formatMonthDay,
   formatTimeRangeCompact,
 } from '../../lib/booking';
@@ -62,6 +61,7 @@ const GREETINGS = {
 export function HomePage() {
   const home = useQuery(homeQuery);
   const [qrOpen, setQrOpen] = useState(false);
+  const { toast } = useToast();
 
   // Responding unmounts the pressed Accept/Decline control (the optimistic
   // write moves or removes the card), which would drop keyboard focus to
@@ -75,6 +75,69 @@ export function HomePage() {
   const focusClubsHeading = useCallback(() => {
     window.setTimeout(() => clubsHeadingRef.current?.focus(), 0);
   }, []);
+
+  // Both respond mutations live at the page level: the pressed card
+  // unmounts with the optimistic write, and mutate-time callbacks (the
+  // outcome toasts) are dropped for unmounted callers.
+  const respond = useRespondToReservation();
+  const respondToInvitation = useCallback(
+    (reservation: Reservation, response: 'accept' | 'decline') => {
+      focusUpcomingHeading();
+      respond.mutate(
+        { reservationId: reservation.id, response },
+        {
+          onSuccess: ({ status }) => {
+            toast({
+              variant: 'success',
+              message:
+                status === 'confirmed'
+                  ? `Invite accepted! See you ${formatMonthDay(reservation.date)}.`
+                  : 'Invitation declined.',
+            });
+          },
+          onError: (error) => {
+            toast({
+              variant: 'error',
+              message: isRespondConflict(error)
+                ? 'This reservation changed before your response was saved.'
+                : 'We could not save your response. Try again.',
+            });
+          },
+        },
+      );
+    },
+    [respond, toast, focusUpcomingHeading],
+  );
+
+  const clubRespond = useRespondToClubInvitation();
+  const respondToClubInvitation = useCallback(
+    (invitation: ClubInvitation, response: 'accept' | 'decline') => {
+      focusClubsHeading();
+      clubRespond.mutate(
+        { invitationId: invitation.id, response },
+        {
+          onSuccess: () => {
+            toast({
+              variant: 'success',
+              message:
+                response === 'accept'
+                  ? `You joined ${invitation.club.name}.`
+                  : 'Club invitation declined.',
+            });
+          },
+          onError: (error) => {
+            toast({
+              variant: 'error',
+              message: isClubInviteConflict(error)
+                ? 'This club invitation is no longer open.'
+                : 'We could not save your response. Try again.',
+            });
+          },
+        },
+      );
+    },
+    [clubRespond, toast, focusClubsHeading],
+  );
 
   if (home.isPending) {
     return (
@@ -168,7 +231,12 @@ export function HomePage() {
                   <li key={reservation.id}>
                     <InvitationCard
                       reservation={reservation}
-                      onRespondStart={focusUpcomingHeading}
+                      onRespond={respondToInvitation}
+                      pendingResponse={
+                        respond.isPending && respond.variables.reservationId === reservation.id
+                          ? respond.variables.response
+                          : null
+                      }
                     />
                   </li>
                 ))}
@@ -198,7 +266,15 @@ export function HomePage() {
           <ul className={styles.cardStack}>
             {feed.clubInvitations.map((invitation) => (
               <li key={invitation.id}>
-                <ClubInvitationCard invitation={invitation} onRespondStart={focusClubsHeading} />
+                <ClubInvitationCard
+                  invitation={invitation}
+                  onRespond={respondToClubInvitation}
+                  pendingResponse={
+                    clubRespond.isPending && clubRespond.variables.invitationId === invitation.id
+                      ? clubRespond.variables.response
+                      : null
+                  }
+                />
               </li>
             ))}
           </ul>
@@ -266,7 +342,14 @@ function QuickBookCard({ suggestion }: { suggestion: QuickBookSuggestion }) {
     <ReservationCard
       typeCode={suggestion.typeCode}
       typeName={suggestion.typeName}
-      resourceName={`${formatDateCompact(suggestion.date)} · ${formatTimeRangeCompact(suggestion.startTime, suggestion.endTime)}`}
+      resourceName={
+        <>
+          {formatDateCompact(suggestion.date)} ·{' '}
+          <span className={styles.nowrap}>
+            {formatTimeRangeCompact(suggestion.startTime, suggestion.endTime)}
+          </span>
+        </>
+      }
       rows={[]}
       header={
         <p className={styles.aiLine}>
@@ -321,9 +404,12 @@ function UpcomingCard({ reservation }: { reservation: Reservation }) {
           { label: 'Date', value: formatDateLong(reservation.date) },
           {
             label: 'Time',
-            value: formatTimeRangeCompact(reservation.startTime, reservation.endTime),
+            value: (
+              <span className={styles.nowrap}>
+                {formatTimeRangeCompact(reservation.startTime, reservation.endTime)}
+              </span>
+            ),
           },
-          { label: 'Duration', value: formatDuration(reservation.durationMinutes) },
         ]}
       />
     </Link>
@@ -334,44 +420,16 @@ function UpcomingCard({ reservation }: { reservation: Reservation }) {
 
 function InvitationCard({
   reservation,
-  onRespondStart,
+  onRespond,
+  pendingResponse,
 }: {
   reservation: Reservation;
-  onRespondStart: () => void;
+  onRespond: (reservation: Reservation, response: 'accept' | 'decline') => void;
+  /** Which response is in flight for THIS card (drives the spinner). */
+  pendingResponse: 'accept' | 'decline' | null;
 }) {
-  const respond = useRespondToReservation();
-  const { toast } = useToast();
-  const [pendingAction, setPendingAction] = useState<'accept' | 'decline' | null>(null);
-
   const inviter = reservation.myParticipation?.invitedByFirstName ?? null;
-
-  function respondWith(response: 'accept' | 'decline') {
-    setPendingAction(response);
-    onRespondStart();
-    respond.mutate(
-      { reservationId: reservation.id, response },
-      {
-        onSuccess: ({ status }) => {
-          toast({
-            variant: 'success',
-            message:
-              status === 'confirmed'
-                ? `Invite accepted! See you ${formatMonthDay(reservation.date)}.`
-                : 'Invitation declined.',
-          });
-        },
-        onError: (error) => {
-          toast({
-            variant: 'error',
-            message: isRespondConflict(error)
-              ? 'This reservation changed before your response was saved.'
-              : 'We could not save your response. Try again.',
-          });
-        },
-        onSettled: () => setPendingAction(null),
-      },
-    );
-  }
+  const respondWith = (response: 'accept' | 'decline') => onRespond(reservation, response);
 
   return (
     <ReservationCard
@@ -386,8 +444,10 @@ function InvitationCard({
     >
       <p className={styles.inviteMeta}>
         {formatDateCompact(reservation.date)} ·{' '}
-        {formatTimeRangeCompact(reservation.startTime, reservation.endTime)} ·{' '}
-        {playerCountLabel(reservation)}
+        <span className={styles.nowrap}>
+          {formatTimeRangeCompact(reservation.startTime, reservation.endTime)}
+        </span>{' '}
+        · {playerCountLabel(reservation)}
       </p>
       <div
         className={styles.respondRow}
@@ -396,8 +456,8 @@ function InvitationCard({
       >
         <Button
           fullWidth
-          loading={respond.isPending && pendingAction === 'accept'}
-          disabled={respond.isPending}
+          loading={pendingResponse === 'accept'}
+          disabled={pendingResponse !== null}
           onClick={() => respondWith('accept')}
         >
           Accept
@@ -405,8 +465,8 @@ function InvitationCard({
         <Button
           variant="secondary"
           fullWidth
-          loading={respond.isPending && pendingAction === 'decline'}
-          disabled={respond.isPending}
+          loading={pendingResponse === 'decline'}
+          disabled={pendingResponse !== null}
           onClick={() => respondWith('decline')}
         >
           Decline
@@ -420,46 +480,18 @@ function InvitationCard({
 
 function ClubInvitationCard({
   invitation,
-  onRespondStart,
+  onRespond,
+  pendingResponse,
 }: {
   invitation: ClubInvitation;
-  onRespondStart: () => void;
+  onRespond: (invitation: ClubInvitation, response: 'accept' | 'decline') => void;
+  /** Which response is in flight for THIS card (drives the spinner). */
+  pendingResponse: 'accept' | 'decline' | null;
 }) {
-  const respond = useRespondToClubInvitation();
-  const { toast } = useToast();
-  const [pendingAction, setPendingAction] = useState<'accept' | 'decline' | null>(null);
-
   const inviter = invitation.invitedBy?.firstName ?? null;
   const memberCount =
     invitation.club.memberCount === 1 ? '1 member' : `${invitation.club.memberCount} members`;
-
-  function respondWith(response: 'accept' | 'decline') {
-    setPendingAction(response);
-    onRespondStart();
-    respond.mutate(
-      { invitationId: invitation.id, response },
-      {
-        onSuccess: () => {
-          toast({
-            variant: 'success',
-            message:
-              response === 'accept'
-                ? `You joined ${invitation.club.name}.`
-                : 'Club invitation declined.',
-          });
-        },
-        onError: (error) => {
-          toast({
-            variant: 'error',
-            message: isClubInviteConflict(error)
-              ? 'This club invitation is no longer open.'
-              : 'We could not save your response. Try again.',
-          });
-        },
-        onSettled: () => setPendingAction(null),
-      },
-    );
-  }
+  const respondWith = (response: 'accept' | 'decline') => onRespond(invitation, response);
 
   return (
     <Card className={styles.clubCard}>
@@ -482,8 +514,8 @@ function ClubInvitationCard({
       >
         <Button
           fullWidth
-          loading={respond.isPending && pendingAction === 'accept'}
-          disabled={respond.isPending}
+          loading={pendingResponse === 'accept'}
+          disabled={pendingResponse !== null}
           onClick={() => respondWith('accept')}
         >
           Accept
@@ -491,8 +523,8 @@ function ClubInvitationCard({
         <Button
           variant="secondary"
           fullWidth
-          loading={respond.isPending && pendingAction === 'decline'}
-          disabled={respond.isPending}
+          loading={pendingResponse === 'decline'}
+          disabled={pendingResponse !== null}
           onClick={() => respondWith('decline')}
         >
           Decline

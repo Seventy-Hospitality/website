@@ -38,8 +38,9 @@ export interface ReservationCardProps {
   typeCode: string;
   /** "Badminton Court". */
   typeName: string;
-  /** The assigned unit ("Court 1"); omitted while unknown. */
-  resourceName?: string | null;
+  /** The assigned unit ("Court 1"), or a meta line ("Sun 7/26 · 9:00AM");
+      omitted while unknown. */
+  resourceName?: ReactNode;
   /**
    * Label/value facts about the reservation. `layout="columns"` puts them
    * side by side (checkout: Date / Time / Duration); `layout="rows"` stacks
