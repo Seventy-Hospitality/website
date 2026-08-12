@@ -33,6 +33,11 @@ jest.mock('@stripe/stripe-react-native', () => ({
 
 jest.mock('react-native-qrcode-svg', () => 'QRCode');
 
+// expo-clipboard -> a spyable no-op (the club invite "Copy link" action).
+jest.mock('expo-clipboard', () => ({
+  setStringAsync: jest.fn(async () => true),
+}));
+
 // Icon + image modules render as simple host components in tests.
 jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 jest.mock('expo-image', () => ({ Image: 'Image' }));

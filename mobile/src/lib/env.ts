@@ -16,6 +16,15 @@ function optional(value: string | undefined): string | null {
 /** API origin. Defaults to the local dev API. */
 export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3001';
 
+/**
+ * Member web origin, used to build shareable links that resolve in a browser
+ * (the club invite/QR join link, `${WEB_URL}/clubs/join?token=...`). The member
+ * web client owns the join page; scanning the QR on any device lands there.
+ * Once universal/app-link association is configured this same URL opens the
+ * native app directly. Defaults to the local member-web dev origin.
+ */
+export const WEB_URL = process.env.EXPO_PUBLIC_WEB_URL ?? 'http://localhost:5173';
+
 /** Stripe publishable key (pk_...); null disables PaymentSheet. */
 export const STRIPE_PUBLISHABLE_KEY = optional(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 
