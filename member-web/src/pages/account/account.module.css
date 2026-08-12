@@ -17,13 +17,13 @@
    .pageWide for its two-column membership | history layout. */
 @media (min-width: 768px) {
   .page {
-    max-width: var(--content-max);
+    max-width: none;
     margin-inline: 0;
     width: 100%;
   }
 
   .pageWide {
-    max-width: var(--content-wide);
+    max-width: none;
   }
 }
 
@@ -85,8 +85,7 @@
 @media (min-width: 1024px) {
   .accountGrid {
     display: grid;
-    grid-template-columns: minmax(0, 20rem) minmax(0, 34rem);
-    justify-content: start;
+    grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
     gap: var(--space-2xl);
     align-items: start;
   }

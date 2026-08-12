@@ -17,7 +17,7 @@
    .pageWide so they fill the desktop content area. */
 @media (min-width: 768px) {
   .page {
-    max-width: var(--content-max);
+    max-width: none;
     margin-inline: 0;
     width: 100%;
   }
