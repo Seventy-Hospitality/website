@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Seventy",
+    "name": "Club70",
     "slug": "seventy-mobile",
     "scheme": "seventy",
     "version": "1.0.0",
@@ -12,14 +12,32 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-font"
+      "expo-font",
+      "expo-web-browser",
+      "expo-apple-authentication",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.club.seventy.mobile",
+          "enableGooglePay": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Club70 needs access to your photos to upload your avatar and ID verification photo.",
+          "cameraPermission": "Club70 needs access to your camera to take your avatar and ID verification photo."
+        }
+      ],
+      "expo-notifications"
     ],
     "web": {
       "bundler": "metro"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "club.seventy.mobile"
+      "bundleIdentifier": "club.seventy.mobile",
+      "usesAppleSignIn": true
     },
     "android": {
       "package": "club.seventy.mobile"
