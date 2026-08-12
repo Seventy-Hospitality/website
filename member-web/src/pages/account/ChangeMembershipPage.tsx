@@ -208,7 +208,7 @@ function ChangeView({
   });
 
   const change = useMutation({
-    mutationFn: api.changeMembership,
+    mutationFn: (planId: string) => api.changeMembership(planId),
     onSuccess: (result) => {
       if (result.kind === 'downgrade_scheduled') {
         finish(
@@ -227,7 +227,7 @@ function ChangeView({
   });
 
   const cancel = useMutation({
-    mutationFn: api.cancelMembership,
+    mutationFn: (options: { now: boolean }) => api.cancelMembership(options),
     onSuccess: (result) => {
       finish(
         result.canceledImmediately

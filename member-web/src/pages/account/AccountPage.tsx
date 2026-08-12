@@ -96,7 +96,7 @@ function AccountView({ profile }: { profile: MyProfile }) {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadAvatar = useMutation({
-    mutationFn: api.uploadAvatar,
+    mutationFn: (image: File) => api.uploadAvatar(image),
     onSuccess: ({ avatarUrl }) => {
       queryClient.setQueryData<MyProfile>(profileQuery.queryKey, (prev) =>
         prev ? { ...prev, member: { ...prev.member, avatarUrl } } : prev,
@@ -295,7 +295,7 @@ function DisplayNameForm({
   }, []);
 
   const save = useMutation({
-    mutationFn: api.updateMyProfile,
+    mutationFn: (input: { displayName: string | null }) => api.updateMyProfile(input),
     onSuccess: ({ member }) => {
       queryClient.setQueryData<MyProfile>(profileQuery.queryKey, (prev) =>
         prev ? { ...prev, member } : prev,

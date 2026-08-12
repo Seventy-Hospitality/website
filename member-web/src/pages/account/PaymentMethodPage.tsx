@@ -34,7 +34,7 @@ export function PaymentMethodPage() {
   const setup = useMutation({ mutationFn: api.createPaymentMethodSetupIntent });
 
   const setDefault = useMutation({
-    mutationFn: api.setDefaultPaymentMethod,
+    mutationFn: (paymentMethodId: string) => api.setDefaultPaymentMethod(paymentMethodId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['membership'] });
       toast({ message: 'Payment method updated', variant: 'success' });
