@@ -4,7 +4,7 @@ import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ApiError } from '../../lib/api';
+import { api, ApiError, resolveApiAssetUrl } from '../../lib/api';
 import { EmptyStateView, PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { memberCountLabel } from './clubs-lib';
@@ -111,7 +111,7 @@ function JoinPreview({ token }: { token: string }) {
     <JoinFrame>
       <View style={styles.card}>
         {club.coverImageUrl ? (
-          <Image source={club.coverImageUrl} style={styles.cover} contentFit="cover" />
+          <Image source={resolveApiAssetUrl(club.coverImageUrl) as string} style={styles.cover} contentFit="cover" />
         ) : null}
         <Text style={styles.invitedTo}>You are invited to join</Text>
         <View style={styles.clubRow}>

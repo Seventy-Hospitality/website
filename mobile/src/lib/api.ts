@@ -817,6 +817,24 @@ function normalizeSpotlight(event: SpotlightEvent): SpotlightEvent {
   return { ...event, imageUrl: resolveApiAssetUrl(event.imageUrl) };
 }
 
+/**
+ * Resolve image fields on API payloads to absolute URLs at the client boundary,
+ * the same treatment `normalizeSpotlight` gives the home spotlight. The backend
+ * serves avatars and club covers as relative `/uploads/...` paths, and
+ * expo-image cannot load a schemeless path, so EVERY method that returns an
+ * avatar- or cover-bearing shape must pass it through these helpers (see the
+ * `resolveApiAssetUrl` comment). Keeping the resolution here (not at each render
+ * site) means the query cache holds render-ready absolute URLs uniformly.
+ * `null` stays `null`, so "has an image?" checks are unaffected.
+ */
+function resolveAvatar<T extends { avatarUrl: string | null }>(row: T): T {
+  return { ...row, avatarUrl: resolveApiAssetUrl(row.avatarUrl) } as T;
+}
+
+function resolveCover<T extends { coverImageUrl: string | null }>(row: T): T {
+  return { ...row, coverImageUrl: resolveApiAssetUrl(row.coverImageUrl) } as T;
+}
+
 export const api = {
   // ── Session ──
   getMe: () => request<Principal | null>('/api/auth/me'),
@@ -1011,27 +1029,41 @@ export const api = {
     const query = new URLSearchParams({ limit: String(limit) });
     const trimmed = q.trim();
     if (trimmed) query.set('q', trimmed);
-    return request<MemberSearchResult[]>(`/api/members/search?${query}`);
+    return request<MemberSearchResult[]>(`/api/members/search?${query}`).then((rows) =>
+      rows.map(resolveAvatar),
+    );
   },
 
   // ── Home (M2) ──
   getHome: (tz?: string) =>
-    request<HomeFeed>(`/api/me/home${tz ? `?${new URLSearchParams({ tz })}` : ''}`).then(
-      (feed) => ({ ...feed, spotlightEvents: feed.spotlightEvents.map(normalizeSpotlight) }),
-    ),
+    request<HomeFeed>(`/api/me/home${tz ? `?${new URLSearchParams({ tz })}` : ''}`).then((feed) => ({
+      ...feed,
+      member: resolveAvatar(feed.member),
+      spotlightEvents: feed.spotlightEvents.map(normalizeSpotlight),
+      clubInvitations: feed.clubInvitations.map((invitation) => ({
+        ...invitation,
+        club: resolveCover(invitation.club),
+      })),
+    })),
   getMemberQr: () => request<MemberQrToken>('/api/me/qr'),
 
   // ── Account: profile & avatar (M6) ──
-  getProfile: () => request<MyProfile>('/api/me/profile'),
+  getProfile: () =>
+    request<MyProfile>('/api/me/profile').then((profile) => ({
+      ...profile,
+      member: resolveAvatar(profile.member),
+    })),
   updateProfile: (input: { displayName: string | null }) =>
     request<{ member: HomeMember }>('/api/me/profile', {
       method: 'PATCH',
       body: JSON.stringify(input),
-    }),
+    }).then((result) => ({ member: resolveAvatar(result.member) })),
   uploadAvatar: (image: { uri: string; name: string; type: string }) => {
     const body = new FormData();
     body.append('image', image as unknown as Blob);
-    return request<{ avatarUrl: string }>('/api/me/avatar', { method: 'POST', body });
+    return request<{ avatarUrl: string }>('/api/me/avatar', { method: 'POST', body }).then(
+      resolveAvatar,
+    );
   },
 
   // ── Account: notification preferences + push devices (M6) ──
@@ -1052,14 +1084,19 @@ export const api = {
     }),
 
   // ── Clubs (M5; M3 reads list + roster for invite chips) ──
-  getMyClubs: () => request<MyClub[]>('/api/me/clubs'),
-  getMyClubInvitations: () => request<ClubInvitation[]>('/api/me/club-invitations'),
+  getMyClubs: () =>
+    request<MyClub[]>('/api/me/clubs').then((clubs) => clubs.map((club) => resolveCover(club))),
+  getMyClubInvitations: () =>
+    request<ClubInvitation[]>('/api/me/club-invitations').then((rows) =>
+      rows.map((invitation) => ({ ...invitation, club: resolveCover(invitation.club) })),
+    ),
   createClub: (input: { name: string; description?: string; inviteeMemberIds?: string[] }) =>
     request<{ club: ClubSummary; invited: string[] }>('/api/clubs', {
       method: 'POST',
       body: JSON.stringify(input),
-    }),
-  getClub: (clubId: string) => request<ClubDetail>(`/api/clubs/${encodeURIComponent(clubId)}`),
+    }).then((result) => ({ ...result, club: resolveCover(result.club) })),
+  getClub: (clubId: string) =>
+    request<ClubDetail>(`/api/clubs/${encodeURIComponent(clubId)}`).then(resolveCover),
   updateClub: (
     clubId: string,
     input: { name?: string; description?: string | null; coverImageUrl?: null },
@@ -1067,7 +1104,7 @@ export const api = {
     request<ClubSummary>(`/api/clubs/${encodeURIComponent(clubId)}`, {
       method: 'PATCH',
       body: JSON.stringify(input),
-    }),
+    }).then(resolveCover),
   deleteClub: (clubId: string) =>
     request<{ deleted: boolean }>(`/api/clubs/${encodeURIComponent(clubId)}`, { method: 'DELETE' }),
   uploadClubCover: (clubId: string, image: { uri: string; name: string; type: string }) => {
@@ -1076,7 +1113,7 @@ export const api = {
     return request<ClubSummary>(`/api/clubs/${encodeURIComponent(clubId)}/cover-image`, {
       method: 'POST',
       body,
-    });
+    }).then(resolveCover);
   },
   leaveClub: (clubId: string) =>
     request<{ left: boolean }>(`/api/clubs/${encodeURIComponent(clubId)}/leave`, {
@@ -1084,7 +1121,9 @@ export const api = {
       body: '{}',
     }),
   getClubMembers: (clubId: string) =>
-    request<ClubRosterEntry[]>(`/api/clubs/${encodeURIComponent(clubId)}/members`),
+    request<ClubRosterEntry[]>(`/api/clubs/${encodeURIComponent(clubId)}/members`).then((rows) =>
+      rows.map((entry) => resolveAvatar(entry)),
+    ),
   changeClubMemberRole: (clubId: string, memberId: string, role: ClubRole) =>
     request<{ updated: boolean }>(
       `/api/clubs/${encodeURIComponent(clubId)}/members/${encodeURIComponent(memberId)}`,
@@ -1117,12 +1156,12 @@ export const api = {
     request<ClubInvitePreview>('/api/clubs/invite-preview', {
       method: 'POST',
       body: JSON.stringify({ token }),
-    }),
+    }).then((result) => ({ ...result, club: resolveCover(result.club) })),
   joinClub: (token: string) =>
     request<ClubJoinResult>('/api/clubs/join', {
       method: 'POST',
       body: JSON.stringify({ token }),
-    }),
+    }).then((result) => ({ ...result, club: resolveCover(result.club) })),
   getClubActivity: (clubId: string, filter: 'upcoming' | 'past' | 'all' = 'all') =>
     request<ClubActivityItem[]>(
       `/api/clubs/${encodeURIComponent(clubId)}/activity?${new URLSearchParams({ filter })}`,

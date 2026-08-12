@@ -22,15 +22,19 @@ function devicePlatform(): DevicePlatform | null {
 }
 
 /**
- * Resolve this device's Expo push token, requesting permission if needed.
- * Returns null (never throws) when push is unavailable or declined.
+ * Resolve this device's Expo push token. Returns null (never throws) when push
+ * is unavailable or declined. `promptIfNeeded` gates the OS permission prompt:
+ * enabling push may ask, but disabling must NEVER prompt (turning a toggle OFF
+ * should not pop a permission dialog; if permission was never granted there is
+ * nothing registered to remove anyway).
  */
-async function resolvePushToken(): Promise<string | null> {
+async function resolvePushToken(promptIfNeeded: boolean): Promise<string | null> {
   if (!devicePlatform()) return null;
   try {
     const current = await Notifications.getPermissionsAsync();
     let granted = current.granted;
-    if (!granted && current.canAskAgain) {
+    if (!granted) {
+      if (!promptIfNeeded || !current.canAskAgain) return null;
       const requested = await Notifications.requestPermissionsAsync();
       granted = requested.granted;
     }
@@ -51,7 +55,7 @@ export interface PushRegistrationController {
 
 export function usePushRegistration(): PushRegistrationController {
   const enable = useCallback(async (): Promise<boolean> => {
-    const token = await resolvePushToken();
+    const token = await resolvePushToken(true);
     const platform = devicePlatform();
     if (!token || !platform) return false;
     try {
@@ -63,7 +67,8 @@ export function usePushRegistration(): PushRegistrationController {
   }, []);
 
   const disable = useCallback(async (): Promise<void> => {
-    const token = await resolvePushToken();
+    // Never prompt when turning push off.
+    const token = await resolvePushToken(false);
     if (!token) return;
     try {
       await api.unregisterDevice(token);

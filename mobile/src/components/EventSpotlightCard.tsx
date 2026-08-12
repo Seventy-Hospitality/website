@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
-import type { ClubEvent } from '../lib/api';
+import { resolveApiAssetUrl, type ClubEvent } from '../lib/api';
 import { formatEventWindow } from '../lib/format';
 import { colors, fonts, radius, shadows, spacing } from '../theme/tokens';
 
@@ -21,7 +21,7 @@ export function EventSpotlightCard({ compact = false, event, onPress }: EventSpo
       ]}
     >
       {event.imageUrl ? (
-        <Image source={event.imageUrl} style={[styles.image, compact ? styles.compactImage : null]} contentFit="cover" />
+        <Image source={resolveApiAssetUrl(event.imageUrl) as string} style={[styles.image, compact ? styles.compactImage : null]} contentFit="cover" />
       ) : (
         <View style={[styles.imageFallback, compact ? styles.compactImage : null]}>
           <Text style={styles.imageFallbackText}>Spotlight</Text>

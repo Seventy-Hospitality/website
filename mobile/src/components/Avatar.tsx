@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Image } from 'expo-image';
+import { resolveApiAssetUrl } from '../lib/api';
 import { colors, fonts } from '../theme/tokens';
 
 type AvatarSize = 'sm' | 'md' | 'lg' | 'xl';
@@ -32,7 +33,9 @@ function initialsOf(name: string): string {
 export function Avatar({ name, src, size = 'md', style }: AvatarProps) {
   const [failed, setFailed] = useState(false);
   const { box, font } = DIMENSIONS[size];
-  const showImage = Boolean(src) && !failed;
+  // Backend media URLs can be relative; RN needs an absolute URL to load them.
+  const resolvedSrc = resolveApiAssetUrl(src ?? null);
+  const showImage = Boolean(resolvedSrc) && !failed;
 
   return (
     <View
@@ -41,7 +44,7 @@ export function Avatar({ name, src, size = 'md', style }: AvatarProps) {
     >
       {showImage ? (
         <Image
-          source={src as string}
+          source={resolvedSrc as string}
           style={{ width: box, height: box }}
           contentFit="cover"
           onError={() => setFailed(true)}

@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import type { MyClub } from '../../lib/api';
+import { resolveApiAssetUrl, type MyClub } from '../../lib/api';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { memberCountLabel, roleLabel } from './clubs-lib';
 
@@ -21,7 +21,7 @@ export function ClubCard({ club, onPress }: { club: MyClub; onPress: () => void 
       style={({ pressed }) => [styles.card, pressed ? styles.pressed : null]}
     >
       {club.coverImageUrl ? (
-        <Image source={club.coverImageUrl} style={styles.cover} contentFit="cover" />
+        <Image source={resolveApiAssetUrl(club.coverImageUrl) as string} style={styles.cover} contentFit="cover" />
       ) : (
         <View style={[styles.cover, styles.coverFallback]}>
           <Ionicons name="people" size={44} color={colors.surfaceMuted} />
