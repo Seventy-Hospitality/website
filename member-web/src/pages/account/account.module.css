@@ -18,7 +18,7 @@
 @media (min-width: 768px) {
   .page {
     max-width: var(--content-max);
-    margin-inline: auto;
+    margin-inline: 0;
     width: 100%;
   }
 
