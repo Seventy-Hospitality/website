@@ -77,6 +77,22 @@ non-native screens for a rough visual check; native modules (PaymentSheet,
 Apple auth, secure-store, camera) will not render there. The owner runs it on a
 real simulator/device.
 
+## Security follow-ups (from M0 review, deferred with rationale)
+- **Verified app / universal links for the magic-link callback.** M0 binds the
+  `seventy://auth/callback` deep link with an app-generated `state` (minted +
+  persisted before the send, echoed back by the backend redirect, verified +
+  burned single-use on arrival), which closes the forced-login / token-injection
+  hole. The bare custom scheme is still invocable by any app; moving to verified
+  universal/app links (Apple App Site Association + Android asset links) is
+  defense-in-depth on top of the state binding, and is infra config beyond M0
+  code. The state check stands on its own until then.
+- **Cold-start transient recovery.** A transient failure (network/5xx) while
+  restoring the session on launch now KEEPS the stored tokens and drops to the
+  signed-in-again UI, so a relaunch auto-restores rather than forcing re-login
+  (only a definitive 401/403 forgets the session). A nicer UX would retry with
+  backoff in-session instead of waiting for the next launch; the credential-loss
+  harm is already fixed, so this is optional polish.
+
 ## Standing conventions (set by M0, enforced in review)
 - react-query for all data; loading/error/empty states on every screen.
 - Forms via react-hook-form + zod; tokens only (no hardcoded colors).

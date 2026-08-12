@@ -11,8 +11,9 @@ function getSingleParam(value: string | string[] | undefined) {
 
 /**
  * Magic-link deep-link landing. The backend redirects here with the full
- * bearer pair as query params (token + refreshToken + expiresAt), or an error
- * code. We persist all three via completeMagicLink and enter the app.
+ * bearer pair as query params (token + refreshToken + expiresAt) plus the
+ * `state` this device minted for the request, or an error code. completeMagicLink
+ * verifies the state before trusting the tokens, then establishes the session.
  */
 export function AuthCallbackScreen() {
   const router = useRouter();
@@ -20,6 +21,7 @@ export function AuthCallbackScreen() {
     token?: string;
     refreshToken?: string;
     expiresAt?: string;
+    state?: string;
     error?: string;
   }>();
   const { completeMagicLink } = useSession();
@@ -28,6 +30,7 @@ export function AuthCallbackScreen() {
   const token = getSingleParam(params.token);
   const refreshToken = getSingleParam(params.refreshToken);
   const expiresAt = getSingleParam(params.expiresAt);
+  const state = getSingleParam(params.state);
   const error = getSingleParam(params.error);
 
   useEffect(() => {
@@ -48,17 +51,20 @@ export function AuthCallbackScreen() {
           accessToken: token,
           refreshToken,
           accessTokenExpiresAt: expiresAt ?? '',
+          state,
         });
         router.replace('/(tabs)');
       } catch {
-        if (mounted) setMessage('Unable to establish a session from this link.');
+        if (mounted) {
+          setMessage('This sign-in link is invalid or was not requested on this device.');
+        }
       }
     })();
 
     return () => {
       mounted = false;
     };
-  }, [completeMagicLink, error, expiresAt, refreshToken, router, token]);
+  }, [completeMagicLink, error, expiresAt, refreshToken, router, state, token]);
 
   return (
     <AppScreen scroll={false}>

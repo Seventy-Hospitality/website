@@ -107,7 +107,7 @@ describe('request pipeline', () => {
     expect(onTokensRefreshed).toHaveBeenCalledWith(NEW_TOKENS);
   });
 
-  it('invalidates the session when the refresh fails', async () => {
+  it('invalidates the session when the refresh is definitively rejected (401)', async () => {
     const onSessionInvalid = jest.fn();
     setAuthBridge(makeBridge({ onSessionInvalid }));
 
@@ -117,6 +117,55 @@ describe('request pipeline', () => {
       }
       return jsonResponse(401, { error: { code: 'UNAUTHENTICATED', message: 'expired' } });
     }) as unknown as typeof fetch;
+
+    await expect(request('/api/me/home')).rejects.toMatchObject({ status: 401 });
+    expect(onSessionInvalid).toHaveBeenCalledTimes(1);
+  });
+
+  it('KEEPS the session when the refresh fails transiently (5xx)', async () => {
+    // A momentary backend/DB blip on /refresh must not force a full re-login.
+    const onSessionInvalid = jest.fn();
+    setAuthBridge(makeBridge({ onSessionInvalid }));
+
+    global.fetch = jest.fn(async (url: string) => {
+      if (url.endsWith('/api/auth/refresh')) {
+        return jsonResponse(500, { error: { code: 'INTERNAL', message: 'boom' } });
+      }
+      return jsonResponse(401, { error: { code: 'UNAUTHENTICATED', message: 'expired' } });
+    }) as unknown as typeof fetch;
+
+    await expect(request('/api/me/home')).rejects.toMatchObject({
+      code: 'SESSION_REFRESH_UNAVAILABLE',
+      status: 503,
+    });
+    expect(onSessionInvalid).not.toHaveBeenCalled();
+  });
+
+  it('KEEPS the session when the refresh request throws (network error)', async () => {
+    // Flaky wifi on the refresh POST is transient, not a dead token.
+    const onSessionInvalid = jest.fn();
+    setAuthBridge(makeBridge({ onSessionInvalid }));
+
+    global.fetch = jest.fn(async (url: string) => {
+      if (url.endsWith('/api/auth/refresh')) {
+        throw new TypeError('Network request failed');
+      }
+      return jsonResponse(401, { error: { code: 'UNAUTHENTICATED', message: 'expired' } });
+    }) as unknown as typeof fetch;
+
+    await expect(request('/api/me/home')).rejects.toMatchObject({
+      code: 'SESSION_REFRESH_UNAVAILABLE',
+    });
+    expect(onSessionInvalid).not.toHaveBeenCalled();
+  });
+
+  it('signs out when the refresh token is missing entirely', async () => {
+    const onSessionInvalid = jest.fn();
+    setAuthBridge(makeBridge({ getRefreshToken: () => null, onSessionInvalid }));
+
+    global.fetch = jest.fn(async () =>
+      jsonResponse(401, { error: { code: 'UNAUTHENTICATED', message: 'expired' } }),
+    ) as unknown as typeof fetch;
 
     await expect(request('/api/me/home')).rejects.toMatchObject({ status: 401 });
     expect(onSessionInvalid).toHaveBeenCalledTimes(1);

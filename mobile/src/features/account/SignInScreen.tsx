@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import * as Linking from 'expo-linking';
 import { Link, Redirect } from 'expo-router';
 import { Controller } from 'react-hook-form';
 import { StyleSheet, Text, View } from 'react-native';
@@ -44,8 +43,7 @@ export function SignInScreen() {
 
   const onMagic = magicForm.handleSubmit(async (values) => {
     try {
-      const redirectTo = Linking.createURL('/auth/callback');
-      await requestMagicLink(values.email, redirectTo);
+      await requestMagicLink(values.email);
       setMagicSent(values.email);
     } catch {
       toast({ variant: 'error', message: 'Unable to send the sign-in email right now.' });

@@ -25,6 +25,7 @@ import {
 } from 'react';
 import {
   api,
+  ApiError,
   refreshSessionTokens,
   setApiToken,
   setAuthBridge,
@@ -38,8 +39,23 @@ import {
   googleAdapter,
   type FederatedAdapter,
 } from './oauth';
+import {
+  buildMagicLinkRedirect,
+  consumePendingMagicLinkState,
+  createPendingMagicLinkState,
+} from './magic-link';
 import { queryClient } from './query-client';
 import { clearStoredSession, getStoredSession, setStoredSession } from './storage';
+
+/**
+ * Only an explicit auth rejection (401/403) means stored credentials are dead
+ * and must be forgotten. Everything else (5xx, a thrown network error/timeout)
+ * is transient: keep the session so a later attempt can recover, rather than
+ * forcing a full re-login over a momentary blip.
+ */
+function isDefinitiveAuthFailure(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 401 || err.status === 403);
+}
 
 export type SessionStatus = 'loading' | 'anonymous' | 'authenticated';
 
@@ -68,11 +84,14 @@ export interface SessionContextValue {
     password: string;
     phone?: string;
   }) => Promise<Principal>;
-  requestMagicLink: (email: string, redirectTo: string) => Promise<void>;
+  /** Mint + persist an anti-forgery state, then email a link back to this device. */
+  requestMagicLink: (email: string) => Promise<void>;
   completeMagicLink: (tokens: {
     accessToken: string;
     refreshToken: string;
     accessTokenExpiresAt: string;
+    /** The `state` echoed back on the callback; must match the pending request. */
+    state?: string;
   }) => Promise<Principal>;
   signInWithGoogle: () => Promise<Principal>;
   signInWithApple: () => Promise<Principal>;
@@ -154,6 +173,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
+    // Drop to the signed-out UI. `forget` also wipes SecureStore; we only
+    // forget on a DEFINITIVE auth failure. On a transient failure we keep the
+    // stored tokens so the next launch (once the network/backend recovers)
+    // restores the session instead of forcing a full re-login over a blip.
+    const dropToAnonymous = (opts: { forget: boolean }) => {
+      tokensRef.current = null;
+      setApiToken(null);
+      if (opts.forget) void clearStoredSession();
+      setStatus('anonymous');
+    };
+
     (async () => {
       const stored = await getStoredSession();
       if (!stored) {
@@ -172,18 +202,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       try {
         let me = await api.getMe();
         if (!me && stored.refreshToken) {
-          try {
-            const issued = await refreshSessionTokens(stored.refreshToken);
-            persist({
-              accessToken: issued.accessToken,
-              accessTokenExpiresAt: issued.accessTokenExpiresAt,
-              refreshToken: issued.refreshToken,
-              refreshTokenExpiresAt: issued.refreshTokenExpiresAt,
-            });
-            me = await api.getMe();
-          } catch {
-            // Refresh token is dead too; fall through to anonymous.
-          }
+          const issued = await refreshSessionTokens(stored.refreshToken);
+          persist({
+            accessToken: issued.accessToken,
+            accessTokenExpiresAt: issued.accessTokenExpiresAt,
+            refreshToken: issued.refreshToken,
+            refreshTokenExpiresAt: issued.refreshTokenExpiresAt,
+          });
+          me = await api.getMe();
         }
 
         if (!mounted) return;
@@ -191,17 +217,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setPrincipal(me);
           setStatus('authenticated');
         } else {
-          tokensRef.current = null;
-          setApiToken(null);
-          await clearStoredSession();
-          setStatus('anonymous');
+          // /me says signed out and no refresh token was available to try:
+          // the stored session is genuinely dead.
+          dropToAnonymous({ forget: true });
         }
-      } catch {
+      } catch (err) {
         if (!mounted) return;
-        tokensRef.current = null;
-        setApiToken(null);
-        await clearStoredSession();
-        setStatus('anonymous');
+        dropToAnonymous({ forget: isDefinitiveAuthFailure(err) });
       }
     })();
 
@@ -245,10 +267,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       async signUpWithPassword(input) {
         return establishFromIssued(await api.signUp(input));
       },
-      async requestMagicLink(email, redirectTo) {
-        await api.sendMagicLink(email, redirectTo);
+      async requestMagicLink(email) {
+        // Bind the link to THIS device: mint a state, persist it as the single
+        // pending request, and carry it in the deep-link redirect target.
+        const state = await createPendingMagicLinkState();
+        await api.sendMagicLink(email, buildMagicLinkRedirect(state));
       },
       async completeMagicLink(tokens) {
+        // Reject any callback that does not answer a magic link this device
+        // requested (missing/wrong/unissued state) BEFORE trusting its tokens.
+        const bound = await consumePendingMagicLinkState(tokens.state);
+        if (!bound) {
+          throw new Error('This sign-in link was not requested from this device.');
+        }
         return establishSession({
           accessToken: tokens.accessToken,
           accessTokenExpiresAt: tokens.accessTokenExpiresAt,

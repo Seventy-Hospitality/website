@@ -711,15 +711,24 @@ async function performRequest(path: string, options?: RequestInit): Promise<Resp
   return fetch(`${API_URL}${path}`, { ...options, headers });
 }
 
-let refreshInFlight: Promise<boolean> | null = null;
-
 /**
- * Single-flight refresh. Concurrent 401s share one refresh; success persists
- * the new pair via the bridge, failure invalidates the session.
+ * A refresh attempt has three outcomes the pipeline reacts to differently.
+ * Collapsing `invalid` and `transient` into one "failed" bit is what forced a
+ * full re-login on a momentary network blip or a 5xx from /refresh.
+ *  - `refreshed`: new pair persisted via the bridge; retry the request.
+ *  - `invalid`:   the refresh token is definitively dead (401/403, a malformed
+ *                 2xx body, or no refresh token at all) -> sign out.
+ *  - `transient`: network error, timeout, or 5xx -> KEEP the session and let
+ *                 the caller retry; a blip must never clear credentials.
  */
-async function tryRefresh(): Promise<boolean> {
+type RefreshOutcome = 'refreshed' | 'invalid' | 'transient';
+
+let refreshInFlight: Promise<RefreshOutcome> | null = null;
+
+/** Single-flight refresh. Concurrent 401s share one refresh and one outcome. */
+async function tryRefresh(): Promise<RefreshOutcome> {
   const refreshToken = authBridge.getRefreshToken();
-  if (!refreshToken) return false;
+  if (!refreshToken) return 'invalid';
 
   refreshInFlight ??= (async () => {
     try {
@@ -728,19 +737,24 @@ async function tryRefresh(): Promise<boolean> {
         headers: { 'Content-Type': 'application/json', 'X-Client-Type': 'mobile' },
         body: JSON.stringify({ refreshToken }),
       });
-      if (!res.ok) return false;
+      if (!res.ok) {
+        // Only an explicit auth rejection means the refresh token is dead.
+        // 5xx / 429 / anything else is a transient server-side failure.
+        return res.status === 401 || res.status === 403 ? 'invalid' : 'transient';
+      }
       const json = normalizeJsonResponse(await res.text());
       const data = json.data as IssuedSession | undefined;
-      if (!data?.accessToken || !data.refreshToken) return false;
+      if (!data?.accessToken || !data.refreshToken) return 'invalid';
       authBridge.onTokensRefreshed({
         accessToken: data.accessToken,
         accessTokenExpiresAt: data.accessTokenExpiresAt,
         refreshToken: data.refreshToken,
         refreshTokenExpiresAt: data.refreshTokenExpiresAt,
       });
-      return true;
+      return 'refreshed';
     } catch {
-      return false;
+      // Thrown fetch = network error / timeout: the session may still be valid.
+      return 'transient';
     } finally {
       refreshInFlight = null;
     }
@@ -759,11 +773,20 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
   // Expired access token: refresh once and retry. Auth endpoints are
   // excluded; /me returns 200 with data:null when signed out, not 401.
   if (res.status === 401 && !isAuthPath(path)) {
-    const refreshed = await tryRefresh();
-    if (refreshed) {
+    const outcome = await tryRefresh();
+    if (outcome === 'refreshed') {
       res = await performRequest(path, options);
-    } else {
+    } else if (outcome === 'invalid') {
+      // Definitively dead: sign out, then surface the original 401 below.
       authBridge.onSessionInvalid();
+    } else {
+      // Transient: keep the session intact and let the caller retry. Never
+      // clear credentials over a network blip or a 5xx from /refresh.
+      throw new ApiError(
+        'SESSION_REFRESH_UNAVAILABLE',
+        'Could not refresh your session. Check your connection and try again.',
+        503,
+      );
     }
   }
 

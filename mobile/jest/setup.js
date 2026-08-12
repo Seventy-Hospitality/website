@@ -1,12 +1,14 @@
 /* Global test mocks for native modules the unit tests do not exercise. */
 
-// expo-crypto -> real Node hashing, so sha256Hex is genuinely verified.
+// expo-crypto -> real Node hashing + UUIDs, so sha256Hex and the magic-link
+// state are genuinely verified rather than stubbed to a constant.
 jest.mock('expo-crypto', () => ({
   CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
   CryptoEncoding: { HEX: 'hex' },
   digestStringAsync: jest.fn(async (_algo, value) =>
     require('crypto').createHash('sha256').update(value).digest('hex'),
   ),
+  randomUUID: jest.fn(() => require('crypto').randomUUID()),
 }));
 
 // expo-secure-store -> in-memory store.
