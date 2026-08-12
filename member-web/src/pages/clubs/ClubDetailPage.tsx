@@ -296,7 +296,7 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
             </div>
           ) : activity.data.length === 0 ? (
             <p className={styles.activityEmpty}>
-              No group activity yet
+              <span>No group activity yet</span>
               <Link
                 to={`/reserve?club=${encodeURIComponent(club.id)}`}
                 className={styles.activityEmptyLink}

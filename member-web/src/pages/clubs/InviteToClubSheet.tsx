@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type MutableRefObject, useRef } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link2, QrCode, Share2 } from 'lucide-react';
 import { api } from '../../lib/api';
@@ -25,7 +25,10 @@ export interface InviteToClubSheetProps {
  * Copy Link / QR Code / Share on top (all riding one lazily minted share
  * link), then the member picker; Add sends batch invitations, which the
  * invitees must accept. The QR encodes the join URL and shows it as text
- * for failed scans.
+ * for failed scans. The body mounts only while open (the MemberQrSheet
+ * pattern), so the directory and roster queries never run for a closed
+ * sheet and the selection resets per open; the minted link outlives the
+ * body so reopening reuses it.
  */
 export function InviteToClubSheet({
   clubId,
@@ -34,16 +37,56 @@ export function InviteToClubSheet({
   open,
   onClose,
 }: InviteToClubSheetProps) {
+  // The Sheet's Close/Escape must not interrupt an in-flight send.
+  const sendingRef = useRef(false);
+  const link = useClubInviteLink(clubId);
+
+  return (
+    <Sheet
+      open={open}
+      onClose={() => {
+        if (!sendingRef.current) onClose();
+      }}
+      title="Invite to Club"
+    >
+      {open && (
+        <InviteSheetBody
+          clubId={clubId}
+          clubName={clubName}
+          canRotateLink={canRotateLink}
+          link={link}
+          sendingRef={sendingRef}
+          onClose={onClose}
+        />
+      )}
+    </Sheet>
+  );
+}
+
+function InviteSheetBody({
+  clubId,
+  clubName,
+  canRotateLink,
+  link,
+  sendingRef,
+  onClose,
+}: {
+  clubId: string;
+  clubName: string;
+  canRotateLink: boolean;
+  link: ReturnType<typeof useClubInviteLink>;
+  sendingRef: MutableRefObject<boolean>;
+  onClose: () => void;
+}) {
   const { memberId } = useSession();
   const { toast } = useToast();
   const [selection, setSelection] = useState<InviteSelection>(EMPTY_INVITE_SELECTION);
   const [qrOpen, setQrOpen] = useState(false);
 
-  const link = useClubInviteLink(clubId);
   const qr = useMemo(() => (link.url ? qrSvgData(link.url) : null), [link.url]);
 
-  // Current members never appear in the picker; only while open.
-  const roster = useQuery({ ...clubRosterQuery(clubId), enabled: open });
+  // Current members never appear in the picker.
+  const roster = useQuery(clubRosterQuery(clubId));
   const excludeMemberIds = useMemo(
     () => [
       ...(memberId ? [memberId] : []),
@@ -86,20 +129,23 @@ export function InviteToClubSheet({
   }
 
   const invite = useMutation({
-    mutationFn: (memberIds: string[]) => api.inviteClubMembers(clubId, memberIds),
+    mutationFn: async (memberIds: string[]) => {
+      sendingRef.current = true;
+      try {
+        return await api.inviteClubMembers(clubId, memberIds);
+      } finally {
+        sendingRef.current = false;
+      }
+    },
     onSuccess: ({ invited }) => {
       setSelection(EMPTY_INVITE_SELECTION);
-      if (invited.length === 0) {
-        toast({
-          variant: 'success',
-          message: 'Those members are already in the club or already invited.',
-        });
-      } else {
-        toast({
-          variant: 'success',
-          message: `${invited.length === 1 ? '1 invite' : `${invited.length} invites`} sent, pending acceptance.`,
-        });
-      }
+      toast({
+        variant: 'success',
+        message:
+          invited.length === 0
+            ? 'Those members are already in the club or already invited.'
+            : `${invited.length === 1 ? '1 invite' : `${invited.length} invites`} sent, pending acceptance.`,
+      });
       onClose();
     },
     onError: () => {
@@ -110,7 +156,10 @@ export function InviteToClubSheet({
   const rotate = useMutation({
     mutationFn: () => link.reset(),
     onSuccess: () => {
-      toast({ variant: 'success', message: 'New invite link created. Older links no longer work.' });
+      toast({
+        variant: 'success',
+        message: 'New invite link created. Older links no longer work.',
+      });
     },
     onError: () => {
       toast({ variant: 'error', message: 'We could not reset the invite link. Try again.' });
@@ -118,25 +167,7 @@ export function InviteToClubSheet({
   });
 
   return (
-    <Sheet
-      open={open}
-      onClose={() => {
-        if (!invite.isPending) onClose();
-      }}
-      title="Invite to Club"
-      footer={
-        <Button
-          fullWidth
-          disabled={selection.members.length === 0}
-          loading={invite.isPending}
-          onClick={() => invite.mutate(selection.members.map((member) => member.id))}
-        >
-          Add
-          {selection.members.length > 0 &&
-            ` (${selection.members.length} ${selection.members.length === 1 ? 'player' : 'players'})`}
-        </Button>
-      }
-    >
+    <div>
       <div className={styles.linkActions}>
         <button
           type="button"
@@ -222,6 +253,21 @@ export function InviteToClubSheet({
         onSelectionChange={setSelection}
         excludeMemberIds={excludeMemberIds}
       />
-    </Sheet>
+
+      <div className={styles.dialogActions}>
+        <Button
+          fullWidth
+          disabled={selection.members.length === 0}
+          loading={invite.isPending}
+          onClick={() => invite.mutate(selection.members.map((member) => member.id))}
+        >
+          Add
+          {selection.members.length > 0 &&
+            ` (${selection.members.length} ${
+              selection.members.length === 1 ? 'player' : 'players'
+            })`}
+        </Button>
+      </div>
+    </div>
   );
 }
