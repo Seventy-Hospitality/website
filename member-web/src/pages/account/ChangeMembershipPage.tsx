@@ -158,9 +158,7 @@ function ChangeView({
 
   const periods = listBillingPeriods(plans);
   const [period, setPeriod] = useState<BillingInterval>(() =>
-    periods.includes(currentPlan.interval as BillingInterval)
-      ? (currentPlan.interval as BillingInterval)
-      : defaultBillingPeriod(plans),
+    periods.includes(currentPlan.interval) ? currentPlan.interval : defaultBillingPeriod(plans),
   );
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [processingHold, setProcessingHold] = useState(false);

@@ -30,6 +30,9 @@ export function PaymentMethodPage() {
 
   const [notice, setNotice] = useState<string | null>(null);
   const [processingHold, setProcessingHold] = useState(false);
+  // Landing back from a redirect-based method: keep the skeleton up while
+  // the SetupIntent is read back (the URL params are cleaned immediately).
+  const [finishingRedirect, setFinishingRedirect] = useState(redirectSecret !== null);
 
   const setup = useMutation({ mutationFn: api.createPaymentMethodSetupIntent });
 
@@ -72,6 +75,7 @@ export function PaymentMethodPage() {
         return;
       }
       // Failed or unknown: back to a fresh form with a notice.
+      setFinishingRedirect(false);
       setNotice('Your card could not be saved. Please try again.');
       started.current = true;
       setupMutate();
@@ -114,7 +118,7 @@ export function PaymentMethodPage() {
             </p>
           )}
 
-          {(setup.isPending || (redirectSecret !== null && !setDefault.isError)) && (
+          {(setup.isPending || (finishingRedirect && !setDefault.isError)) && (
             <div className={styles.loadingStack} aria-busy="true" role="status">
               <span className="visually-hidden">Preparing the secure card form</span>
               <Skeleton height="12rem" shape="card" />
