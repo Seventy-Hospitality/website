@@ -113,6 +113,32 @@ never cached across opens) and re-requests before the token's 60s TTL
 lapses; the QR is drawn by `src/lib/qr.ts` (`qrcode-generator`, zero
 deps) with the member number as the text fallback for failed scans.
 
+## Account surface (set by W6)
+
+- The `['membership']` query (onboarding-data.ts) reads GET
+  /api/me/billing and now types the FULL `BillingOverview` (membership +
+  default payment method + ledger months): the onboarding gate reads its
+  `membership` half, the billing page reads all of it, one key, no drift.
+  Month transactions: `['billing', 'transactions', month]`
+  (`billingTransactionsQuery` in `src/pages/account/account-data.ts`),
+  fetched lazily on first expand. Other keys: `['profile']`,
+  `['preferences']`, `['auth-identities']`.
+- Invalidation: money-state mutations (plan change, cancel membership,
+  set-default card) invalidate `['membership']` + the `['billing']`
+  prefix (+ `['profile']`, `['home']`); profile edits (name, avatar)
+  patch `['profile']` and invalidate `['home']` + `['clubs']`.
+- Plan-change policy mirror: `src/lib/membership-change.ts`
+  (`isPlanUpgrade` matches the backend exactly; upgrades immediate with
+  proration, downgrades at period end). The server response stays
+  authoritative; the mirror only drives preview copy.
+- The preference toggles save independently: each PUT carries ONLY its
+  key, optimistic with per-key rollback, so concurrent toggles can never
+  clobber each other (`AppPreferencesPage`; `Switch` in the kit is the
+  accessible toggle control).
+- Account deletion is step-up gated per the backend contract; see
+  `docs/w6-account-notes.md` for the proof choice and blocked-state
+  handling.
+
 ## Loading / error / empty states are first-class
 
 The Figma omits them; we do not. Every screen ships all three:
