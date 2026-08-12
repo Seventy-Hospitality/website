@@ -119,7 +119,6 @@ export function PreferencesScreen() {
             <SettingsRow
               key={key}
               label={label}
-              accessibilityLabel={label}
               trailing={
                 <Switch
                   value={preferences.data[key]}

@@ -129,9 +129,9 @@ function ChangeView({
     ? instantDateLabel(membership.currentPeriodEnd, timezone)
     : '';
 
-  const change = useMutation({ mutationFn: api.changeMembership });
-  const confirm = useMutation({ mutationFn: api.confirmMembership });
-  const cancel = useMutation({ mutationFn: api.cancelMembership });
+  const change = useMutation({ mutationFn: (planId: string) => api.changeMembership(planId) });
+  const confirm = useMutation({ mutationFn: () => api.confirmMembership() });
+  const cancel = useMutation({ mutationFn: (options: { now?: boolean }) => api.cancelMembership(options) });
 
   const busy =
     change.isPending || confirm.isPending || cancel.isPending || payPhase !== 'idle';
