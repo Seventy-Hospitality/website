@@ -28,10 +28,22 @@ jest.mock('expo-secure-store', () => {
 // Heavy native modules that are only reached at runtime, never in unit tests.
 jest.mock('@stripe/stripe-react-native', () => ({
   StripeProvider: ({ children }) => children,
-  useStripe: () => ({ initPaymentSheet: jest.fn(), presentPaymentSheet: jest.fn() }),
+  useStripe: () => ({
+    initPaymentSheet: jest.fn(),
+    presentPaymentSheet: jest.fn(),
+    retrieveSetupIntent: jest.fn(),
+  }),
 }));
 
 jest.mock('react-native-qrcode-svg', () => 'QRCode');
+
+// expo-notifications -> declined by default, so device push registration is a
+// silent no-op in unit tests (the preferences toggle logic is what we test).
+jest.mock('expo-notifications', () => ({
+  getPermissionsAsync: jest.fn(async () => ({ granted: false, canAskAgain: true })),
+  requestPermissionsAsync: jest.fn(async () => ({ granted: false, canAskAgain: false })),
+  getExpoPushTokenAsync: jest.fn(async () => ({ data: 'ExponentPushToken[test]' })),
+}));
 
 // expo-clipboard -> a spyable no-op (the club invite "Copy link" action).
 jest.mock('expo-clipboard', () => ({

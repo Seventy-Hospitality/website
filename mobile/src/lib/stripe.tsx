@@ -104,3 +104,96 @@ export function usePaymentSheet() {
     [configured, initPaymentSheet, presentPaymentSheet],
   );
 }
+
+// ── Save-a-card (SetupIntent) flow for the account payment-method screen (M6) ──
+
+export interface SetupPaymentParams {
+  /** SetupIntent client secret from POST /api/me/payment-methods/setup-intent. */
+  clientSecret: string;
+  /** Stripe customer id + ephemeral key so the sheet can attach the card. */
+  customerId?: string;
+  ephemeralKeySecret?: string;
+  merchantDisplayName?: string;
+  billingName?: string;
+}
+
+/**
+ * Outcome of saving a card. `completed` carries the saved payment-method id so
+ * the caller can POST it to /payment-methods/:id/default; `processing` means an
+ * async method is still clearing (park in a hold and poll); the rest mirror the
+ * PaymentSheet result union.
+ */
+export type SetupPaymentResult =
+  | { status: 'completed'; paymentMethodId: string }
+  | { status: 'processing' }
+  | { status: 'canceled' }
+  | { status: 'unconfigured' }
+  | { status: 'failed'; message: string };
+
+/**
+ * Present the PaymentSheet in setup mode to save a card, then read the
+ * SetupIntent back to recover the payment-method id and its clearing status.
+ *
+ * The web version returns from a redirect and calls `stripe.retrieveSetupIntent`
+ * to promote the card to default; the native version does the same read after
+ * the sheet dismisses. `poll` re-reads the intent for the "Check again" hold on
+ * a still-processing card, without re-presenting the sheet.
+ */
+export function useSetupPaymentMethod() {
+  const { configured } = useContext(PaymentsContext);
+  const { initPaymentSheet, presentPaymentSheet, retrieveSetupIntent } = useStripe();
+
+  const readIntent = useCallback(
+    async (clientSecret: string): Promise<SetupPaymentResult> => {
+      const { setupIntent, error } = await retrieveSetupIntent(clientSecret);
+      if (error || !setupIntent) {
+        return { status: 'failed', message: error?.message ?? 'We could not confirm your card.' };
+      }
+      const paymentMethodId = setupIntent.paymentMethod?.id ?? setupIntent.paymentMethodId ?? null;
+      const status = String(setupIntent.status);
+      if (status === 'Succeeded') {
+        if (!paymentMethodId) {
+          return { status: 'failed', message: 'Your card was saved but could not be identified.' };
+        }
+        return { status: 'completed', paymentMethodId };
+      }
+      if (status === 'Processing') return { status: 'processing' };
+      return { status: 'failed', message: 'Your card could not be saved. Please try again.' };
+    },
+    [retrieveSetupIntent],
+  );
+
+  const present = useCallback(
+    async (params: SetupPaymentParams): Promise<SetupPaymentResult> => {
+      if (!configured) return { status: 'unconfigured' };
+
+      const init = await initPaymentSheet({
+        merchantDisplayName: params.merchantDisplayName ?? 'Club70',
+        customerId: params.customerId,
+        customerEphemeralKeySecret: params.ephemeralKeySecret,
+        setupIntentClientSecret: params.clientSecret,
+        defaultBillingDetails: params.billingName ? { name: params.billingName } : undefined,
+      });
+      if (init.error) return { status: 'failed', message: init.error.message };
+
+      const presentResult = await presentPaymentSheet();
+      if (presentResult.error) {
+        if (presentResult.error.code === 'Canceled') return { status: 'canceled' };
+        return { status: 'failed', message: presentResult.error.message };
+      }
+
+      return readIntent(params.clientSecret);
+    },
+    [configured, initPaymentSheet, presentPaymentSheet, readIntent],
+  );
+
+  const poll = useCallback(
+    async (clientSecret: string): Promise<SetupPaymentResult> => {
+      if (!configured) return { status: 'unconfigured' };
+      return readIntent(clientSecret);
+    },
+    [configured, readIntent],
+  );
+
+  return { configured, present, poll };
+}
