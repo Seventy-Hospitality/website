@@ -43,6 +43,45 @@ change, cancel, set-default card) invalidate `['membership']` plus the
 `['billing']` prefix; profile mutations invalidate `['profile']`,
 `['home']`, and `['clubs']` (rosters carry displayName/avatar).
 
+## Processing SetupIntent: no server-side auto-default (backend gap)
+
+A SetupIntent that confirms into `processing` (delayed methods; cards
+complete inline) saves the payment method but nothing promotes it once it
+clears: the webhook service has no `setup_intent.succeeded` case, and the
+`payment_method.attached` mirror marks a card default only when it is the
+member's FIRST one. The web client therefore treats `processing` as
+incomplete, not success: the hold says the previous payment method stays
+the default and offers "Check again", which re-reads the intent
+(`stripe.retrieveSetupIntent`) and runs the normal
+POST /payment-methods/:id/default on `succeeded`. A member who abandons
+the hold ends with the new method attached but NOT default. Backend
+follow-up: handle `setup_intent.succeeded` by calling
+`setDefaultPaymentMethod` for the intent's payment method so the switch
+converges without the client.
+
+## Transaction row dates are device-local, months are venue-local (backend gap)
+
+GET /billing serializes ledger months bucketed in VENUE_TIMEZONE, but each
+transaction carries only its `occurredAt` ISO instant and the API exposes
+no venue timezone (the same gap W3 recorded for `todayDateKey`). The
+client renders row dates with `instantDateLabel` in the device zone, so
+near a month boundary a viewer whose zone differs from the venue's can see
+a row dated in the adjacent month under its venue-month header (e.g. a
+`2026-08-01T02:00:00Z` charge in a Los Angeles venue sits in "July 2026"
+but renders "Aug 1, 2026" for a UTC+2 viewer). Cosmetic and narrow, but
+the fix is backend-shaped: expose VENUE_TIMEZONE (or venue-local dates on
+the rows) and format with it here and in W3.
+
+## Cancel stays available for live-but-not-active memberships
+
+DELETE /api/me/membership deliberately uses policy `member` ("a past_due
+member must still be able to cancel"), so the web mirrors it with
+`canCancelMembership` (any status except canceled / incomplete_expired):
+the billing card swaps "Change membership" for a "Cancel membership" row
+in those states, and the change screen renders its cancel zone while
+hiding the plan switcher (plan changes still need the backend's
+active-member policy).
+
 ## Lapsed members cannot re-subscribe on web (known)
 
 A canceled membership renders on the billing page as "Ended <date>" with

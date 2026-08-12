@@ -670,6 +670,11 @@ a.menuRow:hover {
   line-height: var(--text-sm-line);
 }
 
+.processingActions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
 /* ── Payment method / proration payment forms ── */
 
 .paymentForm {

@@ -18,6 +18,13 @@ import styles from './account.module.css';
  * POST /api/me/payment-methods/:id/default makes it the default on both
  * the Stripe customer and the live subscription. Redirect-based methods
  * return to this page and are finished from the redirect params.
+ *
+ * A SetupIntent that confirms into `processing` (delayed methods) is NOT
+ * done: nothing server-side promotes it once it clears (no
+ * setup_intent.succeeded webhook; see docs/w6-account-notes.md), so this
+ * page holds with a Check again action that re-reads the intent and runs
+ * the same set-default call on `succeeded`. Until then the previous
+ * payment method stays the default, and the copy says so.
  */
 export function PaymentMethodPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -29,7 +36,12 @@ export function PaymentMethodPage() {
   const stripeReady = getStripe() !== null;
 
   const [notice, setNotice] = useState<string | null>(null);
-  const [processingHold, setProcessingHold] = useState(false);
+  // The client secret of a SetupIntent that confirmed into `processing`
+  // (delayed methods): non-null renders the hold, and Check again re-reads
+  // the intent by this secret to finish the set-default once it clears.
+  const [processingSecret, setProcessingSecret] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
   // Landing back from a redirect-based method: keep the skeleton up while
   // the SetupIntent is read back (the URL params are cleaned immediately).
   const [finishingRedirect, setFinishingRedirect] = useState(redirectSecret !== null);
@@ -71,7 +83,7 @@ export function PaymentMethodPage() {
         return;
       }
       if (setupIntent?.status === 'processing') {
-        setProcessingHold(true);
+        setProcessingSecret(redirectSecret);
         return;
       }
       // Failed or unknown: back to a fresh form with a notice.
@@ -81,6 +93,42 @@ export function PaymentMethodPage() {
       setupMutate();
     })();
   }, [redirectSecret, setSearchParams, setDefaultMutate, setupMutate]);
+
+  // Check again from the processing hold: re-read the SetupIntent and, once
+  // it has cleared, promote its payment method with the normal set-default
+  // call. A transient read failure keeps the hold (the intent may still
+  // succeed); a failed intent falls back to a fresh form.
+  async function checkProcessing() {
+    if (processingSecret === null || checking || setDefault.isPending) return;
+    setChecking(true);
+    setCheckNote(null);
+    try {
+      const stripe = await getStripe();
+      if (!stripe) return;
+      const result = await stripe.retrieveSetupIntent(processingSecret);
+      const intent = result.setupIntent;
+      if (intent?.status === 'succeeded' && typeof intent.payment_method === 'string') {
+        setDefault.mutate(intent.payment_method);
+        return;
+      }
+      if (intent?.status === 'processing') {
+        setCheckNote('Still confirming. Give it a moment and check again.');
+        return;
+      }
+      if (result.error) {
+        setCheckNote('We could not check the status. Please try again.');
+        return;
+      }
+      // Failed or canceled: back to a fresh form with a notice.
+      setProcessingSecret(null);
+      setFinishingRedirect(false);
+      setNotice('Your payment method could not be saved. Please try again.');
+      started.current = true;
+      setup.mutate();
+    } finally {
+      setChecking(false);
+    }
+  }
 
   return (
     <div className={styles.page}>
@@ -97,20 +145,41 @@ export function PaymentMethodPage() {
         />
       )}
 
-      {stripeReady && processingHold && (
+      {stripeReady && processingSecret !== null && (
         <div className={styles.processing} role="status">
           <p className={styles.processingTitle}>Your payment method is being confirmed</p>
           <p className={styles.processingBody}>
-            This can take a moment for some payment methods. Your card will become the default
-            automatically once it clears.
+            This can take a moment for some payment methods. Your previous payment method
+            stays the default until this one clears; check again to finish the switch.
           </p>
-          <Button variant="secondary" size="sm" onClick={() => navigate('/account/billing')}>
-            Back to billing
-          </Button>
+          {checkNote && <p className={styles.processingBody}>{checkNote}</p>}
+          {setDefault.isError && (
+            <p role="alert" className={styles.payAlert}>
+              Your payment method cleared, but we could not make it your default. Check again
+              to retry.
+            </p>
+          )}
+          <div className={styles.processingActions}>
+            <Button
+              size="sm"
+              loading={checking || setDefault.isPending}
+              onClick={() => void checkProcessing()}
+            >
+              Check again
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={checking || setDefault.isPending}
+              onClick={() => navigate('/account/billing')}
+            >
+              Back to billing
+            </Button>
+          </div>
         </div>
       )}
 
-      {stripeReady && !processingHold && (
+      {stripeReady && processingSecret === null && (
         <>
           {notice && (
             <p role="alert" className={styles.payAlert}>
@@ -159,7 +228,7 @@ export function PaymentMethodPage() {
               <SetupForm
                 savePending={setDefault.isPending}
                 onSaved={(paymentMethodId) => setDefault.mutate(paymentMethodId)}
-                onProcessing={() => setProcessingHold(true)}
+                onProcessing={() => setProcessingSecret(setup.data.clientSecret)}
               />
             </StripeProvider>
           )}

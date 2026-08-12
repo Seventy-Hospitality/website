@@ -33,7 +33,7 @@ import {
   useToast,
 } from '../../components';
 import { membershipQuery, plansQuery } from '../onboarding/onboarding-data';
-import { canChangeMembership, instantDateLabel } from './account-lib';
+import { canCancelMembership, canChangeMembership, instantDateLabel } from './account-lib';
 import { ProrationPaymentForm } from './ProrationPaymentForm';
 import styles from './account.module.css';
 
@@ -51,7 +51,11 @@ import styles from './account.module.css';
  * period end, no refund, no payment step.
  *
  * Cancel membership lives here too: at period end by default, with an
- * explicit cancel-now option, behind a focus-trapped confirm Sheet.
+ * explicit cancel-now option, behind a focus-trapped confirm Sheet. Plan
+ * changes need an ACTIVE membership (the backend's active-member policy),
+ * but cancel stays available for any live one: DELETE /api/me/membership
+ * uses policy `member` so a past_due member can always stop paying, and
+ * this screen renders its cancel zone for those states too.
  */
 export function ChangeMembershipPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -92,7 +96,7 @@ export function ChangeMembershipPage() {
   }
 
   const membership = overview.data.membership;
-  if (!membership?.plan || !canChangeMembership(membership)) {
+  if (!membership?.plan || (!canChangeMembership(membership) && !canCancelMembership(membership))) {
     return (
       <ChangeFrame>
         <EmptyState
@@ -108,6 +112,7 @@ export function ChangeMembershipPage() {
       plans={plans.data}
       membership={membership}
       currentPlan={membership.plan}
+      canChangePlans={canChangeMembership(membership)}
       redirectStatus={redirectStatus}
       clearRedirectParams={() =>
         setSearchParams(
@@ -143,12 +148,15 @@ function ChangeView({
   plans,
   membership,
   currentPlan,
+  canChangePlans,
   redirectStatus,
   clearRedirectParams,
 }: {
   plans: Plan[];
   membership: MembershipSummary;
   currentPlan: MembershipPlanSummary;
+  /** False for a live-but-not-active membership: cancel only, no plan switches. */
+  canChangePlans: boolean;
   redirectStatus: string | null;
   clearRedirectParams: () => void;
 }) {
@@ -174,6 +182,7 @@ function ChangeView({
   );
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelNow, setCancelNow] = useState(false);
+  const planGroupRef = useRef<HTMLDivElement>(null);
 
   const stripeReady = getStripe() !== null;
   const periodEndLabel = instantDateLabel(membership.currentPeriodEnd);
@@ -254,6 +263,24 @@ function ChangeView({
   const clientSecret = change.data?.clientSecret ?? null;
   const changeKind = selectedPlan ? planChangeKind(currentPlan, selectedPlan) : null;
 
+  // ── Radio-group keyboard pattern (roving tabindex, SegmentedControl is
+  // the CONVENTIONS reference): the group is ONE tab stop and arrow keys
+  // move the selection across the selectable cards.
+  const rovingPlanId =
+    selectedPlanId !== null && cards.some((card) => card.plan.id === selectedPlanId)
+      ? selectedPlanId
+      : (cards.find((card) => !card.locked)?.plan.id ?? null);
+
+  function movePlanSelection(fromPlanId: string, offset: number) {
+    const selectable = cards.filter((card) => !card.locked);
+    if (selectable.length === 0) return;
+    const from = selectable.findIndex((card) => card.plan.id === fromPlanId);
+    const next = selectable[(from + offset + selectable.length) % selectable.length];
+    setSelectedPlanId(next.plan.id);
+    const radios = planGroupRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+    radios?.[cards.indexOf(next)]?.focus();
+  }
+
   const changeError = change.isError
     ? change.error instanceof ApiError && change.error.code !== 'UNKNOWN'
       ? change.error.message
@@ -328,7 +355,17 @@ function ChangeView({
         </p>
       )}
 
-      {periods.length > 1 && (
+      {!canChangePlans && (
+        <div className={styles.changeSummary}>
+          <p className={styles.changeSummaryText}>
+            {membership.status === 'past_due' || membership.status === 'unpaid'
+              ? 'Your payment is past due, so plan changes are unavailable. Update your payment method from the billing page to keep your membership, or cancel it below.'
+              : 'Plan changes need an active membership. You can still cancel your membership below.'}
+          </p>
+        </div>
+      )}
+
+      {canChangePlans && periods.length > 1 && (
         <SegmentedControl
           label="Billing period"
           options={periods.map((value) => ({ value, label: PERIOD_LABELS[value] }))}
@@ -340,43 +377,60 @@ function ChangeView({
         />
       )}
 
-      <div className={styles.planCards} role="radiogroup" aria-label="Membership plans">
-        {cards.map((card) => {
-          const isCurrent = card.plan.id === currentPlan.id;
-          const isPending = membership.pendingPlan?.id === card.plan.id;
-          const selected = card.plan.id === selectedPlanId;
-          return (
-            <button
-              key={card.plan.id}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              disabled={card.locked}
-              className={[styles.planCardButton, selected ? styles.planCardSelected : '']
-                .filter(Boolean)
-                .join(' ')}
-              onClick={() => setSelectedPlanId(selected ? null : card.plan.id)}
-            >
-              <span className={styles.planCardHead}>
-                <span className={styles.planCardName}>
-                  {card.plan.name}
-                  {isCurrent && <Badge variant="accent">Current plan</Badge>}
-                  {isPending && <Badge variant="neutral">Scheduled</Badge>}
-                  {card.locked && <Badge variant="neutral">Invite only</Badge>}
+      {canChangePlans && (
+        <div
+          ref={planGroupRef}
+          className={styles.planCards}
+          role="radiogroup"
+          aria-label="Membership plans"
+        >
+          {cards.map((card) => {
+            const isCurrent = card.plan.id === currentPlan.id;
+            const isPending = membership.pendingPlan?.id === card.plan.id;
+            const selected = card.plan.id === selectedPlanId;
+            return (
+              <button
+                key={card.plan.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                disabled={card.locked}
+                tabIndex={card.plan.id === rovingPlanId ? 0 : -1}
+                className={[styles.planCardButton, selected ? styles.planCardSelected : '']
+                  .filter(Boolean)
+                  .join(' ')}
+                onClick={() => setSelectedPlanId(card.plan.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    movePlanSelection(card.plan.id, 1);
+                  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    movePlanSelection(card.plan.id, -1);
+                  }
+                }}
+              >
+                <span className={styles.planCardHead}>
+                  <span className={styles.planCardName}>
+                    {card.plan.name}
+                    {isCurrent && <Badge variant="accent">Current plan</Badge>}
+                    {isPending && <Badge variant="neutral">Scheduled</Badge>}
+                    {card.locked && <Badge variant="neutral">Invite only</Badge>}
+                  </span>
+                  <span className={styles.planPrice}>
+                    {formatAmount(card.plan.amountCents)}
+                    <span className="visually-hidden"> </span>
+                    {periodSuffix(card.plan.interval)}
+                  </span>
                 </span>
-                <span className={styles.planPrice}>
-                  {formatAmount(card.plan.amountCents)}
-                  <span className="visually-hidden"> </span>
-                  {periodSuffix(card.plan.interval)}
-                </span>
-              </span>
-              <span className={styles.planCardCaption}>{billingCaption(card.plan)}</span>
-            </button>
-          );
-        })}
-      </div>
+                <span className={styles.planCardCaption}>{billingCaption(card.plan)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
-      {selectedPlan && selectedPlan.id !== currentPlan.id && changeKind && (
+      {canChangePlans && selectedPlan && selectedPlan.id !== currentPlan.id && changeKind && (
         <div className={styles.changeSummary}>
           <p className={styles.changeSummaryText}>{planChangeSummary(changeKind, periodEndLabel)}</p>
           {changeKind === 'upgrade' && !stripeReady && (
@@ -400,7 +454,7 @@ function ChangeView({
         </div>
       )}
 
-      {selectedPlan && selectedPlan.id === currentPlan.id && membership.pendingPlan && (
+      {canChangePlans && selectedPlan && selectedPlan.id === currentPlan.id && membership.pendingPlan && (
         <div className={styles.changeSummary}>
           <p className={styles.changeSummaryText}>
             Staying on {currentPlan.name} removes the scheduled switch to{' '}
@@ -457,10 +511,15 @@ function ChangeView({
               Your membership is already set to end on {periodEndLabel}. You can still cancel
               immediately below.
             </p>
-          ) : (
+          ) : canChangePlans ? (
             <p className={styles.dialogText}>
               Your membership stays active until {periodEndLabel}, then ends. You will not be
               charged again.
+            </p>
+          ) : (
+            // Not active (e.g. past due): do not claim it "stays active".
+            <p className={styles.dialogText}>
+              Your membership ends on {periodEndLabel}. You will not be charged again.
             </p>
           )}
           <Checkbox

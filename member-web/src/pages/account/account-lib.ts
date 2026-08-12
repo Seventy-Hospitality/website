@@ -25,7 +25,15 @@ export function billingMonthLabel(month: string): string {
   return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 }
 
-/** "Mar 12, 2027" for an ISO instant (renewal, transaction, effective dates). */
+/**
+ * "Mar 12, 2027" for an ISO instant (renewal, transaction, effective dates).
+ *
+ * Known gap: this renders in the DEVICE timezone, but the ledger months are
+ * bucketed in VENUE_TIMEZONE, which the API does not expose and the
+ * transaction payload does not carry. Near a month boundary a viewer in a
+ * different zone can see a row date outside its month header; see
+ * docs/w6-account-notes.md for the backend follow-up.
+ */
 export function instantDateLabel(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', {
     month: 'short',
@@ -93,4 +101,19 @@ export function membershipStatusLine(
     (the backend's active-member policy). */
 export function canChangeMembership(membership: Pick<MembershipSummary, 'status'> | null): boolean {
   return membership !== null && (membership.status === 'active' || membership.status === 'trialing');
+}
+
+/**
+ * True when the membership can still be canceled. Mirrors the backend's
+ * DELETE /api/me/membership guard exactly: any live subscription qualifies,
+ * deliberately including past_due/unpaid (policy `member`, not
+ * `active-member`), so a member who cannot pay is never trapped in an
+ * unpaid membership with no exit.
+ */
+export function canCancelMembership(membership: Pick<MembershipSummary, 'status'> | null): boolean {
+  return (
+    membership !== null &&
+    membership.status !== 'canceled' &&
+    membership.status !== 'incomplete_expired'
+  );
 }

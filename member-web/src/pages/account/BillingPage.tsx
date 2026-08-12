@@ -10,6 +10,7 @@ import { membershipQuery } from '../onboarding/onboarding-data';
 import {
   billingMonthLabel,
   billingMonthSummary,
+  canCancelMembership,
   canChangeMembership,
   cardExpiryLabel,
   instantDateLabel,
@@ -116,6 +117,15 @@ function BillingFrame({ children }: { children: React.ReactNode }) {
 function MembershipCard({ overview }: { overview: BillingOverview }) {
   const { membership, defaultPaymentMethod } = overview;
 
+  // Active memberships get the full change screen; a live-but-not-active
+  // one (past_due, unpaid, paused, incomplete) still gets a cancel entry,
+  // because the backend deliberately accepts a cancel in those states.
+  const membershipAction = canChangeMembership(membership)
+    ? 'Change membership'
+    : canCancelMembership(membership)
+      ? 'Cancel membership'
+      : null;
+
   if (!membership) {
     return (
       <Card padding="lg">
@@ -162,9 +172,9 @@ function MembershipCard({ overview }: { overview: BillingOverview }) {
         )}
       </div>
 
-      {canChangeMembership(membership) && (
+      {membershipAction && (
         <Link to="/account/membership" className={[styles.menuRow, styles.menuRowAccent].join(' ')}>
-          <span className={styles.menuRowLabel}>Change membership</span>
+          <span className={styles.menuRowLabel}>{membershipAction}</span>
           <ChevronRight aria-hidden className={styles.menuChevron} />
         </Link>
       )}

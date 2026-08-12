@@ -153,7 +153,7 @@ describe('BillingPage membership card', () => {
     );
   });
 
-  it('hides Change membership for a canceled membership', async () => {
+  it('hides both membership actions for a canceled membership', async () => {
     getMyMembership.mockResolvedValue({
       ...OVERVIEW,
       membership: { ...MEMBERSHIP, status: 'canceled' },
@@ -163,6 +163,25 @@ describe('BillingPage membership card', () => {
 
     expect(await screen.findByText('Ended Mar 12, 2027')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Change membership/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Cancel membership/ })).not.toBeInTheDocument();
+  });
+
+  it('swaps Change membership for a Cancel membership entry when past due', async () => {
+    getMyMembership.mockResolvedValue({
+      ...OVERVIEW,
+      membership: { ...MEMBERSHIP, status: 'past_due' },
+    });
+
+    renderPage();
+
+    // A past_due member cannot switch plans, but must never be stuck
+    // paying: cancel stays reachable (the backend accepts it by design).
+    expect(await screen.findByText('Payment past due')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Change membership/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Cancel membership/ })).toHaveAttribute(
+      'href',
+      '/account/membership',
+    );
   });
 });
 
