@@ -207,8 +207,8 @@ export interface ChangeablePlan {
 /**
  * Client mirror of the backend's upgrade test; drives the preview copy and the
  * button label only (the POST /change response is authoritative). Precedence:
- * (1) tier — `pro` outranks `member`; (2) same tier, interval — month→year is
- * an upgrade; (3) same tier + interval — a higher price is an upgrade.
+ * (1) tier (`pro` outranks `member`); (2) same tier, interval (month to year is
+ * an upgrade); (3) same tier + interval (a higher price is an upgrade).
  */
 export function isPlanUpgrade(current: ChangeablePlan, target: ChangeablePlan): boolean {
   const tierRank = (plan: ChangeablePlan) => (plan.tier === 'pro' ? 1 : 0);

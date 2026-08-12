@@ -1,6 +1,6 @@
 /**
  * Payment method screen (M6): save/replace the card on file. Mirrors
- * member-web's PaymentMethodPage translated to the native PaymentSheet — POST
+ * member-web's PaymentMethodPage translated to the native PaymentSheet: POST
  * /payment-methods/setup-intent, present the sheet in setup mode with the
  * customer + ephemeral key, read the saved payment-method id back, then POST it
  * to /payment-methods/:id/default. An async card that has not cleared parks in
