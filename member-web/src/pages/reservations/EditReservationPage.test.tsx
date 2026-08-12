@@ -28,6 +28,7 @@ vi.mock('../../lib/api', async (importOriginal) => {
     ...original,
     api: {
       ...original.api,
+      getVenue: vi.fn(),
       getReservation: vi.fn(),
       getResourceTypes: vi.fn(),
       getMyMembership: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock('@stripe/react-stripe-js', async () => {
   };
 });
 
+const getVenue = vi.mocked(api.getVenue);
 const getReservation = vi.mocked(api.getReservation);
 const getResourceTypes = vi.mocked(api.getResourceTypes);
 const getMyMembership = vi.mocked(api.getMyMembership);
@@ -88,7 +90,11 @@ const TYPE: ResourceTypeSummary = {
   icon: 'badminton_court',
 };
 
-const TOMORROW = addDaysToDateKey(todayDateKey(), 1);
+// The mocked venue zone is the machine zone, so "venue today" matches the
+// Date.now()-based instants these fixtures are built from.
+const VENUE_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+const TOMORROW = addDaysToDateKey(todayDateKey(VENUE_TZ), 1);
 
 const VIEWER: ReservationViewer = {
   role: 'organizer',
@@ -194,6 +200,7 @@ function renderEdit(initialEntry = '/reservations/res1/edit') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getVenue.mockResolvedValue({ timezone: VENUE_TZ });
   getReservation.mockResolvedValue(DETAIL);
   getResourceTypes.mockResolvedValue([TYPE]);
   getMyMembership.mockResolvedValue(billingOverview({
@@ -438,7 +445,7 @@ describe('redirect-based payment return', () => {
 
 describe('step 2: date-only move (same clock time on a new day)', () => {
   it('marks the date as changed without striking through the identical time', async () => {
-    const dayAfter = addDaysToDateKey(todayDateKey(), 2);
+    const dayAfter = addDaysToDateKey(todayDateKey(VENUE_TZ), 2);
     getAvailability.mockResolvedValue([
       {
         date: TOMORROW,

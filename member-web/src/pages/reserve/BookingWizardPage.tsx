@@ -16,6 +16,7 @@ import {
   inviteesPayload,
   type InviteSelection,
 } from '../../lib/invites';
+import { useVenueTimezone } from '../../lib/venue';
 import { Button, EmptyState, FullScreenLoader, useToast } from '../../components';
 import { membershipQuery } from '../onboarding/onboarding-data';
 import { isEntitledMembershipStatus, resourceTypesQuery } from './booking-data';
@@ -55,8 +56,19 @@ export function BookingWizardPage() {
   const membership = useQuery(membershipQuery);
   const type = types.data?.find((entry) => entry.code === typeCode);
 
+  // The venue zone anchors "today" and the date strip. Prefetched at app
+  // start; until it lands the hook answers with the browser zone.
+  const timezone = useVenueTimezone();
+  const todayKey = todayDateKey(timezone);
+
   const [step, setStep] = useState<WizardStep>(1);
-  const [date, setDate] = useState(() => todayDateKey());
+  const [storedDate, setDate] = useState(todayKey);
+  // The venue zone can resolve after mount (the fallback was the browser
+  // zone) and venue midnight can pass mid-session: a stored date in the
+  // venue's past is unbookable, so clamp it forward to venue-today.
+  // SelectTimeStep's availability prune then drops any selected slot the
+  // clamped day cannot host.
+  const date = storedDate < todayKey ? todayKey : storedDate;
   const [slots, setSlots] = useState<string[]>([]);
   const [invites, setInvites] = useState<InviteSelection>(EMPTY_INVITE_SELECTION);
   /** Alert shown on the time step after a failure bounced the user back. */
@@ -351,6 +363,7 @@ export function BookingWizardPage() {
         <SelectTimeStep
           headingRef={headingRef}
           type={type}
+          timezone={timezone}
           date={date}
           onDateChange={(next) => {
             setDate(next);

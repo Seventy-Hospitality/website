@@ -21,6 +21,7 @@ import {
 } from '../../lib/plan-pricing';
 import { planChangeKind, planChangeSummary } from '../../lib/membership-change';
 import { getStripe } from '../../lib/stripe';
+import { useVenueTimezone } from '../../lib/venue';
 import { PageHeader } from '../../app/AppShell';
 import {
   Badge,
@@ -185,7 +186,10 @@ function ChangeView({
   const planGroupRef = useRef<HTMLDivElement>(null);
 
   const stripeReady = getStripe() !== null;
-  const periodEndLabel = instantDateLabel(membership.currentPeriodEnd);
+  // Effective/renewal dates render on the venue's calendar (the zone the
+  // ledger buckets in), never the device's.
+  const timezone = useVenueTimezone();
+  const periodEndLabel = instantDateLabel(membership.currentPeriodEnd, timezone);
 
   function invalidateBillingState() {
     void queryClient.invalidateQueries({ queryKey: ['membership'] });
@@ -221,7 +225,7 @@ function ChangeView({
         finish(
           `Plan change scheduled for ${
             result.pendingPlanEffectiveAt
-              ? instantDateLabel(result.pendingPlanEffectiveAt)
+              ? instantDateLabel(result.pendingPlanEffectiveAt, timezone)
               : periodEndLabel
           }`,
         );
@@ -239,7 +243,7 @@ function ChangeView({
       finish(
         result.canceledImmediately
           ? 'Your membership has been canceled'
-          : `Your membership ends ${instantDateLabel(result.effectiveAt)}`,
+          : `Your membership ends ${instantDateLabel(result.effectiveAt, timezone)}`,
       );
     },
     onError: () => {

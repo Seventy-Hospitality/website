@@ -63,23 +63,49 @@ export function dateKeyToDate(key: string): Date {
   return new Date(year, month - 1, day, 12, 0, 0, 0);
 }
 
-/**
- * Known gap: this is DEVICE-local today, but the backend defines "today"
- * and the booking horizon in VENUE_TIMEZONE, which the API does not expose
- * yet. Near a date boundary a traveling member's date strip is off by one
- * day; see docs/w3-booking-notes.md for the backend follow-up.
- */
-export function todayDateKey(now: Date = new Date()): string {
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
+/** Serializes a local-calendar Date back to its "YYYY-MM-DD" key. */
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+/** Intl formatters are expensive to build; one per zone is plenty. */
+const dateKeyFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dateKeyFormatter(timezone: string): Intl.DateTimeFormat {
+  let formatter = dateKeyFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    dateKeyFormatters.set(timezone, formatter);
+  }
+  return formatter;
+}
+
+/**
+ * The date key `now` falls on in `timezone`, normally the VENUE zone from
+ * `useVenueTimezone()` (src/lib/venue.ts): the backend defines "today" and
+ * the booking horizon on the venue's wall clock, so near midnight the
+ * device zone and the venue zone disagree on what "today" is. Expects a
+ * zone Intl can format with; the hook validates that once.
+ */
+export function todayDateKey(timezone: string, now: Date = new Date()): string {
+  const parts = dateKeyFormatter(timezone).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((entry) => entry.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
 export function addDaysToDateKey(key: string, days: number): string {
   const date = dateKeyToDate(key);
   date.setDate(date.getDate() + days);
-  return todayDateKey(date);
+  return localDateKey(date);
 }
 
 /** Date-strip tile parts: { weekday: "MON", day: "6" }. */

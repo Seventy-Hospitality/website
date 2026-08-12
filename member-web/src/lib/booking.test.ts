@@ -15,6 +15,7 @@ import {
   selectionSummary,
   slotsFromRange,
   timeLabelToMinutes,
+  todayDateKey,
   toggleSlot,
 } from './booking';
 
@@ -40,6 +41,30 @@ describe('wall-clock labels', () => {
     expect(formatSlotRange('16:00', STEP)).toBe('4:00PM - 4:30PM');
     expect(formatTimeRangeCompact('21:30', '23:30')).toBe('9:30-11:30PM');
     expect(formatTimeRangeCompact('11:00', '13:00')).toBe('11:00AM-1:00PM');
+  });
+});
+
+describe('todayDateKey (venue wall clock)', () => {
+  it('computes the date key in the given zone, not the device zone', () => {
+    // 03:30Z on Aug 12: Tokyo is already on Aug 12, New York still on Aug 11.
+    const now = new Date('2026-08-12T03:30:00Z');
+    expect(todayDateKey('America/New_York', now)).toBe('2026-08-11');
+    expect(todayDateKey('Asia/Tokyo', now)).toBe('2026-08-12');
+    expect(todayDateKey('UTC', now)).toBe('2026-08-12');
+  });
+
+  it('splits browser-local and venue-local across the venue midnight', () => {
+    // Just before UTC midnight on Jul 31: a UTC device says Jul 31 while a
+    // Tokyo venue is already past midnight into Aug 1; a New York venue is
+    // mid-evening Jul 31. The strip must follow the venue, month boundary
+    // included.
+    const nearMidnight = new Date('2026-07-31T23:30:00Z');
+    expect(todayDateKey('Asia/Tokyo', nearMidnight)).toBe('2026-08-01');
+    expect(todayDateKey('America/New_York', nearMidnight)).toBe('2026-07-31');
+    expect(buildDateStrip(todayDateKey('Asia/Tokyo', nearMidnight), 1)).toEqual([
+      '2026-08-01',
+      '2026-08-02',
+    ]);
   });
 });
 

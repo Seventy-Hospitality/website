@@ -59,18 +59,17 @@ follow-up: handle `setup_intent.succeeded` by calling
 `setDefaultPaymentMethod` for the intent's payment method so the switch
 converges without the client.
 
-## Transaction row dates are device-local, months are venue-local (backend gap)
+## Transaction row dates are device-local, months are venue-local (CLOSED)
 
-GET /billing serializes ledger months bucketed in VENUE_TIMEZONE, but each
-transaction carries only its `occurredAt` ISO instant and the API exposes
-no venue timezone (the same gap W3 recorded for `todayDateKey`). The
-client renders row dates with `instantDateLabel` in the device zone, so
-near a month boundary a viewer whose zone differs from the venue's can see
-a row dated in the adjacent month under its venue-month header (e.g. a
-`2026-08-01T02:00:00Z` charge in a Los Angeles venue sits in "July 2026"
-but renders "Aug 1, 2026" for a UTC+2 viewer). Cosmetic and narrow, but
-the fix is backend-shaped: expose VENUE_TIMEZONE (or venue-local dates on
-the rows) and format with it here and in W3.
+Closed by the venue-timezone pass: the backend now exposes the zone at
+`GET /api/venue`, and every instant label in W6 renders on the venue's
+calendar. `instantDateLabel(iso, timezone)` (plus `memberSinceLabel` and
+`membershipStatusLine`) take the zone from `useVenueTimezone()`
+(`src/lib/venue.ts`; browser-zone fallback only while loading or on
+failure), so a `2026-08-01T02:00:00Z` charge in a Los Angeles venue now
+renders "Jul 31, 2026" under its "July 2026" header for every viewer.
+W3's date strip closed the same way (`docs/w3-booking-notes.md`).
+Convention: CONVENTIONS.md "Venue timezone".
 
 ## Cancel stays available for live-but-not-active memberships
 

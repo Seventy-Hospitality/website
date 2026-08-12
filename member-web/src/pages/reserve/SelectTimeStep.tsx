@@ -22,6 +22,8 @@ const INITIAL_STRIP_DAYS = 7;
 export interface SelectTimeStepProps {
   headingRef: Ref<HTMLHeadingElement>;
   type: ResourceTypeSummary;
+  /** The venue IANA zone (useVenueTimezone); the strip's "today" anchor. */
+  timezone: string;
   date: string;
   onDateChange: (date: string) => void;
   slots: string[];
@@ -52,6 +54,7 @@ export interface SelectTimeStepProps {
 export function SelectTimeStep({
   headingRef,
   type,
+  timezone,
   date,
   onDateChange,
   slots,
@@ -65,8 +68,8 @@ export function SelectTimeStep({
   continueDisabled = false,
 }: SelectTimeStepProps) {
   const strip = useMemo(
-    () => buildDateStrip(todayDateKey(), type.maxAdvanceDays),
-    [type.maxAdvanceDays],
+    () => buildDateStrip(todayDateKey(timezone), type.maxAdvanceDays),
+    [timezone, type.maxAdvanceDays],
   );
   const [expanded, setExpanded] = useState(() => strip.indexOf(date) >= INITIAL_STRIP_DAYS);
   const visibleStrip = expanded ? strip : strip.slice(0, INITIAL_STRIP_DAYS);

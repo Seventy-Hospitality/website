@@ -37,6 +37,23 @@ half-build a neighbor's page.
   `useSession()`, refresh it with `refreshSession()` after anything that
   changes the Principal (auth, onboarding completion, email verification).
 
+## Venue timezone
+
+Every calendar computation is venue-local, never device-local: the booking
+"today"/date strip and horizon (W3, W4's edit wizard), and the billing
+ledger's months and row dates (W6). `useVenueTimezone()` in
+`src/lib/venue.ts` is THE source of the zone: it reads GET /api/venue
+through the `['venue']` query (staleTime/gcTime Infinity, prefetched at
+app start in `main.tsx`; a club does not change zones) and falls back to
+the browser zone only while loading or if the request fails, so no surface
+blocks or crashes on it. Components read the hook and pass the zone into
+the pure helpers (`todayDateKey(timezone)` in `src/lib/booking.ts`,
+`instantDateLabel(iso, timezone)` and friends in
+`src/pages/account/account-lib.ts`); never call the hook inside a helper
+and never derive a calendar date from a bare `new Date()`. The one
+exception: the home greeting deliberately sends the BROWSER zone to
+GET /api/me/home (greetings follow the member's clock, not the venue's).
+
 ## Shared reservation surface (set by W3)
 
 W2 (home) and W4 (reservation detail) render the same serialized

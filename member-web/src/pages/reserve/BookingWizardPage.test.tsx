@@ -29,6 +29,7 @@ vi.mock('../../lib/api', async (importOriginal) => {
     ...original,
     api: {
       ...original.api,
+      getVenue: vi.fn(),
       getResourceTypes: vi.fn(),
       getMyMembership: vi.fn(),
       getAvailability: vi.fn(),
@@ -72,6 +73,7 @@ vi.mock('@stripe/react-stripe-js', async () => {
   };
 });
 
+const getVenue = vi.mocked(api.getVenue);
 const getResourceTypes = vi.mocked(api.getResourceTypes);
 const getMyMembership = vi.mocked(api.getMyMembership);
 const getAvailability = vi.mocked(api.getAvailability);
@@ -80,6 +82,10 @@ const quoteReservation = vi.mocked(api.quoteReservation);
 const createReservation = vi.mocked(api.createReservation);
 const confirmReservation = vi.mocked(api.confirmReservation);
 const cancelReservation = vi.mocked(api.cancelReservation);
+
+// The mocked venue zone is the machine zone, so "venue today" matches the
+// Date.now()-based instants these fixtures are built from.
+const VENUE_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 const TYPE: ResourceTypeSummary = {
   code: 'badminton_court',
@@ -97,7 +103,7 @@ const TYPE: ResourceTypeSummary = {
 
 const QUOTE: ReservationQuote = {
   typeCode: 'badminton_court',
-  date: todayDateKey(),
+  date: todayDateKey(VENUE_TZ),
   slots: ['21:30'],
   durationMinutes: 30,
   hourlyRateCents: 6000,
@@ -110,7 +116,7 @@ const RESERVATION: Reservation = {
   typeCode: 'badminton_court',
   typeName: 'Badminton Court',
   resource: { id: 'r1', name: 'Court 1' },
-  date: todayDateKey(),
+  date: todayDateKey(VENUE_TZ),
   startTime: '21:30',
   endTime: '22:00',
   startsAt: '2026-07-07T01:30:00.000Z',
@@ -175,6 +181,7 @@ async function goToCheckout() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getVenue.mockResolvedValue({ timezone: VENUE_TZ });
   getResourceTypes.mockResolvedValue([TYPE]);
   getMyMembership.mockResolvedValue(billingOverview({
       id: 'sub1',
@@ -186,7 +193,7 @@ beforeEach(() => {
       pendingPlanEffectiveAt: null,
   }));
   getAvailability.mockResolvedValue([
-    { date: todayDateKey(), slots: [{ start: '21:30', startsAt: new Date().toISOString() }] },
+    { date: todayDateKey(VENUE_TZ), slots: [{ start: '21:30', startsAt: new Date().toISOString() }] },
   ]);
   getMyClubs.mockResolvedValue([]);
   quoteReservation.mockResolvedValue(QUOTE);

@@ -28,6 +28,15 @@ describe('api client', () => {
     expect(me).toEqual({ userId: 'u1', email: 'a@b.c' });
   });
 
+  it('reads the venue timezone from GET /api/venue', async () => {
+    const spy = mockFetch(() => jsonResponse({ data: { timezone: 'America/New_York' } }));
+
+    const venue = await api.getVenue();
+    expect(venue).toEqual({ timezone: 'America/New_York' });
+    const [url] = spy.mock.calls[0] as FetchArgs;
+    expect(String(url)).toBe('/api/venue');
+  });
+
   it('throws ApiError with code, status, and message from the error envelope', async () => {
     mockFetch(() =>
       jsonResponse({ error: { code: 'VALIDATION_ERROR', message: 'Bad email' } }, 400),

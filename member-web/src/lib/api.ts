@@ -138,6 +138,17 @@ export interface IdVerificationView {
   note: string | null;
 }
 
+// ── Venue types (public config; see lib/venue.ts for the query + hook) ──
+
+/**
+ * GET /api/venue: the venue's IANA timezone, the wall clock every slot,
+ * booking horizon, "today" computation, and ledger month lives on. Clients
+ * must anchor date math on this zone, never the device zone.
+ */
+export interface VenueInfo {
+  timezone: string;
+}
+
 // ── Booking types (W3 booking; W2 home and W4 reservation detail reuse
 //    these, since every surface renders the same serialized reservation) ──
 
@@ -877,6 +888,9 @@ export const api = {
       method: 'POST',
       body: '{}',
     }),
+
+  // ── Venue (public; the venue timezone all date math anchors on) ──
+  getVenue: () => request<VenueInfo>('/api/venue'),
 
   // ── Booking (W3; the reservation reads/mutations are shared with W4) ──
   getResourceTypes: () => request<ResourceTypeSummary[]>('/api/resource-types'),

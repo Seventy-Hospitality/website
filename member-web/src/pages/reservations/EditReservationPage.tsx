@@ -30,6 +30,7 @@ import {
 } from '../../lib/reservation-policy';
 import { getStripe } from '../../lib/stripe';
 import { StripeProvider } from '../../lib/StripeProvider';
+import { useVenueTimezone } from '../../lib/venue';
 import {
   Avatar,
   Button,
@@ -210,6 +211,8 @@ function EditWizard({ detail, type }: { detail: ReservationDetail; type: Resourc
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+  // The venue zone anchors the date strip's "today" (W3's SelectTimeStep).
+  const timezone = useVenueTimezone();
 
   const currentSlots = reservationSlots(detail, type.slotDurationMinutes);
 
@@ -404,6 +407,7 @@ function EditWizard({ detail, type }: { detail: ReservationDetail; type: Resourc
           <SelectTimeStep
             headingRef={headingRef}
             type={type}
+            timezone={timezone}
             title="Edit booking"
             date={date}
             onDateChange={(next) => {

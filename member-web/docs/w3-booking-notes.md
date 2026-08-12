@@ -3,22 +3,19 @@
 Gaps found in the W3 review that need backend work. Do not paper over them
 client-side; each lists where the client copes today.
 
-## Venue-timezone date strip (open)
+## Venue-timezone date strip (CLOSED)
 
-`todayDateKey()` / `buildDateStrip` (`src/lib/booking.ts`) anchor the
-wizard's date strip on the DEVICE timezone, while the backend defines
-"today" and the booking horizon in `VENUE_TIMEZONE`
-(`api/src/lib/container` -> `reservation.service`). Near a date boundary a
-member whose device is in a different timezone sees a strip that is off by
-one day: the first tile can already be in the venue's past (empty
-availability), and the true last bookable venue day is missing.
-
-Fix when picked up: expose the venue timezone (or venue-local "today") on
-the API, e.g. on `GET /api/resource-types` or a config endpoint, then
-compute the strip with `Intl.DateTimeFormat(..., { timeZone })` instead of
-device-local `new Date()`. Accepted as a known minor until then:
-single-location club, essentially local member base, and empty
-availability already disables Continue so no invalid create is sent.
+Closed by the venue-timezone pass: the backend now exposes the zone at
+`GET /api/venue` and the date strip anchors on it. `todayDateKey(timezone)`
+(`src/lib/booking.ts`) computes the venue-local date key with
+`Intl.DateTimeFormat(..., { timeZone })`; the wizard pages (W3's
+`BookingWizardPage`, W4's edit wizard) read `useVenueTimezone()`
+(`src/lib/venue.ts`, `['venue']` query, cached forever, prefetched at app
+start) and pass the zone into `SelectTimeStep`, whose strip is
+`buildDateStrip(todayDateKey(timezone), maxAdvanceDays)`. While the query
+loads (or if it fails) the hook falls back to the browser zone, and the
+wizard clamps a stored date that lands in the venue's past forward to
+venue-today. Convention: CONVENTIONS.md "Venue timezone".
 
 ## No fresh PaymentIntent for an existing hold (known)
 

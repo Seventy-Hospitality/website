@@ -21,6 +21,7 @@ vi.mock('../../lib/api', async (importOriginal) => {
     ...original,
     api: {
       ...original.api,
+      getVenue: vi.fn(),
       getPlans: vi.fn(),
       getMyMembership: vi.fn(),
       changeMembership: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock('@stripe/react-stripe-js', async () => {
   };
 });
 
+const getVenue = vi.mocked(api.getVenue);
 const getPlans = vi.mocked(api.getPlans);
 const getMyMembership = vi.mocked(api.getMyMembership);
 const changeMembership = vi.mocked(api.changeMembership);
@@ -131,6 +133,8 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // UTC keeps the venue-local date assertions machine-independent.
+  getVenue.mockResolvedValue({ timezone: 'UTC' });
   getPlans.mockResolvedValue([MONTHLY, ANNUAL]);
   getMyMembership.mockResolvedValue(billingOverview(membershipOn(ANNUAL)));
 });

@@ -14,6 +14,7 @@ import {
 import { api, ApiError, type HomeFeed, type MyProfile } from '../../lib/api';
 import { memberDisplayName, memberNumberLabel } from '../../lib/invites';
 import { useSession } from '../../lib/session-context';
+import { useVenueTimezone } from '../../lib/venue';
 import {
   Avatar,
   Button,
@@ -82,6 +83,8 @@ function AccountView({ profile }: { profile: MyProfile }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { signOut } = useSession();
+  // "Member since" is a calendar fact of the venue, not of the device.
+  const timezone = useVenueTimezone();
 
   const [qrOpen, setQrOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
@@ -177,7 +180,7 @@ function AccountView({ profile }: { profile: MyProfile }) {
           </div>
         )}
 
-        <p className={styles.memberMeta}>{memberSinceLabel(member.memberSince)}</p>
+        <p className={styles.memberMeta}>{memberSinceLabel(member.memberSince, timezone)}</p>
         <p className={styles.memberNumber}>{memberNumberLabel(member.memberNumber)}</p>
       </header>
 

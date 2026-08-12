@@ -6,10 +6,15 @@
 import type { BillingTransaction, MembershipSummary } from '../../lib/api';
 import { formatAmount, formatAmountWithCents } from '../../lib/plan-pricing';
 
-/** "Member since Mar 2025" (profile subtitle) from the memberSince instant. */
-export function memberSinceLabel(memberSinceIso: string): string {
+/** "Member since Mar 2025" (profile subtitle) from the memberSince
+    instant, on the venue's calendar (pass `useVenueTimezone()`). */
+export function memberSinceLabel(memberSinceIso: string, timezone: string): string {
   const date = new Date(memberSinceIso);
-  return `Member since ${date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`;
+  return `Member since ${date.toLocaleDateString('en-US', {
+    month: 'short',
+    year: 'numeric',
+    timeZone: timezone,
+  })}`;
 }
 
 /** Stat-tile hours: whole numbers bare ("888"), halves kept ("1.5"). */
@@ -26,19 +31,18 @@ export function billingMonthLabel(month: string): string {
 }
 
 /**
- * "Mar 12, 2027" for an ISO instant (renewal, transaction, effective dates).
- *
- * Known gap: this renders in the DEVICE timezone, but the ledger months are
- * bucketed in VENUE_TIMEZONE, which the API does not expose and the
- * transaction payload does not carry. Near a month boundary a viewer in a
- * different zone can see a row date outside its month header; see
- * docs/w6-account-notes.md for the backend follow-up.
+ * "Mar 12, 2027" for an ISO instant (renewal, transaction, effective
+ * dates), on the venue's calendar: the ledger months are bucketed in the
+ * venue timezone, so row dates must render in the same zone to stay under
+ * their month header. `timezone` comes from `useVenueTimezone()`
+ * (src/lib/venue.ts), which validates the zone once.
  */
-export function instantDateLabel(iso: string): string {
+export function instantDateLabel(iso: string, timezone: string): string {
   return new Date(iso).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
+    timeZone: timezone,
   });
 }
 
@@ -61,24 +65,26 @@ export function transactionAmountLabel(txn: Pick<BillingTransaction, 'direction'
 }
 
 /**
- * The status sentence under the plan name on the billing card. The backend
- * does not expose a membership start date ("Active since" in the Figma),
- * so the line reports the state that matters: what happens next.
+ * The status sentence under the plan name on the billing card, dates on
+ * the venue's calendar. The backend does not expose a membership start
+ * date ("Active since" in the Figma), so the line reports the state that
+ * matters: what happens next.
  */
 export function membershipStatusLine(
   membership: Pick<
     MembershipSummary,
     'status' | 'currentPeriodEnd' | 'cancelAtPeriodEnd' | 'pendingPlan' | 'pendingPlanEffectiveAt'
   >,
+  timezone: string,
 ): string {
-  const periodEnd = instantDateLabel(membership.currentPeriodEnd);
+  const periodEnd = instantDateLabel(membership.currentPeriodEnd, timezone);
   switch (membership.status) {
     case 'active':
     case 'trialing': {
       if (membership.cancelAtPeriodEnd) return `Ends ${periodEnd}`;
       if (membership.pendingPlan) {
         const effective = membership.pendingPlanEffectiveAt
-          ? instantDateLabel(membership.pendingPlanEffectiveAt)
+          ? instantDateLabel(membership.pendingPlanEffectiveAt, timezone)
           : periodEnd;
         return `Switches to ${membership.pendingPlan.name} on ${effective}`;
       }

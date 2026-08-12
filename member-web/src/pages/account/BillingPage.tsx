@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { BillingMonth, BillingOverview, BillingTransaction } from '../../lib/api';
 import { formatAmount } from '../../lib/plan-pricing';
+import { useVenueTimezone } from '../../lib/venue';
 import { PageHeader } from '../../app/AppShell';
 import { Button, Card, EmptyState, Skeleton } from '../../components';
 import { membershipQuery } from '../onboarding/onboarding-data';
@@ -116,6 +117,8 @@ function BillingFrame({ children }: { children: React.ReactNode }) {
 
 function MembershipCard({ overview }: { overview: BillingOverview }) {
   const { membership, defaultPaymentMethod } = overview;
+  // Status-line dates render on the venue's calendar, like the ledger.
+  const timezone = useVenueTimezone();
 
   // Active memberships get the full change screen; a live-but-not-active
   // one (past_due, unpaid, paused, incomplete) still gets a cancel entry,
@@ -148,7 +151,7 @@ function MembershipCard({ overview }: { overview: BillingOverview }) {
           </span>
         )}
       </div>
-      <p className={styles.planStatus}>{membershipStatusLine(membership)}</p>
+      <p className={styles.planStatus}>{membershipStatusLine(membership, timezone)}</p>
 
       <div className={styles.paymentRow}>
         {defaultPaymentMethod ? (
@@ -263,6 +266,9 @@ function MonthDisclosure({ month }: { month: BillingMonth }) {
 function TransactionRow({ txn }: { txn: BillingTransaction }) {
   const statusLabel = TXN_STATUS_LABELS[txn.status];
   const inactive = txn.status === 'failed' || txn.status === 'canceled';
+  // The months are bucketed in the venue zone; the row date must render in
+  // the same zone or a boundary row lands outside its month header.
+  const timezone = useVenueTimezone();
 
   return (
     <li className={styles.txnRow}>
@@ -271,7 +277,7 @@ function TransactionRow({ txn }: { txn: BillingTransaction }) {
           {txn.description}
         </span>
         <span className={styles.txnMeta}>
-          {instantDateLabel(txn.occurredAt)}
+          {instantDateLabel(txn.occurredAt, timezone)}
           {statusLabel && ` · ${statusLabel}`}
           {txn.receiptUrl && (
             <>

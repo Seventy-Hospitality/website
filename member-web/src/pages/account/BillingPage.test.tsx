@@ -23,12 +23,14 @@ vi.mock('../../lib/api', async (importOriginal) => {
     ...original,
     api: {
       ...original.api,
+      getVenue: vi.fn(),
       getMyMembership: vi.fn(),
       getBillingTransactions: vi.fn(),
     },
   };
 });
 
+const getVenue = vi.mocked(api.getVenue);
 const getMyMembership = vi.mocked(api.getMyMembership);
 const getBillingTransactions = vi.mocked(api.getBillingTransactions);
 
@@ -103,6 +105,8 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // UTC keeps the venue-local date assertions machine-independent.
+  getVenue.mockResolvedValue({ timezone: 'UTC' });
   getMyMembership.mockResolvedValue(OVERVIEW);
   getBillingTransactions.mockResolvedValue({ month: '2026-07', transactions: JULY_ROWS });
 });
@@ -220,6 +224,23 @@ describe('BillingPage history disclosures', () => {
     await userEvent.click(july);
     expect(await screen.findByText('Member monthly membership')).toBeInTheDocument();
     expect(getBillingTransactions).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a month-boundary row under its venue-month header', async () => {
+    // 2026-08-01T02:00Z is Jul 31 in Los Angeles: the backend buckets it
+    // into the July ledger month, so the row must read Jul 31 for every
+    // viewer, wherever their device clock lives.
+    getVenue.mockResolvedValue({ timezone: 'America/Los_Angeles' });
+    getBillingTransactions.mockResolvedValue({
+      month: '2026-07',
+      transactions: [{ ...JULY_ROWS[0], occurredAt: '2026-08-01T02:00:00.000Z' }],
+    });
+
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /July 2026/ }));
+    expect(await screen.findByText(/Jul 31, 2026/)).toBeInTheDocument();
+    expect(screen.queryByText(/Aug 1, 2026/)).not.toBeInTheDocument();
   });
 
   it('shows a retryable error inside the month that failed to load', async () => {

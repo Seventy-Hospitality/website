@@ -3,6 +3,15 @@
 Same discipline as `w3-booking-notes.md`: gaps found while building the
 detail/edit/cancel/respond surfaces, with where the client copes today.
 
+## Venue-timezone date strip in the edit wizard (CLOSED)
+
+W3's device-timezone date strip gap applied to the edit wizard too (it
+reuses `SelectTimeStep`). Closed by the venue-timezone pass: `EditWizard`
+reads `useVenueTimezone()` (`src/lib/venue.ts`, backed by the new
+`GET /api/venue`) and passes the zone to `SelectTimeStep`, whose strip
+anchors on `todayDateKey(timezone)`. Details in `w3-booking-notes.md`;
+convention in CONVENTIONS.md "Venue timezone".
+
 ## No availability self-exclusion on the member endpoint (known)
 
 `ReservationService.getAvailability` supports `excludeReservationId` (the
