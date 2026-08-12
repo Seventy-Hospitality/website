@@ -22,7 +22,9 @@ export function SignUpScreen() {
   });
 
   if (status === 'authenticated') {
-    return <Redirect href="/(tabs)" />;
+    // Route through '/' so the M1 onboarding gate takes a brand-new signup
+    // into plan selection rather than the (empty) tabs.
+    return <Redirect href="/" />;
   }
 
   const onSubmit = form.handleSubmit(async (values) => {

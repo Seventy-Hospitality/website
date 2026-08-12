@@ -53,7 +53,8 @@ export function AuthCallbackScreen() {
           accessTokenExpiresAt: expiresAt ?? '',
           state,
         });
-        router.replace('/(tabs)');
+        // '/' funnels through the M1 onboarding gate (tabs vs. resume step).
+        router.replace('/');
       } catch {
         if (mounted) {
           setMessage('This sign-in link is invalid or was not requested on this device.');

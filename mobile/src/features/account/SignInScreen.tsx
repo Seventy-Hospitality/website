@@ -26,7 +26,9 @@ export function SignInScreen() {
   const magicForm = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
 
   if (status === 'authenticated') {
-    return <Redirect href="/(tabs)" />;
+    // Route through '/' so the M1 onboarding gate can send a not-yet-onboarded
+    // member into their step (and a fully onboarded one on to the tabs).
+    return <Redirect href="/" />;
   }
 
   const onPassword = passwordForm.handleSubmit(async (values) => {
