@@ -21,6 +21,11 @@ import { ClubDetailPage } from './pages/clubs/ClubDetailPage';
 import { ClubMembersPage } from './pages/clubs/ClubMembersPage';
 import { JoinClubPage } from './pages/clubs/JoinClubPage';
 import { AccountPage } from './pages/account/AccountPage';
+import { AppPreferencesPage } from './pages/account/AppPreferencesPage';
+import { BillingPage } from './pages/account/BillingPage';
+import { PaymentMethodPage } from './pages/account/PaymentMethodPage';
+import { ChangeMembershipPage } from './pages/account/ChangeMembershipPage';
+import { DeleteAccountPage } from './pages/account/DeleteAccountPage';
 import { OnboardingGate } from './pages/onboarding/OnboardingGate';
 import { ChoosePlanPage } from './pages/onboarding/ChoosePlanPage';
 import { CheckoutPage } from './pages/onboarding/CheckoutPage';
@@ -94,7 +99,14 @@ export default function App() {
               <Route path="/clubs/join" element={<JoinClubPage />} />
               <Route path="/clubs/:clubId" element={<ClubDetailPage />} />
               <Route path="/clubs/:clubId/members" element={<ClubMembersPage />} />
-              <Route path="/account/*" element={<AccountPage />} />
+              {/* Account (W6): profile main, preferences, billing, the
+                  payment-method and change-membership screens, deletion. */}
+              <Route path="/account" element={<AccountPage />} />
+              <Route path="/account/preferences" element={<AppPreferencesPage />} />
+              <Route path="/account/billing" element={<BillingPage />} />
+              <Route path="/account/payment-method" element={<PaymentMethodPage />} />
+              <Route path="/account/membership" element={<ChangeMembershipPage />} />
+              <Route path="/account/delete" element={<DeleteAccountPage />} />
             </Route>
           </Route>
         </Route>

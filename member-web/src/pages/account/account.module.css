@@ -1,0 +1,741 @@
+/* Account flow (package W6).
+   Figma "6: Managing account details" 107:7467: account main 168:15494,
+   member card 107:9461 (the reused MemberQrSheet), app preferences
+   107:9789, billing 107:10434. Phone frames are 1:1; on desktop the
+   account main stays a centered profile + settings list and billing
+   widens to two columns (membership | history) from 1024px. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding-bottom: var(--space-xl);
+}
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  align-self: flex-start;
+  padding: var(--space-2xs) 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-link);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+}
+
+.backLink > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* Uppercase section label ("ACCOUNT SETTINGS", "NOTIFICATIONS", ...). */
+.sectionLabel {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-body);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  letter-spacing: var(--text-caption-spacing);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* ── Profile header (account main) ── */
+
+.profileHeader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  padding-top: var(--space-md);
+  text-align: center;
+}
+
+.avatarWrap {
+  position: relative;
+  margin-bottom: var(--space-xs);
+}
+
+/* The camera badge is THE upload control: a real button overlaying the
+   avatar's bottom-right, keyboard reachable, labelled. */
+.cameraBadge {
+  position: absolute;
+  right: -0.125rem;
+  bottom: -0.125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  border: 2px solid var(--color-bg);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-overlay);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.cameraBadge:hover {
+  background: var(--color-border-active);
+  color: var(--color-text-dark);
+}
+
+.cameraBadge > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.nameHeading {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-h1-size);
+  line-height: var(--text-h1-line);
+  font-weight: var(--text-h1-weight);
+  letter-spacing: var(--text-h1-spacing);
+  overflow-wrap: anywhere;
+}
+
+.editNameButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.editNameButton:hover {
+  color: var(--color-text);
+  background: var(--color-bg-elevated);
+}
+
+.editNameButton > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.memberMeta {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.memberNumber {
+  margin: 0;
+  color: var(--color-text-subtle);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* Inline display-name editor (replaces the name row while editing). */
+.nameForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  width: min(20rem, 100%);
+}
+
+.nameFormActions {
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: center;
+}
+
+/* ── Stat tiles ── */
+
+.statRow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-sm);
+}
+
+.statTile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-sm);
+  text-align: center;
+}
+
+.statValue {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  line-height: 2rem;
+  font-weight: 700;
+}
+
+.statLabel {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* ── Settings / preferences menu rows ── */
+
+.menuCard {
+  display: flex;
+  flex-direction: column;
+}
+
+.menuRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  min-height: 3.25rem;
+  padding: var(--space-sm) var(--space-md);
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+  text-align: left;
+  text-decoration: none;
+}
+
+.menuCard > * + * {
+  border-top: 1px solid var(--color-border);
+}
+
+button.menuRow,
+a.menuRow {
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+button.menuRow:hover,
+a.menuRow:hover {
+  background: var(--color-surface-overlay);
+  text-decoration: none;
+}
+
+.menuRow > svg:first-child {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  color: var(--color-text);
+}
+
+.menuRowLabel {
+  flex: 1;
+  min-width: 0;
+}
+
+.menuRowValue {
+  color: var(--color-text-muted);
+}
+
+.menuChevron {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+  color: var(--color-accent);
+}
+
+/* Accent rows: Sign out, Delete my account. */
+.menuRowAccent {
+  color: var(--color-accent);
+}
+
+.menuRowAccent > svg:first-child {
+  color: var(--color-accent);
+}
+
+/* Parked / no-destination rows render inert with a muted label. */
+.menuRowDisabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.menuRowDisabled > svg:first-child {
+  color: var(--color-text-muted);
+}
+
+.comingSoon {
+  flex-shrink: 0;
+  color: var(--color-text-subtle);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  letter-spacing: var(--text-caption-spacing);
+  text-transform: uppercase;
+}
+
+/* Preference toggle rows reuse the menu card frame. */
+.toggleRow {
+  padding: var(--space-sm) var(--space-md);
+  min-height: 3.25rem;
+  display: flex;
+  align-items: center;
+}
+
+/* ── Billing ── */
+
+.billingColumns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+@media (min-width: 1024px) {
+  .billingColumns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+.membershipCard {
+  display: flex;
+  flex-direction: column;
+}
+
+.planRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-md) var(--space-2xs);
+}
+
+.planName {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: var(--text-h2-weight);
+}
+
+.planPrice {
+  color: var(--color-accent);
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.planStatus {
+  margin: 0;
+  padding: 0 var(--space-md) var(--space-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.paymentRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--color-border);
+}
+
+.brandChip {
+  flex-shrink: 0;
+  padding: 0.125rem var(--space-xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-text);
+  color: var(--color-text-dark);
+  font-size: var(--text-xs-size);
+  line-height: var(--text-xs-line);
+  letter-spacing: 0.0625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.paymentDetail {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paymentEdit {
+  flex-shrink: 0;
+  padding: var(--space-2xs) 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.paymentEdit:hover {
+  text-decoration: underline;
+}
+
+/* ── Billing history disclosures ── */
+
+.historyList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.monthButton {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-md);
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.monthText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.monthTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-h3-size);
+  line-height: var(--text-h3-line);
+  font-weight: var(--text-h3-weight);
+}
+
+.monthSummary {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.monthChevron {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+  color: var(--color-accent);
+  transition: transform 150ms ease;
+}
+
+.monthChevronOpen {
+  transform: rotate(180deg);
+}
+
+.txnList {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--space-md) var(--space-sm);
+}
+
+.txnRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.txnText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.txnDescription {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.txnMeta {
+  color: var(--color-text-muted);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+}
+
+.txnMeta a {
+  color: var(--color-text-link);
+}
+
+.txnAmount {
+  flex-shrink: 0;
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.txnAmountCredit {
+  color: var(--color-success);
+}
+
+.txnMuted {
+  color: var(--color-text-subtle);
+}
+
+/* ── Change membership ── */
+
+.planCards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.planCardButton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  width: 100%;
+  padding: var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-card);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease;
+}
+
+.planCardButton:hover {
+  border-color: var(--color-border-active);
+}
+
+.planCardSelected {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+.planCardButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.planCardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.planCardName {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--font-display);
+  font-size: var(--text-h3-size);
+  line-height: var(--text-h3-line);
+  font-weight: var(--text-h3-weight);
+}
+
+.planCardCaption {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.changeSummary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.changeSummaryText {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.cancelZone {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--space-md);
+}
+
+.textDanger {
+  padding: var(--space-2xs) var(--space-xs);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.textDanger:hover {
+  text-decoration: underline;
+}
+
+/* ── Dialog bodies (Sheet confirms) ── */
+
+.dialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.dialogText {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+}
+
+.dialogHint {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.dialogActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* ── Shared inline states ── */
+
+.errorBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.loadingStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.processing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-md);
+}
+
+.processingTitle {
+  margin: 0;
+  font-weight: 600;
+}
+
+.processingBody {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* ── Payment method / proration payment forms ── */
+
+.paymentForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.paymentHidden {
+  display: none;
+}
+
+.payAlert {
+  margin: 0;
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* ── Delete account ── */
+
+.consequences {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.consequences ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  color: var(--color-text);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.warnIcon {
+  width: 1.125rem;
+  height: 1.125rem;
+  vertical-align: text-bottom;
+  color: var(--color-danger-strong);
+}
+
+.stepUpForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.stepUpStatus {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.deleteActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+@media (min-width: 480px) {
+  .deleteActions {
+    flex-direction: row;
+  }
+}
