@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, Text } from 'react-native';
-import { colors, radius, spacing } from '../theme/tokens';
+import { colors, fonts, radius, spacing } from '../theme/tokens';
 
 interface ChoiceChipProps {
   label: string;
@@ -40,10 +40,10 @@ const styles = StyleSheet.create({
   },
   label: {
     color: colors.text,
+    fontFamily: fonts.bodySemibold,
     fontSize: 13,
-    fontWeight: '600',
   },
   labelActive: {
-    color: colors.backgroundDeep,
+    color: colors.textOnAccent,
   },
 });

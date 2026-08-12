@@ -1,5 +1,5 @@
 import { StyleSheet, Text, View } from 'react-native';
-import { colors, radius, spacing } from '../theme/tokens';
+import { colors, fonts, radius, spacing } from '../theme/tokens';
 
 interface EmptyStateViewProps {
   title: string;
@@ -44,11 +44,12 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.text,
+    fontFamily: fonts.displayBold,
     fontSize: 16,
-    fontWeight: '700',
   },
   description: {
     color: colors.textMuted,
+    fontFamily: fonts.body,
     fontSize: 13,
     textAlign: 'center',
     maxWidth: 240,

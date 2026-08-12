@@ -1,5 +1,5 @@
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors, radius, spacing } from '../theme/tokens';
+import { colors, fonts, radius, spacing } from '../theme/tokens';
 
 interface PrimaryButtonProps {
   label: string;
@@ -66,10 +66,10 @@ const styles = StyleSheet.create({
   },
   label: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontFamily: fonts.bodyBold,
+    fontSize: 15,
   },
   primaryLabel: {
-    color: colors.backgroundDeep,
+    color: colors.textOnAccent,
   },
 });

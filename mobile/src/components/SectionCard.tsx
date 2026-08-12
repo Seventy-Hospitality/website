@@ -1,6 +1,6 @@
 import type { PropsWithChildren, ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { colors, radius, shadows, spacing } from '../theme/tokens';
+import { colors, fonts, radius, shadows, spacing } from '../theme/tokens';
 
 interface SectionCardProps extends PropsWithChildren {
   title?: string;
@@ -47,11 +47,12 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.text,
+    fontFamily: fonts.displayBold,
     fontSize: 20,
-    fontWeight: '700',
   },
   subtitle: {
     color: colors.textMuted,
+    fontFamily: fonts.body,
     fontSize: 13,
     lineHeight: 18,
   },

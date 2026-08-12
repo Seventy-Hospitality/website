@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { UpcomingBooking } from '../lib/api';
 import { formatDateLabel } from '../lib/format';
-import { colors, radius, spacing } from '../theme/tokens';
+import { colors, fonts, radius, spacing } from '../theme/tokens';
 
 interface BookingCardProps {
   booking: UpcomingBooking;
@@ -57,18 +57,19 @@ const styles = StyleSheet.create({
   title: {
     flex: 1,
     color: colors.text,
+    fontFamily: fonts.bodyBold,
     fontSize: 15,
-    fontWeight: '700',
   },
   badge: {
     color: colors.accent,
+    fontFamily: fonts.bodyBold,
     fontSize: 11,
-    fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
   meta: {
     color: colors.textMuted,
+    fontFamily: fonts.body,
     fontSize: 12,
   },
 });
