@@ -1,0 +1,233 @@
+.shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+
+/* ── Content column ── */
+
+.contentArea {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--space-md) var(--gutter);
+  /* Keep content clear of the fixed bottom bar on mobile. */
+  padding-bottom: calc(var(--bottombar-height) + var(--space-lg));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+/* ── Bottom tab bar (mobile, per the Figma) ── */
+
+.bottomBar {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: var(--z-nav);
+  display: flex;
+  height: var(--bottombar-height);
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+}
+
+.bottomBar .navItem {
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.125rem;
+  font-size: var(--text-caption-size);
+}
+
+/* ── Sidebar (desktop) ── */
+
+.sidebar {
+  display: none;
+}
+
+.sidebarBrand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm) var(--space-lg);
+}
+
+.brandMark {
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--color-text);
+}
+
+/* Nav links group; the member card is pushed to the foot of the rail. */
+.navRail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+
+/* ── Sidebar member footer (desktop) ── */
+
+.memberCard {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: auto;
+  padding: var(--space-sm);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  text-decoration: none;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+a.memberCard:hover {
+  background: var(--color-surface-overlay);
+  border-color: var(--color-border-active);
+  text-decoration: none;
+}
+
+.memberText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+  min-width: 0;
+}
+
+.memberName {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.memberLink {
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  color: var(--color-text-muted);
+}
+
+/* ── Shared nav item ── */
+
+.navItem {
+  display: flex;
+  align-items: center;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  border-radius: var(--radius-md);
+}
+
+.navItem:hover {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.navItemActive {
+  color: var(--color-accent);
+}
+
+.navItemActive:hover {
+  color: var(--color-accent);
+}
+
+.navIcon {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+/* ── Page header ── */
+
+.pageHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding-top: var(--space-xs);
+}
+
+.eyebrow {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-subtle);
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding-top: var(--space-xs);
+}
+
+/* ── Desktop: bottom bar becomes a left sidebar ── */
+
+@media (min-width: 768px) {
+  /* Full-viewport app: the sidebar hugs the left edge and the content area
+     fills the rest. No centered max-width frame (that stranded the whole
+     shell in the middle of wide screens). */
+  .shell {
+    flex-direction: row;
+    width: 100%;
+  }
+
+  .bottomBar {
+    display: none;
+  }
+
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: var(--sidebar-width);
+    flex-shrink: 0;
+    padding: var(--space-lg) var(--space-md);
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    border-right: 1px solid var(--color-border);
+  }
+
+  .sidebar .navItem {
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--text-body-size);
+    font-weight: 600;
+  }
+
+  .sidebar .navItemActive {
+    background: var(--color-bg-elevated);
+  }
+
+  .contentArea {
+    min-width: 0;
+  }
+
+  /* Content FILLS the area (the shell already spans the full viewport with
+     the sidebar pinned left). Collection pages reflow into more columns to
+     use the width; only inherently single-column reading content (forms,
+     a settings list, a detail card) caps its own width via .page. */
+  .main {
+    max-width: none;
+    width: 100%;
+    margin: 0;
+    padding: var(--space-xl) clamp(var(--space-lg), 3vw, var(--space-3xl));
+  }
+}

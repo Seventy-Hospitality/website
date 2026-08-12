@@ -29,14 +29,23 @@ export class MemberService {
     return this.repo.list(query);
   }
 
+  /** Member-facing directory search: names only, never emails or staff. */
+  async search(query: string, limit: number, offset = 0) {
+    return this.repo.searchByNamePrefix(query, limit, offset);
+  }
+
+  /**
+   * Default (pre-search) directory page for the invite picker: alphabetical,
+   * the caller excluded, same names-only projection as search.
+   */
+  async browseDirectory(callerMemberId: string, limit: number, offset = 0) {
+    return this.repo.listDirectory({ excludeMemberId: callerMemberId, offset, limit });
+  }
+
   async getById(id: string) {
     const member = await this.repo.getById(id);
     if (!member) throw new MemberNotFoundError(id);
     return member;
-  }
-
-  async findByEmail(email: string) {
-    return this.repo.getByEmail(email);
   }
 
   async create(input: CreateMemberInput) {
@@ -73,6 +82,35 @@ export class MemberService {
     const member = await this.repo.getById(memberId);
     if (!member) throw new MemberNotFoundError(memberId);
     return this.repo.addNote(memberId, authorId, content);
+  }
+
+  /** Self-service display-name edit (account screen). */
+  async updateDisplayName(memberId: string, displayName: string | null) {
+    const normalized = displayName?.trim() || null;
+    memberInvariants.validateDisplayName(normalized);
+    const existing = await this.repo.getById(memberId);
+    if (!existing) throw new MemberNotFoundError(memberId);
+    return this.repo.updateProfile(memberId, { displayName: normalized });
+  }
+
+  /**
+   * Swap the avatar pointer; returns the replaced path so the caller (the
+   * account context) can drop the old asset through the media pipeline.
+   */
+  async setAvatar(memberId: string, avatarUrl: string | null): Promise<{ previousAvatarUrl: string | null }> {
+    const existing = await this.repo.getById(memberId);
+    if (!existing) throw new MemberNotFoundError(memberId);
+    await this.repo.setAvatarUrl(memberId, avatarUrl);
+    return { previousAvatarUrl: existing.avatarUrl };
+  }
+
+  /**
+   * Account-deletion seam: scrub PII, tombstone the email, retire the
+   * member number (the anonymized row keeps it), unlink the user. Keeps
+   * the row and stripeCustomerId. Idempotent.
+   */
+  async scrubForAccountDeletion(memberId: string): Promise<{ previousAvatarUrl: string | null }> {
+    return this.repo.scrubForAccountDeletion(memberId);
   }
 }
 

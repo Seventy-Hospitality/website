@@ -1,246 +1,253 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import * as WebBrowser from 'expo-web-browser';
-import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
-import { api, ApiError } from '../../lib/api';
-import { formatDateLabel } from '../../lib/format';
+/**
+ * Account tab (Figma account main 168:15494), native. Replaces the M0
+ * placeholder with the real surface: avatar + camera badge, inline display-name
+ * edit, member-since, three lifetime stat tiles, and the account-settings menu
+ * (membership card, Claim Clutch coming-soon, billing, preferences, sign out).
+ * Mirrors member-web's AccountPage.
+ */
+import { useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Ionicons } from '@expo/vector-icons';
+import { api, type HomeMember, type LifetimeStats } from '../../lib/api';
 import { useSession } from '../../lib/session';
-import { AppScreen } from '../../components/AppScreen';
-import { BookingCard } from '../../components/BookingCard';
-import { EmptyStateView } from '../../components/EmptyStateView';
-import { PrimaryButton } from '../../components/PrimaryButton';
-import { SectionCard } from '../../components/SectionCard';
-import { colors, radius, spacing } from '../../theme/tokens';
+import { AppScreen, Avatar, MemberCardSheet, PrimaryButton, Skeleton, useToast } from '../../components';
+import { useVenueTimezone } from '../reserve';
+import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
+import { profileQuery } from './account-data';
+import {
+  formatHours,
+  memberDisplayName,
+  memberNumberLabel,
+  memberSinceLabel,
+} from './account-lib';
+import { SettingsGroup, SettingsRow } from './SettingsList';
+import { DisplayNameEditor } from './DisplayNameEditor';
+import { useAvatarUpload } from './useAvatarUpload';
 
 export function AccountScreen() {
-  const queryClient = useQueryClient();
-  const { signOut } = useSession();
-
-  const profileQuery = useQuery({
-    queryKey: ['profile'],
-    queryFn: api.getProfile,
-  });
-  const bookingsQuery = useQuery({
-    queryKey: ['my-bookings'],
-    queryFn: api.getMyBookings,
-  });
-
-  const checkoutMutation = useMutation({
-    mutationFn: async (planId: string) => {
-      const memberId = profileQuery.data?.member?.id;
-      if (!memberId) {
-        throw new Error('No member profile found');
-      }
-      return api.createCheckoutSession(memberId, planId);
-    },
-    onSuccess: async ({ url }) => {
-      await WebBrowser.openBrowserAsync(url);
-      await queryClient.invalidateQueries({ queryKey: ['profile'] });
-    },
-    onError: (error) => {
-      const message = error instanceof ApiError ? error.message : 'Unable to open checkout';
-      Alert.alert('Checkout unavailable', message);
-    },
-  });
-
-  const portalMutation = useMutation({
-    mutationFn: async () => {
-      const memberId = profileQuery.data?.member?.id;
-      if (!memberId) {
-        throw new Error('No member profile found');
-      }
-      return api.createPortalSession(memberId);
-    },
-    onSuccess: async ({ url }) => {
-      await WebBrowser.openBrowserAsync(url);
-      await queryClient.invalidateQueries({ queryKey: ['profile'] });
-    },
-    onError: (error) => {
-      const message = error instanceof ApiError ? error.message : 'Unable to open billing portal';
-      Alert.alert('Portal unavailable', message);
-    },
-  });
-
-  const cancelBookingMutation = useMutation({
-    mutationFn: api.cancelMyBooking,
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['home'] }),
-        queryClient.invalidateQueries({ queryKey: ['my-bookings'] }),
-      ]);
-    },
-    onError: (error) => {
-      const message = error instanceof ApiError ? error.message : 'Unable to cancel booking';
-      Alert.alert('Cancellation unavailable', message);
-    },
-  });
-
-  if (profileQuery.isLoading || bookingsQuery.isLoading) {
-    return (
-      <AppScreen scroll={false}>
-        <View style={styles.center}>
-          <ActivityIndicator color={colors.accent} />
-        </View>
-      </AppScreen>
-    );
-  }
-
-  const member = profileQuery.data?.member ?? null;
-  const plans = profileQuery.data?.plans ?? [];
-  const bookings = bookingsQuery.data ?? [];
+  const profile = useQuery(profileQuery);
 
   return (
-    <AppScreen>
-      <SectionCard title="Account">
-        {member ? (
-          <View style={styles.profileBlock}>
-            <Text style={styles.profileName}>
-              {member.firstName} {member.lastName}
-            </Text>
-            <Text style={styles.profileMeta}>{member.email}</Text>
-            {member.phone ? <Text style={styles.profileMeta}>{member.phone}</Text> : null}
-          </View>
-        ) : (
-          <EmptyStateView
-            title="No member profile"
-            description="This session is active, but it is not linked to a club member record yet."
-          />
-        )}
-      </SectionCard>
-
-      <SectionCard title="Membership">
-        {member?.membership ? (
-          <View style={styles.membershipBlock}>
-            <View style={styles.membershipTag}>
-              <Text style={styles.membershipTagLabel}>{member.membership.status}</Text>
-            </View>
-            <Text style={styles.membershipPlan}>{member.membership.plan.name}</Text>
-            <Text style={styles.profileMeta}>
-              Current period ends {formatDateLabel(member.membership.currentPeriodEnd.slice(0, 10))}
-            </Text>
-            <PrimaryButton
-              label="Manage Billing"
-              variant="secondary"
-              loading={portalMutation.isPending}
-              onPress={() => portalMutation.mutate()}
-            />
-          </View>
-        ) : plans.length > 0 ? (
-          <View style={styles.planList}>
-            {plans.map((plan) => (
-              <View key={plan.id} style={styles.planCard}>
-                <Text style={styles.planName}>{plan.name}</Text>
-                <Text style={styles.profileMeta}>
-                  ${(plan.amountCents / 100).toFixed(0)}/{plan.interval}
-                </Text>
-                <PrimaryButton
-                  label="Start Membership"
-                  loading={checkoutMutation.isPending}
-                  onPress={() => checkoutMutation.mutate(plan.id)}
-                />
-              </View>
-            ))}
-          </View>
-        ) : (
-          <EmptyStateView
-            title="No plans available"
-            description="Membership plans will appear here once they are configured."
-          />
-        )}
-      </SectionCard>
-
-      <SectionCard title="Upcoming Reservations">
-        {bookings.length > 0 ? (
-          <View style={styles.bookingStack}>
-            {bookings.map((booking) => (
-              <BookingCard
-                key={booking.id}
-                booking={booking}
-                onPress={() =>
-                  Alert.alert(
-                    'Cancel reservation?',
-                    `${booking.facilityName} on ${booking.date} at ${booking.startTime}`,
-                    [
-                      { text: 'Keep', style: 'cancel' },
-                      {
-                        text: 'Cancel Booking',
-                        style: 'destructive',
-                        onPress: () => cancelBookingMutation.mutate(booking.id),
-                      },
-                    ],
-                  )
-                }
-              />
-            ))}
-          </View>
-        ) : (
-          <EmptyStateView
-            title="Nothing reserved"
-            description="Use the Reserve tab to book your next court or shower."
-          />
-        )}
-      </SectionCard>
-
-      <PrimaryButton label="Sign Out" variant="ghost" onPress={() => void signOut()} />
+    <AppScreen
+      contentStyle={styles.content}
+      refreshing={profile.isRefetching && !profile.isPending}
+      onRefresh={() => void profile.refetch()}
+    >
+      {profile.isPending ? (
+        <View accessibilityLabel="Loading your account" style={styles.loading}>
+          <Skeleton width={96} height={96} borderRadius={radius.pill} />
+          <Skeleton width={180} height={26} borderRadius={radius.sm} />
+          <Skeleton width={140} height={16} borderRadius={radius.sm} />
+          <Skeleton height={80} borderRadius={radius.lg} />
+          <Skeleton height={260} borderRadius={radius.lg} />
+        </View>
+      ) : profile.isError ? (
+        <View style={styles.errorBox} accessibilityRole="alert">
+          <Text style={styles.errorText}>We could not load your account.</Text>
+          <PrimaryButton label="Try again" variant="secondary" onPress={() => void profile.refetch()} />
+        </View>
+      ) : (
+        <AccountView member={profile.data.member} stats={profile.data.stats} />
+      )}
     </AppScreen>
   );
 }
 
+function AccountView({ member, stats }: { member: HomeMember; stats: LifetimeStats }) {
+  const router = useRouter();
+  const timezone = useVenueTimezone();
+  const { toast } = useToast();
+  const { signOut } = useSession();
+  const avatar = useAvatarUpload();
+
+  const [editingName, setEditingName] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+
+  const name = memberDisplayName(member);
+
+  const signOutMutation = useMutation({
+    mutationFn: signOut,
+    onError: () => toast({ variant: 'error', message: 'We could not sign you out. Please try again.' }),
+  });
+
+  return (
+    <>
+      {/* ── Profile header ── */}
+      <View style={styles.header}>
+        <View style={styles.avatarWrap}>
+          <Avatar name={name} src={member.avatarUrl} size="xl" />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Change profile photo"
+            accessibilityState={{ busy: avatar.isUploading }}
+            onPress={avatar.choose}
+            disabled={avatar.isUploading}
+            hitSlop={8}
+            style={styles.cameraBadge}
+          >
+            <Ionicons
+              name={avatar.isUploading ? 'hourglass-outline' : 'camera'}
+              size={16}
+              color={colors.textOnAccent}
+            />
+          </Pressable>
+        </View>
+
+        {editingName ? (
+          <DisplayNameEditor member={member} onDone={() => setEditingName(false)} />
+        ) : (
+          <View style={styles.nameRow}>
+            <Text style={styles.name}>{name}</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Edit display name"
+              onPress={() => setEditingName(true)}
+              hitSlop={8}
+            >
+              <Ionicons name="pencil" size={18} color={colors.textMuted} />
+            </Pressable>
+          </View>
+        )}
+
+        <Text style={styles.memberSince}>{memberSinceLabel(member.memberSince, timezone)}</Text>
+        <Text style={styles.memberNumber}>{memberNumberLabel(member.memberNumber)}</Text>
+      </View>
+
+      {/* ── Lifetime stat tiles ── */}
+      <View style={styles.statRow} accessibilityLabel="Lifetime activity">
+        <StatTile value={String(stats.courtsBooked)} label="Courts booked" />
+        <StatTile value={formatHours(stats.badmintonHours)} label="Badminton hours" />
+        <StatTile value={formatHours(stats.tennisHours)} label="Tennis hours" />
+      </View>
+
+      {/* ── Account settings menu ── */}
+      <SettingsGroup label="Account settings">
+        <SettingsRow icon="qr-code-outline" label="View membership card" onPress={() => setQrOpen(true)} />
+        <SettingsRow
+          icon="videocam-outline"
+          label="Claim Clutch session stats & clips"
+          comingSoon
+        />
+        <SettingsRow
+          icon="calendar-outline"
+          label="Billing history"
+          onPress={() => router.push('/account/billing')}
+        />
+        <SettingsRow
+          icon="options-outline"
+          label="App preferences"
+          onPress={() => router.push('/account/preferences')}
+        />
+        <SettingsRow
+          icon="log-out-outline"
+          label="Sign out"
+          accent
+          loading={signOutMutation.isPending}
+          onPress={() => signOutMutation.mutate()}
+        />
+      </SettingsGroup>
+
+      <MemberCardSheet
+        open={qrOpen}
+        onClose={() => setQrOpen(false)}
+        memberName={name}
+        memberNumber={member.memberNumber}
+      />
+    </>
+  );
+}
+
+function StatTile({ value, label }: { value: string; label: string }) {
+  return (
+    <View style={styles.statTile} accessibilityLabel={`${value} ${label}`}>
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  center: {
-    flex: 1,
+  content: {
+    gap: spacing.xl,
+  },
+  loading: {
+    alignItems: 'center',
+    gap: spacing.md,
+    alignSelf: 'stretch',
+  },
+  errorBox: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgElevated,
+  },
+  errorText: {
+    ...typography.body,
+    color: colors.text,
+  },
+  header: {
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  avatarWrap: {
+    position: 'relative',
+    marginBottom: spacing.xs,
+  },
+  cameraBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 30,
+    height: 30,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accent,
+    borderWidth: 2,
+    borderColor: colors.bg,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  profileBlock: {
-    gap: spacing.xs,
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
-  profileName: {
+  name: {
+    ...typography.h1,
     color: colors.text,
-    fontSize: 22,
-    fontWeight: '800',
+    textAlign: 'center',
   },
-  profileMeta: {
+  memberSince: {
+    ...typography.body,
     color: colors.textMuted,
-    fontSize: 13,
-    lineHeight: 18,
   },
-  membershipBlock: {
-    gap: spacing.sm,
+  memberNumber: {
+    fontFamily: fonts.body,
+    fontSize: 12,
+    letterSpacing: 1,
+    color: colors.textSubtle,
   },
-  membershipTag: {
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(229, 240, 164, 0.14)',
-    borderRadius: radius.pill,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
+  statRow: {
+    flexDirection: 'row',
+    alignSelf: 'stretch',
   },
-  membershipTagLabel: {
-    color: colors.accent,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    fontSize: 11,
-    fontWeight: '700',
+  statTile: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 2,
   },
-  membershipPlan: {
+  statValue: {
+    fontFamily: fonts.displayBold,
+    fontSize: 24,
     color: colors.text,
-    fontSize: 18,
-    fontWeight: '700',
   },
-  planList: {
-    gap: spacing.sm,
-  },
-  planCard: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    gap: spacing.sm,
-  },
-  planName: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  bookingStack: {
-    gap: spacing.sm,
+  statLabel: {
+    fontFamily: fonts.body,
+    fontSize: 12,
+    color: colors.textMuted,
+    textAlign: 'center',
   },
 });

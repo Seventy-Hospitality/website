@@ -42,9 +42,13 @@ api/
 │   ├── infrastructure/      # Prisma, event store, UoW
 │   ├── contexts/            # Bounded contexts
 │   │   ├── members/         # Member CRUD + admin notes
-│   │   ├── memberships/     # Stripe subscriptions, checkout, portal
-│   │   ├── auth/            # Magic-link, JWT, sessions
-│   │   └── communications/  # Email templates, notification delivery
+│   │   ├── memberships/     # Subscription lifecycle/state (Stripe via billing's gateway port)
+│   │   ├── billing/         # Stripe gateway, money ledger, payment methods, webhooks
+│   │   ├── bookings/        # Scheduling/reservations (pays via billing's adapter)
+│   │   ├── clubs/           # Member-created social clubs (invites, links, rosters)
+│   │   ├── identity/        # Users, credentials, OAuth identities, sessions, tokens
+│   │   ├── home/            # Home-screen read aggregation (greeting, quick-book)
+│   │   └── communications/  # Notification delivery: outbox consumer, email + push, reminders
 │   ├── container.ts         # Composition root
 │   └── db.ts                # Prisma singleton
 └── prisma/                  # Schema + migrations + seed
@@ -75,7 +79,10 @@ web/
 - **Webhooks processed inline** (Stripe retries on failure).
 - **No NestJS** — vanilla TypeScript with composition root for DI.
 - **No Tailwind** — Octahedron design system.
-- **Communications BC** owns all outbound email. Other BCs call NotificationService.
+- **Communications BC** owns all outbound email and push. Other BCs call
+  NotificationService for direct sends; product notifications ride the
+  audit-log outbox and are delivered by its dispatcher (see
+  `api/docs/decisions-notifications.md`).
 
 ## Essential Commands
 
@@ -98,5 +105,5 @@ stripe listen --forward-to localhost:3001/api/webhooks/stripe
 
 | Document | Location | Purpose |
 |----------|----------|---------|
-| `api/ARCHITECTURE.md` | API | DDD architecture, layer rules, event sourcing |
+| `api/ARCHITECTURE.md` | API | DDD architecture, layer rules, audit log + outbox, scheduling |
 | `api/DESIGN_SYSTEM.md` | API | UI tokens, typography, spacing, component usage |

@@ -4,7 +4,7 @@ import { mediaService } from '@/lib/container';
 const maxAgeHours = coercePositiveInteger(process.env.MEDIA_STALE_UPLOAD_MAX_AGE_HOURS, 24);
 const limit = coercePositiveInteger(process.env.MEDIA_STALE_UPLOAD_CLEANUP_LIMIT, 100);
 
-const result = await mediaService.cleanupStaleEventImages({
+const result = await mediaService.cleanupStaleAssets({
   maxAgeHours,
   limit,
 });

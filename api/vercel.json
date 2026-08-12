@@ -1,8 +1,36 @@
 {
   "crons": [
     {
-      "path": "/api/cron/sync-memberships",
-      "schedule": "0 3 * * 0"
+      "path": "/api/cron/expire-holds",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/dispatch-outbox",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/send-booking-reminders",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/materialize-series",
+      "schedule": "15 2 * * *"
+    },
+    {
+      "path": "/api/cron/resume-deletions",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/reconcile-billing",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/subscription-drift",
+      "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/cleanup-event-images",
+      "schedule": "0 4 * * *"
     }
   ]
 }

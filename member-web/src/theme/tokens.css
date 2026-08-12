@@ -1,0 +1,122 @@
+/*
+ * Club70 member design tokens.
+ *
+ * Derived from the Figma member app variables (file YApcPUsyLEwwv58uioog8h,
+ * "1: Creating an account & login" section). The member brand ships a single
+ * dark green / olive theme with a lime accent; the Figma defines no light
+ * mode, so neither do we. Figma variable names are noted inline.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ── Color: backgrounds & surfaces ── */
+  --color-bg: #1e2a20; /* bg/default */
+  --color-bg-elevated: #2b3a2c; /* bg/elevated */
+  --color-surface-card: #2b3a2c; /* surface/card */
+  --color-surface-overlay: #3d5641; /* surface/overlay */
+  --color-surface-muted: #80b691; /* surface/muted */
+  --color-scrim: rgba(10, 18, 10, 0.55); /* modal backdrop, not in Figma */
+
+  /* ── Color: borders ── */
+  --color-border: #3d5641; /* border/default */
+  --color-border-active: #80b691; /* border/active */
+
+  /* ── Color: text & icons ── */
+  --color-text: #ffffff; /* text/primary */
+  --color-text-muted: #aeb79e; /* text/muted */
+  --color-text-subtle: #628768; /* text/subtle */
+  --color-text-link: #80b691; /* text/subtle button */
+  --color-text-on-accent: #1e2a20; /* text/on-accent */
+  --color-text-dark: #202020; /* text/primary-dark */
+  --color-icon-active: #ecfeaa; /* icon/active */
+
+  /* ── Color: accent & status ── */
+  --color-accent: #ecfeaa; /* button/primary-bg, text/active, badge/bg */
+  --color-accent-hover: #bece85; /* backgroundColor/hover */
+  --color-success: #bece85; /* badge/success */
+  /* No danger color in the Figma; derived from the mobile palette (#d29076),
+     lightened so 14px text passes AA on bg-elevated (5.2:1). */
+  --color-danger: #dca183;
+  --color-danger-strong: #e8b49a;
+
+  /* ── Typography ──
+     Manrope for display (Heading 2/4, body/header), Inter for body text. */
+  --font-display: 'Manrope Variable', 'Manrope', system-ui, sans-serif;
+  --font-body: 'Inter Variable', 'Inter', system-ui, sans-serif;
+
+  /* Heading 2: Manrope Bold 32/44, ls 1 */
+  --text-h1-size: 2rem;
+  --text-h1-line: 2.75rem;
+  --text-h1-weight: 700;
+  --text-h1-spacing: 0.03125rem;
+  /* Heading 4: Manrope SemiBold 20/28, ls 1 */
+  --text-h2-size: 1.25rem;
+  --text-h2-line: 1.75rem;
+  --text-h2-weight: 600;
+  --text-h2-spacing: 0.03125rem;
+  /* body/header: Manrope SemiBold 17 */
+  --text-h3-size: 1.0625rem;
+  --text-h3-line: 1.375rem;
+  --text-h3-weight: 600;
+  /* Body: Inter 16/24 */
+  --text-body-size: 1rem;
+  --text-body-line: 1.5rem;
+  /* Body Small: Inter 14/20 */
+  --text-sm-size: 0.875rem;
+  --text-sm-line: 1.25rem;
+  /* Caption: Inter 12/16, ls 2 (used uppercase) */
+  --text-caption-size: 0.75rem;
+  --text-caption-line: 1rem;
+  --text-caption-spacing: 0.125rem;
+  /* Body XS: Inter 10/14, ls 3 (used uppercase) */
+  --text-xs-size: 0.625rem;
+  --text-xs-line: 0.875rem;
+  --text-xs-spacing: 0.1875rem;
+
+  /* ── Spacing (page gutter is 24 in every Figma frame; cards pad 16) ── */
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4rem;
+
+  /* ── Radii (inputs 12, cards 16, icon tiles 12, buttons pill) ── */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+  --radius-pill: 999px;
+
+  /* ── Elevation ── */
+  --shadow-soft: 0 12px 22px rgba(0, 0, 0, 0.22);
+  --shadow-raised: 0 4px 12px rgba(0, 0, 0, 0.28);
+
+  /* ── Focus ring (accent, visible on every surface) ── */
+  --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+
+  /* ── Layers ── */
+  --z-nav: 40;
+  --z-sheet: 100;
+  --z-toast: 110;
+
+  /* ── Layout ──
+     Breakpoints are documented here but used literally in media queries
+     (CSS custom properties cannot appear in @media). Keep in sync with
+     src/theme/tokens.ts.
+       --breakpoint-sm: 480px   phones landscape / large phones
+       --breakpoint-md: 768px   shell switches bottom tab bar -> sidebar
+       --breakpoint-lg: 1024px  multi-column page layouts
+  */
+  /* Content caps are LEFT-anchored inside the filled content area (the shell
+     spans the full viewport; the sidebar hugs the left edge). No global frame
+     centers the app. */
+  --content-max: 760px; /* reading column: forms, detail, single-column pages */
+  --content-wide: 1320px; /* list/grid + multi-column pages, left-anchored */
+  --sidebar-width: 248px;
+  --bottombar-height: 68px;
+  --gutter: var(--space-lg);
+}

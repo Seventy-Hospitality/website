@@ -1,34 +1,630 @@
-import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
-import cookie from '@fastify/cookie';
-import { InvalidTokenError, NotAuthorizedError } from '@/lib/contexts/auth';
+import {
+  EmailInUseError,
+  InvalidCredentialsError,
+  InvalidTokenError,
+  IdentityConfigError,
+  NotAuthorizedError,
+  SessionExpiredError,
+} from '@/lib/contexts/identity';
 
-const mockAuthService = vi.hoisted(() => ({
-  sendMagicLink: vi.fn().mockResolvedValue(undefined),
-  verifyMagicLink: vi.fn(),
-  validateSession: vi.fn(),
-  logout: vi.fn().mockResolvedValue(undefined),
-  getWebUrl: vi.fn().mockReturnValue('https://app.test'),
+function fixtureUser(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'usr_1',
+    email: 'alice@example.com',
+    name: 'Alice Chen',
+    staffRole: null,
+    status: 'active',
+    emailVerifiedAt: null,
+    termsAcceptedAt: null,
+    termsVersion: null,
+    createdAt: new Date('2026-08-01T00:00:00Z'),
+    updatedAt: new Date('2026-08-01T00:00:00Z'),
+    ...overrides,
+  };
+}
+
+function fixtureIssued(overrides: Record<string, unknown> = {}) {
+  return {
+    user: fixtureUser(),
+    sessionId: 'ses_1',
+    client: 'member_mobile',
+    accessToken: 'access_jwt',
+    accessTokenExpiresAt: new Date('2026-08-10T12:10:00Z'),
+    refreshToken: 'refresh_raw',
+    refreshTokenExpiresAt: new Date('2026-09-10T12:00:00Z'),
+    ...overrides,
+  };
+}
+
+const {
+  mockAuthenticationService,
+  mockAccountLinkingService,
+  mockSessionService,
+  mockMembershipChecker,
+} = vi.hoisted(() => ({
+  mockAuthenticationService: {
+    signUp: vi.fn(),
+    signIn: vi.fn(),
+    verifyEmail: vi.fn(),
+    resendVerification: vi.fn().mockResolvedValue(undefined),
+    requestPasswordReset: vi.fn().mockResolvedValue(undefined),
+    resetPassword: vi.fn().mockResolvedValue(undefined),
+    sendMagicLink: vi.fn().mockResolvedValue(undefined),
+    verifyMagicLink: vi.fn(),
+    getWebUrl: vi.fn().mockReturnValue('https://app.test'),
+  },
+  mockAccountLinkingService: {
+    issueNonce: vi.fn(),
+    signInWithGoogle: vi.fn(),
+    signInWithApple: vi.fn(),
+  },
+  mockSessionService: {
+    validateAccessToken: vi.fn(),
+    refresh: vi.fn(),
+    revoke: vi.fn().mockResolvedValue(undefined),
+    revokeAllForUser: vi.fn().mockResolvedValue(2),
+  },
+  mockMembershipChecker: {
+    hasActiveMembership: vi.fn().mockResolvedValue(true),
+  },
 }));
 
 vi.mock('@/lib/container', () => ({
-  authService: mockAuthService,
+  authenticationService: mockAuthenticationService,
+  accountLinkingService: mockAccountLinkingService,
+  sessionService: mockSessionService,
+  membershipChecker: mockMembershipChecker,
 }));
 
+import { buildTestApp } from '@/src/test/app';
 import { authRoutes } from './auth';
+
+function principal(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 'usr_1',
+    sessionId: 'ses_1',
+    email: 'alice@example.com',
+    emailVerified: false,
+    staffRole: null,
+    memberId: null,
+    client: 'member_mobile',
+    ...overrides,
+  };
+}
 
 describe('auth routes', () => {
   let app: FastifyInstance;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    app = Fastify({ logger: false });
-    await app.register(cookie);
-    await app.register(authRoutes, { prefix: '/api/auth' });
-    await app.ready();
+    mockAuthenticationService.getWebUrl.mockReturnValue('https://app.test');
+    mockSessionService.validateAccessToken.mockRejectedValue(new SessionExpiredError());
+    mockSessionService.refresh.mockRejectedValue(new InvalidTokenError());
+    app = await buildTestApp({ routes: authRoutes, prefix: '/api/auth' });
   });
 
   afterEach(() => app.close());
+
+  describe('POST /api/auth/signup', () => {
+    it('creates the account and returns the token pair', async () => {
+      mockAuthenticationService.signUp.mockResolvedValue(fixtureIssued());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        payload: { name: 'Alice Chen', email: 'alice@example.com', password: 'hunter2hunter2', phone: '555-0101' },
+      });
+
+      expect(res.statusCode).toBe(201);
+      const body = res.json();
+      expect(body.data.user).toEqual({
+        id: 'usr_1',
+        email: 'alice@example.com',
+        name: 'Alice Chen',
+        emailVerifiedAt: null,
+        staffRole: null,
+      });
+      expect(body.data.accessToken).toBe('access_jwt');
+      expect(body.data.refreshToken).toBe('refresh_raw');
+      expect(mockAuthenticationService.signUp).toHaveBeenCalledWith(
+        expect.objectContaining({ email: 'alice@example.com' }),
+        'member_mobile',
+        expect.anything(),
+      );
+    });
+
+    it('sets httpOnly session cookies and returns no tokens for the web client', async () => {
+      mockAuthenticationService.signUp.mockResolvedValue(fixtureIssued({ client: 'member_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        headers: { 'x-client-type': 'web' },
+        payload: { name: 'Alice Chen', email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(201);
+      const body = res.json();
+      expect(body.data.user.email).toBe('alice@example.com');
+      expect(body.data.accessToken).toBeUndefined();
+      expect(body.data.refreshToken).toBeUndefined();
+      expect(mockAuthenticationService.signUp).toHaveBeenCalledWith(
+        expect.objectContaining({ email: 'alice@example.com' }),
+        'member_web',
+        expect.anything(),
+      );
+
+      const cookies = Object.fromEntries(res.cookies.map((c) => [c.name, c]));
+      expect(cookies.seventy_access.value).toBe('access_jwt');
+      expect(cookies.seventy_refresh.value).toBe('refresh_raw');
+      expect(cookies.seventy_access.httpOnly).toBe(true);
+      expect(cookies.seventy_refresh.httpOnly).toBe(true);
+    });
+
+    it('keeps the bearer contract for an explicit mobile header', async () => {
+      mockAuthenticationService.signUp.mockResolvedValue(fixtureIssued());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        headers: { 'x-client-type': 'mobile' },
+        payload: { name: 'Alice Chen', email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.json().data.accessToken).toBe('access_jwt');
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(mockAuthenticationService.signUp).toHaveBeenCalledWith(
+        expect.anything(),
+        'member_mobile',
+        expect.anything(),
+      );
+    });
+
+    it('rejects an unknown X-Client-Type value', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        headers: { 'x-client-type': 'desktop' },
+        payload: { name: 'Alice Chen', email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.signUp).not.toHaveBeenCalled();
+    });
+
+    it('rejects a weak password', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        payload: { name: 'Alice', email: 'alice@example.com', password: 'short' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.signUp).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when the email is already registered', async () => {
+      mockAuthenticationService.signUp.mockRejectedValue(new EmailInUseError());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        payload: { name: 'Alice', email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error.code).toBe('EMAIL_IN_USE');
+    });
+  });
+
+  describe('POST /api/auth/signin', () => {
+    it('returns the token pair for valid credentials', async () => {
+      mockAuthenticationService.signIn.mockResolvedValue(fixtureIssued());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signin',
+        payload: { email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.accessToken).toBe('access_jwt');
+    });
+
+    it('sets session cookies and returns no tokens for the web client', async () => {
+      mockAuthenticationService.signIn.mockResolvedValue(fixtureIssued({ client: 'member_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signin',
+        headers: { 'x-client-type': 'web' },
+        payload: { email: 'alice@example.com', password: 'hunter2hunter2' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.accessToken).toBeUndefined();
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(res.json().data.user.email).toBe('alice@example.com');
+      expect(mockAuthenticationService.signIn).toHaveBeenCalledWith(
+        'alice@example.com',
+        'hunter2hunter2',
+        'member_web',
+        expect.anything(),
+      );
+      const cookieNames = res.cookies.map((c) => c.name);
+      expect(cookieNames).toContain('seventy_access');
+      expect(cookieNames).toContain('seventy_refresh');
+    });
+
+    it('maps invalid credentials to 401', async () => {
+      mockAuthenticationService.signIn.mockRejectedValue(new InvalidCredentialsError());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signin',
+        payload: { email: 'alice@example.com', password: 'wrong-password' },
+      });
+
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('INVALID_CREDENTIALS');
+    });
+  });
+
+  describe('POST /api/auth/oauth/nonce', () => {
+    it('returns a single-use nonce', async () => {
+      mockAccountLinkingService.issueNonce.mockResolvedValue({
+        nonce: 'raw_nonce',
+        expiresAt: new Date('2026-08-10T12:10:00Z'),
+      });
+
+      const res = await app.inject({ method: 'POST', url: '/api/auth/oauth/nonce' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toEqual({ nonce: 'raw_nonce', expiresAt: '2026-08-10T12:10:00.000Z' });
+    });
+  });
+
+  describe('POST /api/auth/oauth/google', () => {
+    it('signs in with a verified ID token', async () => {
+      mockAccountLinkingService.signInWithGoogle.mockResolvedValue(fixtureIssued());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/oauth/google',
+        payload: { idToken: 'google_id_token', nonce: 'raw_nonce' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockAccountLinkingService.signInWithGoogle).toHaveBeenCalledWith(
+        { idToken: 'google_id_token', nonce: 'raw_nonce' },
+        'member_mobile',
+        expect.anything(),
+      );
+    });
+
+    it('sets session cookies and returns no tokens for the web client', async () => {
+      mockAccountLinkingService.signInWithGoogle.mockResolvedValue(fixtureIssued({ client: 'member_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/oauth/google',
+        headers: { 'x-client-type': 'web' },
+        payload: { idToken: 'google_id_token', nonce: 'raw_nonce' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.accessToken).toBeUndefined();
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(mockAccountLinkingService.signInWithGoogle).toHaveBeenCalledWith(
+        { idToken: 'google_id_token', nonce: 'raw_nonce' },
+        'member_web',
+        expect.anything(),
+      );
+      const cookieNames = res.cookies.map((c) => c.name);
+      expect(cookieNames).toContain('seventy_access');
+      expect(cookieNames).toContain('seventy_refresh');
+    });
+
+    it('maps an invalid token or burned nonce to 401', async () => {
+      mockAccountLinkingService.signInWithGoogle.mockRejectedValue(new InvalidTokenError());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/oauth/google',
+        payload: { idToken: 'bad', nonce: 'n' },
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('returns 501 when the provider is not configured', async () => {
+      mockAccountLinkingService.signInWithGoogle.mockRejectedValue(
+        new IdentityConfigError('GOOGLE_OAUTH_CLIENT_IDS is not configured'),
+      );
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/oauth/google',
+        payload: { idToken: 't', nonce: 'n' },
+      });
+
+      expect(res.statusCode).toBe(501);
+      expect(res.json().error.code).toBe('NOT_CONFIGURED');
+    });
+  });
+
+  describe('POST /api/auth/oauth/apple', () => {
+    it('passes fullName and authorizationCode through', async () => {
+      mockAccountLinkingService.signInWithApple.mockResolvedValue(fixtureIssued());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/oauth/apple',
+        payload: {
+          identityToken: 'apple_token',
+          nonce: 'raw_nonce',
+          authorizationCode: 'code',
+          fullName: { givenName: 'Alice', familyName: 'Chen' },
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockAccountLinkingService.signInWithApple).toHaveBeenCalledWith(
+        expect.objectContaining({
+          identityToken: 'apple_token',
+          authorizationCode: 'code',
+          fullName: { givenName: 'Alice', familyName: 'Chen' },
+        }),
+        'member_mobile',
+        expect.anything(),
+      );
+    });
+
+    it('sets session cookies and returns no tokens for the web client', async () => {
+      mockAccountLinkingService.signInWithApple.mockResolvedValue(fixtureIssued({ client: 'member_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/oauth/apple',
+        headers: { 'x-client-type': 'web' },
+        payload: { identityToken: 'apple_token', nonce: 'raw_nonce' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.accessToken).toBeUndefined();
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(mockAccountLinkingService.signInWithApple).toHaveBeenCalledWith(
+        expect.objectContaining({ identityToken: 'apple_token' }),
+        'member_web',
+        expect.anything(),
+      );
+      const cookieNames = res.cookies.map((c) => c.name);
+      expect(cookieNames).toContain('seventy_access');
+      expect(cookieNames).toContain('seventy_refresh');
+    });
+  });
+
+  describe('POST /api/auth/refresh', () => {
+    it('rotates a body-supplied refresh token and returns the new pair', async () => {
+      mockSessionService.refresh.mockResolvedValue(fixtureIssued({ refreshToken: 'rotated_raw' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/refresh',
+        payload: { refreshToken: 'refresh_raw' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.refreshToken).toBe('rotated_raw');
+      expect(mockSessionService.refresh).toHaveBeenCalledWith('refresh_raw');
+    });
+
+    it('rotates the cookie for cookie clients and keeps tokens out of the body', async () => {
+      mockSessionService.refresh.mockResolvedValue(fixtureIssued({ refreshToken: 'rotated_raw' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/refresh',
+        cookies: { seventy_refresh: 'cookie_refresh' },
+        payload: {},
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSessionService.refresh).toHaveBeenCalledWith('cookie_refresh');
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(res.json().data.accessToken).toBeUndefined();
+      const cookieNames = res.cookies.map((c) => c.name);
+      expect(cookieNames).toContain('seventy_access');
+      expect(cookieNames).toContain('seventy_refresh');
+    });
+
+    it('rotates a member_web session from the cookie the same way', async () => {
+      mockSessionService.refresh.mockResolvedValue(
+        fixtureIssued({ client: 'member_web', refreshToken: 'rotated_raw' }),
+      );
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/refresh',
+        cookies: { seventy_refresh: 'member_cookie_refresh' },
+        payload: {},
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSessionService.refresh).toHaveBeenCalledWith('member_cookie_refresh');
+      expect(res.json().data.refreshToken).toBeUndefined();
+      expect(res.json().data.user.email).toBe('alice@example.com');
+      const rotated = res.cookies.find((c) => c.name === 'seventy_refresh');
+      expect(rotated?.value).toBe('rotated_raw');
+    });
+
+    it('requires a token from body or cookie', async () => {
+      const res = await app.inject({ method: 'POST', url: '/api/auth/refresh', payload: {} });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('maps reuse detection to 401', async () => {
+      mockSessionService.refresh.mockRejectedValue(new InvalidTokenError());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/refresh',
+        payload: { refreshToken: 'stolen' },
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
+  describe('POST /api/auth/signout', () => {
+    it('revokes the current session and clears cookies', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signout',
+        headers: { authorization: 'Bearer access_jwt' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ data: { signedOut: true } });
+      expect(mockSessionService.revoke).toHaveBeenCalledWith('ses_1', 'signout');
+    });
+
+    it('rejects a caller without a session', async () => {
+      const res = await app.inject({ method: 'POST', url: '/api/auth/signout' });
+      expect(res.statusCode).toBe(401);
+      expect(mockSessionService.revoke).not.toHaveBeenCalled();
+    });
+
+    it('tolerates an empty application/json body (no {} workaround needed)', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signout',
+        headers: { authorization: 'Bearer access_jwt', 'content-type': 'application/json' },
+        payload: '',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSessionService.revoke).toHaveBeenCalledWith('ses_1', 'signout');
+    });
+  });
+
+  describe('POST /api/auth/logout (legacy admin web)', () => {
+    it('clears the session cookies', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(principal({ client: 'admin_web' }));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/logout',
+        cookies: { seventy_access: 'valid_jwt' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ data: { loggedOut: true } });
+      const cleared = res.cookies.map((c) => c.name);
+      expect(cleared).toEqual(expect.arrayContaining(['seventy_access', 'seventy_refresh', 'seventy_session']));
+    });
+  });
+
+  describe('POST /api/auth/signout-all', () => {
+    it('requires authentication', async () => {
+      const res = await app.inject({ method: 'POST', url: '/api/auth/signout-all' });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('revokes every session for the user', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signout-all',
+        headers: { authorization: 'Bearer access_jwt' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.revokedSessions).toBe(2);
+      expect(mockSessionService.revokeAllForUser).toHaveBeenCalledWith('usr_1', 'signout_all');
+    });
+  });
+
+  describe('POST /api/auth/password/forgot', () => {
+    it('always returns success (prevents enumeration)', async () => {
+      mockAuthenticationService.requestPasswordReset.mockRejectedValueOnce(new Error('boom'));
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/password/forgot',
+        payload: { email: 'anyone@example.com' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ data: { sent: true } });
+    });
+  });
+
+  describe('POST /api/auth/password/reset', () => {
+    it('resets with a valid token', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/password/reset',
+        payload: { token: 'reset_token', password: 'newpassword123' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockAuthenticationService.resetPassword).toHaveBeenCalledWith('reset_token', 'newpassword123');
+    });
+
+    it('maps an invalid token to 401', async () => {
+      mockAuthenticationService.resetPassword.mockRejectedValue(new InvalidTokenError());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/password/reset',
+        payload: { token: 'bad', password: 'newpassword123' },
+      });
+
+      expect(res.statusCode).toBe(401);
+    });
+  });
+
+  describe('POST /api/auth/email/verify', () => {
+    it('confirms the email and reports member claiming', async () => {
+      mockAuthenticationService.verifyEmail.mockResolvedValue({ verified: true, claimedMemberId: 'mem_1' });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/email/verify',
+        payload: { token: 'verify_token' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ data: { verified: true, memberClaimed: true } });
+    });
+  });
+
+  describe('POST /api/auth/email/resend', () => {
+    it('requires authentication', async () => {
+      const res = await app.inject({ method: 'POST', url: '/api/auth/email/resend' });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('resends for the authenticated user', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/email/resend',
+        headers: { authorization: 'Bearer access_jwt' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockAuthenticationService.resendVerification).toHaveBeenCalledWith('usr_1');
+    });
+  });
 
   describe('POST /api/auth/magic-link', () => {
     it('returns success for valid email', async () => {
@@ -40,14 +636,14 @@ describe('auth routes', () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ data: { sent: true } });
-      expect(mockAuthService.sendMagicLink).toHaveBeenCalledWith(
+      expect(mockAuthenticationService.sendMagicLink).toHaveBeenCalledWith(
         'admin@example.com',
         { redirectTo: undefined },
       );
     });
 
     it('returns success even when sendMagicLink throws (prevents enumeration)', async () => {
-      mockAuthService.sendMagicLink.mockRejectedValueOnce(new Error('boom'));
+      mockAuthenticationService.sendMagicLink.mockRejectedValueOnce(new Error('boom'));
 
       const res = await app.inject({
         method: 'POST',
@@ -69,6 +665,34 @@ describe('auth routes', () => {
       expect(res.statusCode).toBe(400);
     });
 
+    it('mints a member-web link for the web client (no admin requirement)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/magic-link',
+        headers: { 'x-client-type': 'web' },
+        payload: { email: 'alice@example.com' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ data: { sent: true } });
+      expect(mockAuthenticationService.sendMagicLink).toHaveBeenCalledWith(
+        'alice@example.com',
+        { redirectTo: undefined, client: 'member_web' },
+      );
+    });
+
+    it('refuses a native redirectTo from the web client', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/magic-link',
+        headers: { 'x-client-type': 'web' },
+        payload: { email: 'alice@example.com', redirectTo: 'seventy://auth/callback' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.sendMagicLink).not.toHaveBeenCalled();
+    });
+
     it('rejects disallowed mobile redirect target', async () => {
       const res = await app.inject({
         method: 'POST',
@@ -78,12 +702,51 @@ describe('auth routes', () => {
 
       expect(res.statusCode).toBe(400);
     });
+
+    it.each([
+      // Prefix-extension host: begins with an allowed prefix but is a different host.
+      'https://auth.expo.io.attacker.tld/',
+      // Embedded credentials resolve the real host to the attacker.
+      'https://auth.expo.io@attacker.tld/',
+      // Subdomain of localhost is not localhost.
+      'http://localhost.attacker.tld/',
+      'https://localhost.evil.com/x',
+    ])('rejects the exfiltration redirect %s (no prefix matching)', async (redirectTo) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/magic-link',
+        payload: { email: 'admin@example.com', redirectTo },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.sendMagicLink).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'seventy://auth/callback',
+      'exp://127.0.0.1:19000/--/auth',
+      'http://localhost:19006/',
+      'https://auth.expo.io/@club70/app',
+    ])('accepts the legitimate app redirect %s', async (redirectTo) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/auth/magic-link',
+        payload: { email: 'admin@example.com', redirectTo },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockAuthenticationService.sendMagicLink).toHaveBeenCalledWith(
+        'admin@example.com',
+        { redirectTo },
+      );
+    });
   });
 
   describe('GET /api/auth/verify', () => {
-    it('sets cookie and redirects to /members on valid token', async () => {
-      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      mockAuthService.verifyMagicLink.mockResolvedValue({ jwt: 'jwt_token', expiresAt });
+    it('sets session cookies and redirects to the admin app on valid token', async () => {
+      mockAuthenticationService.verifyMagicLink.mockResolvedValue(
+        fixtureIssued({ client: 'admin_web', user: fixtureUser({ staffRole: 'admin' }) }),
+      );
 
       const res = await app.inject({
         method: 'GET',
@@ -91,12 +754,19 @@ describe('auth routes', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe('https://app.test/members');
-      expect(res.headers['set-cookie']).toContain('seventy_session=jwt_token');
+      expect(res.headers.location).toBe('https://app.test/admin/members');
+      expect(mockAuthenticationService.verifyMagicLink).toHaveBeenCalledWith(
+        'valid_token',
+        'admin_web',
+        expect.anything(),
+      );
+      const cookies = Object.fromEntries(res.cookies.map((c) => [c.name, c.value]));
+      expect(cookies.seventy_access).toBe('access_jwt');
+      expect(cookies.seventy_refresh).toBe('refresh_raw');
     });
 
     it('redirects with error for invalid token', async () => {
-      mockAuthService.verifyMagicLink.mockRejectedValue(new InvalidTokenError());
+      mockAuthenticationService.verifyMagicLink.mockRejectedValue(new InvalidTokenError());
 
       const res = await app.inject({
         method: 'GET',
@@ -104,11 +774,11 @@ describe('auth routes', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe('https://app.test/sign-in?error=invalid_token');
+      expect(res.headers.location).toBe('https://app.test/admin/sign-in?error=invalid_token');
     });
 
     it('redirects with unknown error for non-token errors', async () => {
-      mockAuthService.verifyMagicLink.mockRejectedValue(new NotAuthorizedError());
+      mockAuthenticationService.verifyMagicLink.mockRejectedValue(new NotAuthorizedError());
 
       const res = await app.inject({
         method: 'GET',
@@ -116,7 +786,7 @@ describe('auth routes', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe('https://app.test/sign-in?error=unknown');
+      expect(res.headers.location).toBe('https://app.test/admin/sign-in?error=unknown');
     });
 
     it('redirects to sign-in with error when token is missing', async () => {
@@ -126,12 +796,80 @@ describe('auth routes', () => {
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe('https://app.test/sign-in?error=missing_token');
+      expect(res.headers.location).toBe('https://app.test/admin/sign-in?error=missing_token');
     });
 
-    it('returns JWT in redirect URL for mobile flow', async () => {
-      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      mockAuthService.verifyMagicLink.mockResolvedValue({ jwt: 'jwt_token', expiresAt });
+    it('refuses to redirect the token to a prefix-extension host', async () => {
+      // The critical exfiltration: a genuine club email carrying an attacker
+      // redirectTo must not 302 the freshly-minted tokens to the attacker host.
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=valid_token&redirectTo=' +
+          encodeURIComponent('https://auth.expo.io.attacker.tld/'),
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.verifyMagicLink).not.toHaveBeenCalled();
+    });
+
+    it('issues member_web cookies for a plain member on the web flow', async () => {
+      // staffRole stays null: magic link on web must work for ordinary
+      // members, not just admins.
+      mockAuthenticationService.verifyMagicLink.mockResolvedValue(
+        fixtureIssued({ client: 'member_web' }),
+      );
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=valid_token&client=member_web',
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('https://app.test/');
+      expect(mockAuthenticationService.verifyMagicLink).toHaveBeenCalledWith(
+        'valid_token',
+        'member_web',
+        expect.anything(),
+      );
+      const cookies = Object.fromEntries(res.cookies.map((c) => [c.name, c.value]));
+      expect(cookies.seventy_access).toBe('access_jwt');
+      expect(cookies.seventy_refresh).toBe('refresh_raw');
+    });
+
+    it('redirects web-flow failures to the member sign-in page', async () => {
+      mockAuthenticationService.verifyMagicLink.mockRejectedValue(new InvalidTokenError());
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=bad_token&client=member_web',
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe('https://app.test/sign-in?error=invalid_token');
+    });
+
+    it('rejects an unknown client marker', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=valid_token&client=member_mobile',
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.verifyMagicLink).not.toHaveBeenCalled();
+    });
+
+    it('rejects a link carrying both client and redirectTo', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/verify?token=valid_token&client=member_web&redirectTo=seventy%3A%2F%2Fauth%2Fcallback',
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockAuthenticationService.verifyMagicLink).not.toHaveBeenCalled();
+    });
+
+    it('returns tokens in the redirect URL for the mobile flow', async () => {
+      mockAuthenticationService.verifyMagicLink.mockResolvedValue(fixtureIssued());
 
       const res = await app.inject({
         method: 'GET',
@@ -140,81 +878,119 @@ describe('auth routes', () => {
 
       expect(res.statusCode).toBe(302);
       expect(res.headers.location).toContain('seventy://auth/callback');
-      expect(res.headers.location).toContain('token=jwt_token');
+      expect(res.headers.location).toContain('token=access_jwt');
+      expect(res.headers.location).toContain('refreshToken=refresh_raw');
+      expect(mockAuthenticationService.verifyMagicLink).toHaveBeenCalledWith(
+        'valid_token',
+        'member_mobile',
+        expect.anything(),
+      );
       expect(res.headers['set-cookie']).toBeUndefined();
     });
   });
 
   describe('GET /api/auth/me', () => {
-    it('returns user data when session cookie is valid', async () => {
-      mockAuthService.validateSession.mockResolvedValue({
-        userId: 'usr_1',
-        sessionId: 'ses_1',
-        email: 'admin@example.com',
-        role: 'admin',
-      });
+    it('returns user data for a valid access cookie', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(
+        principal({ staffRole: 'admin', client: 'admin_web' }),
+      );
 
       const res = await app.inject({
         method: 'GET',
         url: '/api/auth/me',
-        cookies: { seventy_session: 'valid_jwt' },
+        cookies: { seventy_access: 'valid_jwt' },
       });
 
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({
-        data: { userId: 'usr_1', email: 'admin@example.com' },
+        data: {
+          userId: 'usr_1',
+          email: 'alice@example.com',
+          emailVerified: false,
+          staffRole: 'admin',
+          memberId: null,
+          client: 'admin_web',
+        },
       });
     });
 
-    it('returns null when no cookie is present', async () => {
-      const res = await app.inject({
-        method: 'GET',
-        url: '/api/auth/me',
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ data: null });
-      expect(mockAuthService.validateSession).not.toHaveBeenCalled();
-    });
-
-    it('returns null when session is expired', async () => {
-      mockAuthService.validateSession.mockRejectedValue(new Error('expired'));
-
-      const res = await app.inject({
-        method: 'GET',
-        url: '/api/auth/me',
-        cookies: { seventy_session: 'expired_jwt' },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ data: null });
-    });
-
-    it('returns null when admin access is revoked', async () => {
-      mockAuthService.validateSession.mockRejectedValue(new NotAuthorizedError());
+    it('reports the member_web client for a member web session', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(
+        principal({ client: 'member_web', memberId: 'mem_1' }),
+      );
 
       const res = await app.inject({
         method: 'GET',
         url: '/api/auth/me',
-        cookies: { seventy_session: 'revoked_jwt' },
+        cookies: { seventy_access: 'valid_jwt' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toMatchObject({ client: 'member_web', memberId: 'mem_1' });
+    });
+
+    it('supports bearer authentication', async () => {
+      mockSessionService.validateAccessToken.mockResolvedValue(principal());
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/me',
+        headers: { authorization: 'Bearer access_jwt' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.userId).toBe('usr_1');
+    });
+
+    it('transparently rotates an expired access cookie via the refresh cookie', async () => {
+      mockSessionService.validateAccessToken.mockRejectedValue(new SessionExpiredError());
+      mockSessionService.refresh.mockResolvedValue(fixtureIssued({ client: 'admin_web' }));
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/me',
+        cookies: { seventy_access: 'expired_jwt', seventy_refresh: 'refresh_cookie' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.userId).toBe('usr_1');
+      expect(mockSessionService.refresh).toHaveBeenCalledWith('refresh_cookie');
+      const cookieNames = res.cookies.map((c) => c.name);
+      expect(cookieNames).toContain('seventy_access');
+    });
+
+    it('returns null when no credentials are present', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/auth/me' });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ data: null });
+      expect(mockSessionService.validateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the session is expired and no refresh cookie exists', async () => {
+      mockSessionService.validateAccessToken.mockRejectedValue(new SessionExpiredError());
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/auth/me',
+        cookies: { seventy_access: 'expired_jwt' },
       });
 
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ data: null });
     });
-  });
 
-  describe('POST /api/auth/logout', () => {
-    it('clears the session cookie', async () => {
+    it('returns null for a revoked account', async () => {
+      mockSessionService.validateAccessToken.mockRejectedValue(new NotAuthorizedError());
+
       const res = await app.inject({
-        method: 'POST',
-        url: '/api/auth/logout',
+        method: 'GET',
+        url: '/api/auth/me',
+        cookies: { seventy_access: 'revoked_jwt' },
       });
 
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ data: { loggedOut: true } });
-      expect(res.headers['set-cookie']).toContain('seventy_session=');
-      expect(res.headers['set-cookie']).toContain('Expires=');
+      expect(res.json()).toEqual({ data: null });
     });
   });
 });

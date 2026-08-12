@@ -9,19 +9,104 @@ datasource db {
 // ── Identity ──
 
 model User {
-  id    String @id @default(cuid())
-  email String @unique
-  name  String
-  role  String @default("member") // "admin" | "member"
+  id              String    @id @default(cuid())
+  email           String    @unique // normalized: lowercased + trimmed
+  emailVerifiedAt DateTime?
+  name            String
+  staffRole       String? // null | "staff" | "admin"
+  status          String    @default("active") // "active" | "suspended" | "deleted"
+  deletedAt       DateTime?
+  // Set (never cleared) when the account-deletion pipeline starts: the auth
+  // ladder freezes every policy above `authenticated` for this user, so a
+  // half-deleted account cannot book, pay or create anything new.
+  deletionRequestedAt DateTime?
+  termsAcceptedAt DateTime?
+  termsVersion    String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sessions Session[]
-  member   Member?
-  notes    AdminNote[] @relation("noteAuthor")
+  sessions     Session[] // legacy admin sessions; dropped after cutover
+  credentials  UserCredential[]
+  identities   AuthIdentity[]
+  authSessions AuthSession[]
+  member       Member?
+  notes        AdminNote[]      @relation("noteAuthor")
 
   @@map("users")
+}
+
+// Secrets live in their own table so raw-row serialization of users can
+// never leak a hash.
+model UserCredential {
+  id         String   @id @default(cuid())
+  userId     String
+  type       String // "password" (later "passkey")
+  secretHash String // argon2id PHC string
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@map("user_credentials")
+}
+
+model AuthIdentity {
+  id              String    @id @default(cuid())
+  userId          String
+  provider        String // "google" | "apple"
+  subject         String // provider "sub" — the stable key
+  email           String? // as asserted; informational only
+  emailVerified   Boolean   @default(false)
+  isPrivateRelay  Boolean   @default(false)
+  refreshTokenEnc String? // Apple only: needed for /auth/revoke on delete
+  linkedAt        DateTime  @default(now())
+  lastUsedAt      DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, subject]) // NOT unique on email
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+// One row per device. Refresh tokens are stored hashed and rotated on every
+// use; previousTokenHash keeps a short grace window for network retries.
+model AuthSession {
+  id                String    @id @default(cuid())
+  userId            String
+  client            String // "admin_web" | "member_web" | "member_mobile"
+  refreshTokenHash  String    @unique // sha256
+  previousTokenHash String? // rotation grace window
+  rotatedAt         DateTime?
+  issuedAt          DateTime  @default(now())
+  lastUsedAt        DateTime  @default(now())
+  idleExpiresAt     DateTime
+  absoluteExpiresAt DateTime
+  revokedAt         DateTime?
+  revokedReason     String?
+  deviceName        String?
+  ip                String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@map("auth_sessions")
+}
+
+// All one-time tokens (replaces magic_link_tokens after cutover).
+model AuthToken {
+  id          String    @id @default(cuid())
+  purpose     String // magic_link | email_verification | password_reset | oauth_nonce | email_change
+  identifier  String // email or userId
+  tokenHash   String    @unique
+  bindingHash String? // sha256(device verifier) — PKCE-style device binding
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([purpose, identifier])
+  @@map("auth_tokens")
 }
 
 model Session {
@@ -59,27 +144,53 @@ model Member {
   lastName  String
   phone     String?
 
+  // The stable human-facing member number ("#A12345"): one uppercase letter
+  // (I and O excluded) + five digits, generated at creation, retired forever
+  // on account deletion (the anonymized row keeps it, so the unique index
+  // guarantees it is never reassigned). Never an auth identifier.
+  memberNumber String  @unique
+  // Optional member-chosen display name; presentation falls back to
+  // "firstName lastName" when null.
+  displayName  String?
+  avatarUrl    String?
+  // Soft-delete marker set by the account-deletion pipeline after PII scrub.
+  deletedAt    DateTime?
+
   stripeCustomerId String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user       User?        @relation(fields: [userId], references: [id])
-  membership Membership?
-  notes      AdminNote[]
-  bookings   Booking[]
+  user            User?                    @relation(fields: [userId], references: [id])
+  memberships     Membership[]
+  notes           AdminNote[]
+  reservations    Reservation[]            @relation("organizer")
+  participations  ReservationParticipant[]
+  series          ReservationSeries[]
+  clubMemberships ClubMember[]
+  clubInvites     ClubInvitation[]         @relation("clubInvitee")
+  devices         Device[]
+  notificationPreference NotificationPreference?
+  idVerification  IdVerification?
 
   @@map("members")
 }
 
+// One row per Stripe price: a plan that sells monthly AND annually is two
+// rows sharing tier/product (the app's period toggle picks between them).
+// Price changes version rows (new stripePriceId), never mutate amounts.
 model MembershipPlan {
-  id              String  @id @default(cuid())
+  id              String   @id @default(cuid())
   name            String
-  stripePriceId   String  @unique
+  stripePriceId   String   @unique
   stripeProductId String
   amountCents     Int
   interval        String // "month" | "year"
-  active          Boolean @default(true)
+  tier            String   @default("member") // "member" | "pro"
+  inviteOnly      Boolean  @default(false)
+  features        String[] @default([])
+  sortOrder       Int      @default(0)
+  active          Boolean  @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -89,14 +200,32 @@ model MembershipPlan {
   @@map("membership_plans")
 }
 
+// One row per Stripe subscription (memberId is deliberately NOT unique:
+// Stripe allows a customer several live subscriptions, and re-subscribing
+// after a cancellation is a new subscription id, so webhook apply is a pure
+// upsert by stripeSubscriptionId with no member-resolution branching). "The
+// member's current membership" is a query: pickCurrentMembership in
+// memberships/domain.
 model Membership {
   id                   String   @id @default(cuid())
-  memberId             String   @unique
+  memberId             String
   planId               String
   stripeSubscriptionId String   @unique
-  status               String // "active" | "past_due" | "canceled" | "unpaid" | "incomplete"
+  status               String // "active" | "trialing" | "past_due" | "canceled" | "unpaid" | "incomplete" | "incomplete_expired" | "paused"
   currentPeriodEnd     DateTime
   cancelAtPeriodEnd    Boolean  @default(false)
+
+  // Pending annual->monthly downgrade: a transient Stripe subscription
+  // schedule (phase 2 = the cheaper price, iterations 1, end_behavior
+  // release) applies it at period end with no proration. Cleared when the
+  // schedule detaches (released/completed) or is released for an upgrade.
+  stripeScheduleId       String?
+  pendingPlanId          String?
+  pendingPlanEffectiveAt DateTime?
+
+  // Ordering guard for webhook re-fetch-and-apply: a snapshot fetched
+  // earlier can never overwrite one fetched later, whatever field moved.
+  stripeFetchedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -104,6 +233,7 @@ model Membership {
   member Member         @relation(fields: [memberId], references: [id], onDelete: Cascade)
   plan   MembershipPlan @relation(fields: [planId], references: [id])
 
+  @@index([memberId])
   @@map("memberships")
 }
 
@@ -122,89 +252,432 @@ model AdminNote {
   @@map("admin_notes")
 }
 
-// ── Events ──
+// ── Audit log + transactional outbox ──
+// Not an event-sourcing write model: relational state is the source of truth.
+// Rows are appended in the same transaction as each mutation (audit trail)
+// and dispatched to consumers by the outbox cron (dispatchedAt IS NULL +
+// FOR UPDATE SKIP LOCKED selection; no seq-cursor checkpoints).
 
 model Event {
-  id         String   @id @default(cuid())
-  seq        Int      @default(autoincrement())
-  streamType String
-  streamId   String
-  eventType  String
-  data       Json
-  occurredAt DateTime
-  recordedAt DateTime @default(now())
-  source     String   @default("app")
-  actorId    String?
+  id           String    @id @default(cuid())
+  seq          Int       @default(autoincrement())
+  streamType   String
+  streamId     String
+  eventType    String
+  data         Json
+  occurredAt   DateTime
+  recordedAt   DateTime  @default(now())
+  source       String    @default("app")
+  actorId      String?
+  dispatchedAt DateTime?
 
   @@unique([seq])
   @@index([streamType, streamId, seq])
   @@index([streamType, seq])
+  @@index([dispatchedAt])
   @@map("events")
 }
 
-model StreamCheckpoint {
-  id           String @id @default(cuid())
-  streamType   String
-  eventSeqHigh Int
-  state        Json
+// ── Scheduling ──
+// resource_types carries all facility policy; resources are the physical
+// units; slot_claims is the single owner of time on a resource, guarded by a
+// btree_gist exclusion constraint (raw SQL in the migration — Prisma cannot
+// express it): no two active claims may overlap on one resource.
 
-  @@unique([streamType])
-  @@map("stream_checkpoints")
+model ResourceType {
+  id                             String  @id @default(cuid())
+  code                           String  @unique // badminton_court | tennis_court | mahjong_table | tennis_simulator | shower
+  name                           String
+  slotDurationMinutes            Int     @default(30)
+  opStartMinutes                 Int // minutes from venue-local midnight
+  opEndMinutes                   Int // may exceed 1440 for past-midnight hours
+  hourlyRateCents                Int
+  maxAdvanceDays                 Int
+  maxReservationsPerMemberPerDay Int
+  cancellationDeadlineMinutes    Int
+  minTier                        String  @default("member") // "member" | "pro"
+  active                         Boolean @default(true)
+  displayOrder                   Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resources    Resource[]
+  reservations Reservation[]
+  series       ReservationSeries[]
+
+  @@map("resource_types")
 }
 
-// ── Bookings ──
+model Resource {
+  id           String  @id @default(cuid())
+  typeId       String
+  name         String
+  active       Boolean @default(true)
+  displayOrder Int     @default(0)
 
-model Court {
-  id                          String   @id @default(cuid())
-  name                        String
-  slotDurationMinutes         Int      @default(60)
-  operatingHoursStart         String   @default("07:00")
-  operatingHoursEnd           String   @default("22:00")
-  maxAdvanceDays              Int      @default(7)
-  maxBookingsPerMemberPerDay  Int      @default(2)
-  cancellationDeadlineMinutes Int      @default(60)
-  active                      Boolean  @default(true)
-  createdAt                   DateTime @default(now())
-  updatedAt                   DateTime @updatedAt
-  eventClaims                 ClubEventCourt[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  @@map("courts")
+  type           ResourceType               @relation(fields: [typeId], references: [id])
+  claims         SlotClaim[]
+  reservations   Reservation[]
+  pendingChanges ReservationPendingChange[]
+
+  @@index([typeId, active])
+  @@map("resources")
 }
 
-model Shower {
-  id                          String   @id @default(cuid())
-  name                        String
-  slotDurationMinutes         Int      @default(30)
-  operatingHoursStart         String   @default("07:00")
-  operatingHoursEnd           String   @default("22:00")
-  maxAdvanceDays              Int      @default(3)
-  maxBookingsPerMemberPerDay  Int      @default(1)
-  cancellationDeadlineMinutes Int      @default(30)
-  active                      Boolean  @default(true)
-  createdAt                   DateTime @default(now())
-  updatedAt                   DateTime @updatedAt
+// One row per physical claim of time on a resource. The no-overlap invariant
+// lives ONLY in the DB exclusion constraint (see migration):
+//   EXCLUDE USING gist ("resourceId" WITH =,
+//     tstzrange("startsAt", "endsAt", '[)') WITH &&) WHERE (status = 'active')
+// plus a partial unique index on "reservationId" WHERE kind = 'reservation'.
+model SlotClaim {
+  id            String    @id @default(cuid())
+  resourceId    String
+  startsAt      DateTime  @db.Timestamptz(3)
+  endsAt        DateTime  @db.Timestamptz(3)
+  kind          String // "reservation" | "event"
+  reservationId String?
+  clubEventId   String?
+  status        String    @default("active") // "active" | "released"
+  expiresAt     DateTime? @db.Timestamptz(3) // set only during checkout hold
+  localDate     String // venue-local "YYYY-MM-DD" of startsAt
 
-  @@map("showers")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resource    Resource     @relation(fields: [resourceId], references: [id])
+  reservation Reservation? @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  clubEvent   ClubEvent?   @relation(fields: [clubEventId], references: [id], onDelete: Cascade)
+
+  @@index([resourceId, status, startsAt])
+  @@index([clubEventId])
+  @@index([status, expiresAt])
+  @@index([localDate])
+  @@map("slot_claims")
 }
 
-model Booking {
-  id           String   @id @default(cuid())
-  facilityType String
-  facilityId   String
-  memberId     String
-  date         DateTime @db.Date
-  startTime    String
-  endTime      String
-  status       String   @default("confirmed")
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+model Reservation {
+  id                     String   @id @default(cuid())
+  reference              String   @unique @default(dbgenerated("('BK-'::text || lpad((nextval('reservation_reference_seq'::regclass))::text, 6, '0'::text))"))
+  resourceTypeId         String
+  resourceId             String // assigned server-side
+  organizerId            String
+  clubId                 String? // the club this booking is linked to (group activity); SET NULL on club deletion
+  seriesId               String?
+  startsAt               DateTime @db.Timestamptz(3)
+  endsAt                 DateTime @db.Timestamptz(3)
+  localDate              String // venue-local "YYYY-MM-DD" of startsAt
+  status                 String // "pending_payment" | "confirmed" | "cancelled" | "expired"
+  hourlyRateCentsSnapshot Int
+  amountPaidCents        Int      @default(0)
+  // The refund percent the cancellation actually applied (tier policy or
+  // 100 for admin/full refunds); relational so a charge that captures AFTER
+  // the cancel (pay-vs-drop TOCTOU) refunds at the same percent.
+  cancelRefundPercent    Int?
+  createdByAdminId       String?
 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  resourceType  ResourceType              @relation(fields: [resourceTypeId], references: [id])
+  resource      Resource                  @relation(fields: [resourceId], references: [id])
+  organizer     Member                    @relation("organizer", fields: [organizerId], references: [id])
+  club          Club?                     @relation(fields: [clubId], references: [id], onDelete: SetNull)
+  series        ReservationSeries?        @relation(fields: [seriesId], references: [id])
+  participants  ReservationParticipant[]
+  payments      ReservationPayment[]
+  claims        SlotClaim[]
+  pendingChange ReservationPendingChange?
+
+  @@index([organizerId, localDate])
+  @@index([organizerId, status, startsAt])
+  @@index([status, startsAt])
+  @@index([localDate, status])
+  @@index([clubId, startsAt])
+  @@map("reservations")
+}
+
+model ReservationParticipant {
+  id            String    @id @default(cuid())
+  reservationId String
+  memberId      String
+  role          String // "organizer" | "guest"
+  status        String // "confirmed" | "pending" | "declined" | "withdrawn"
+  invitedById   String?
+  viaClubId     String? // provenance of club-chip invites; SET NULL on club deletion
+  invitedAt     DateTime  @default(now())
+  respondedAt   DateTime?
+
+  reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  member      Member      @relation(fields: [memberId], references: [id])
+  viaClub     Club?       @relation("participantViaClub", fields: [viaClubId], references: [id], onDelete: SetNull)
+
+  @@unique([reservationId, memberId])
+  @@index([memberId, status])
+  @@map("reservation_participants")
+}
+
+model ReservationPayment {
+  id                    String    @id @default(cuid())
+  reservationId         String
+  kind                  String // "charge" | "refund"
+  // What a charge paid for: the base booking or a reschedule-grow delta.
+  // Decides the refund percent when an orphaned capture lands on a
+  // cancelled reservation (delta = 100%, base = the cancellation's tier).
+  purpose               String    @default("base") // "base" | "change_delta"
+  amountCents           Int // always positive; kind carries the direction
+  stripePaymentIntentId String?
+  stripeRefundId        String?   @unique
+  status                String // "pending" | "succeeded" | "failed"
+  // Financial freeze: a disputed charge cannot be refunded at Stripe, so a
+  // disputed charge row is excluded from refundable balance (allocateRefund)
+  // while still counting as captured money (netPaid). Set by the
+  // charge.dispute.created webhook.
+  disputedAt            DateTime?
+  createdAt             DateTime  @default(now())
+
+  reservation   Reservation               @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  pendingChange ReservationPendingChange?
+
+  @@index([reservationId])
+  @@map("reservation_payments")
+}
+
+// A requested reschedule-GROW that is waiting for its delta charge. The move
+// only takes physical effect when the delta PaymentIntent succeeds (confirm
+// applies it, the exclusion constraint arbitrating); until then the
+// reservation keeps its existing claim untouched, so a failed or abandoned
+// payment can never leave extra court time uncharged or strand the original
+// booking. The sweeper applies paid changes and drops unpaid ones at expiry.
+model ReservationPendingChange {
+  id              String   @id @default(cuid())
+  reservationId   String   @unique
+  resourceId      String // preferred landing resource, re-validated at apply
+  startsAt        DateTime @db.Timestamptz(3)
+  endsAt          DateTime @db.Timestamptz(3)
+  localDate       String
+  deltaCents      Int // always positive: shrink/equal changes apply immediately
+  chargePaymentId String   @unique
+  expiresAt       DateTime @db.Timestamptz(3)
+  createdAt       DateTime @default(now())
+
+  reservation Reservation        @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  charge      ReservationPayment @relation(fields: [chargePaymentId], references: [id], onDelete: Cascade)
+  resource    Resource           @relation(fields: [resourceId], references: [id])
+
+  @@index([expiresAt])
+  @@map("reservation_pending_changes")
+}
+
+// The Weekly badge: local wall time + weekday, materialized into concrete
+// reservations by cron inside the horizon (skip + notify on collision).
+// Creation is admin-only (plan OPEN decision 8), so createdByAdminId is
+// always known; materialized occurrences are comp reservations carrying it.
+model ReservationSeries {
+  id               String  @id @default(cuid())
+  organizerId      String
+  resourceTypeId   String
+  weekday          Int // 0 = Sunday .. 6 = Saturday, venue-local
+  startTimeLocal   String // "HH:MM" venue wall clock
+  durationMinutes  Int
+  active           Boolean @default(true)
+  createdByAdminId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organizer    Member                  @relation(fields: [organizerId], references: [id])
+  resourceType ResourceType            @relation(fields: [resourceTypeId], references: [id])
+  reservations Reservation[]
+  skips        ReservationSeriesSkip[]
+
+  @@index([organizerId, active])
+  @@map("reservation_series")
+}
+
+// One row per series occurrence the materializer could NOT create (slot
+// collision, daily limit, lapsed membership). The unique key makes the
+// skip-and-notify decision idempotent: the organizer is told exactly once
+// per missed occurrence, and later cron passes never re-attempt a date a
+// human already knows about (never silently shifted, per the plan).
+model ReservationSeriesSkip {
+  id        String   @id @default(cuid())
+  seriesId  String
+  localDate String // venue-local "YYYY-MM-DD" of the missed occurrence
+  reason    String // "slot_unavailable" | "daily_limit" | "membership_inactive"
+  createdAt DateTime @default(now())
+
+  series ReservationSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@unique([seriesId, localDate])
+  @@map("reservation_series_skips")
+}
+
+// ── Billing ──
+// billing_transactions is the member-facing money ledger: one row per Stripe
+// money movement (invoice payment, booking charge, refund), append-only,
+// written by the billing context from webhooks, the refund adapter and the
+// nightly reconcile sweep. Stripe is truth for money movement; this ledger is
+// truth for domain meaning (which booking, why the refund).
+// reservation_payments stays the bookings context's per-reservation
+// settlement record (refund allocation + state machine); it is NOT the
+// member-facing history.
+
+model BillingTransaction {
+  id               String   @id @default(cuid())
+  // Deliberately no FK relation: the ledger must survive member
+  // soft-deletion/anonymization (retention + chargeback windows) and nothing
+  // may cascade it away.
+  memberId         String
+  kind             String // "membership_fee" | "booking_fee" | "booking_refund" | "membership_refund" | "adjustment"
+  direction        String // "debit" | "credit"
+  amountCents      Int // always POSITIVE; direction carries the sign
+  taxCents         Int      @default(0)
+  currency         String   @default("usd")
+  status           String // "pending" | "succeeded" | "failed" | "canceled"
+  // Stripe's `created` for the underlying object, NOT our insert time: a
+  // 23:58 charge delivered by a 00:01 webhook must file into the right month.
+  occurredAt       DateTime @db.Timestamptz(3)
+  description      String
+  // The idempotency anchor: webhook, adapter and reconcile sweep all upsert
+  // on [stripeObjectType, stripeObjectId] and converge on one row.
+  stripeObjectType String // "invoice" | "charge" | "refund"
+  stripeObjectId   String
+  stripeChargeId   String?
+  receiptUrl       String?
+  reservationId    String?
+  membershipId     String?
+  stripeEventId    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([stripeObjectType, stripeObjectId])
+  @@index([memberId, occurredAt])
+  @@map("billing_transactions")
+}
+
+// Local mirror of the member's Stripe payment methods so the booking sheet
+// and billing screen render brand+last4 instantly. Fed by payment_method.*
+// webhooks and the set-default endpoint; Stripe stays the source of truth.
+model PaymentMethod {
+  id                    String  @id @default(cuid())
+  memberId              String
+  stripePaymentMethodId String  @unique
+  brand                 String
+  last4                 String
+  expMonth              Int
+  expYear               Int
+  isDefault             Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([memberId])
+  @@map("payment_methods")
+}
+
+// Webhook dedupe: a Stripe event id is recorded once processing succeeded;
+// redeliveries of a recorded event are acknowledged without reprocessing.
+model ProcessedWebhookEvent {
+  eventId     String   @id
+  type        String
+  processedAt DateTime @default(now())
+
+  @@map("processed_webhook_events")
+}
+
+// ── Clubs (member-created social clubs, NOT the facility) ──
+// One owner per club, enforced in the clubs service (single-owner model).
+// Invitations REQUIRE acceptance (OPEN decision 4): membership rows exist
+// only for members who accepted an invite or joined via a link; direct-add
+// is rejected. Invite-link tokens are stored sha256-hashed like auth_tokens.
+
+model Club {
+  id            String  @id @default(cuid())
+  name          String
+  description   String?
+  coverImageUrl String?
+  // Provenance only, no FK: the creator may leave (or be deleted) while the
+  // club lives on under a transferred owner.
+  createdById   String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members            ClubMember[]
+  invitations        ClubInvitation[]
+  inviteLinks        ClubInviteLink[]
+  reservations       Reservation[]
+  participantInvites ReservationParticipant[] @relation("participantViaClub")
+
+  @@map("clubs")
+}
+
+model ClubMember {
+  id       String   @id @default(cuid())
+  clubId   String
+  memberId String
+  role     String // "owner" | "member"
+  joinedAt DateTime @default(now())
+
+  club   Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
   member Member @relation(fields: [memberId], references: [id])
 
-  @@index([facilityType, facilityId, date, status])
-  @@index([memberId, date])
-  @@map("bookings")
+  @@unique([clubId, memberId])
+  @@index([memberId]) // the "my clubs" read
+  @@map("club_members")
 }
+
+// Append-mostly invitation history: a re-invite after decline/revoke is a NEW
+// row. At most one PENDING row per (clubId, invitee), enforced by a partial
+// unique index in the migration (Prisma cannot express partial uniques):
+//   CREATE UNIQUE INDEX "club_invitations_active_invite_key"
+//     ON "club_invitations"("clubId", "inviteeMemberId") WHERE status = 'pending'
+model ClubInvitation {
+  id              String    @id @default(cuid())
+  clubId          String
+  // The inviting member; plain column like ReservationParticipant.invitedById.
+  inviterId       String
+  inviteeMemberId String
+  status          String    @default("pending") // "pending" | "accepted" | "declined" | "revoked"
+  respondedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  club    Club   @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  invitee Member @relation("clubInvitee", fields: [inviteeMemberId], references: [id])
+
+  @@index([clubId, status])
+  @@index([inviteeMemberId, status]) // "my pending invites"
+  @@index([inviterId, status]) // account-deletion seam: withdraw invites they sent
+  @@map("club_invitations")
+}
+
+// Share links / QR codes. The raw token leaves the API exactly once (at
+// creation); only its sha256 is stored, like auth_tokens.
+model ClubInviteLink {
+  id          String    @id @default(cuid())
+  clubId      String
+  tokenHash   String    @unique // sha256 of the raw token
+  createdById String // member id
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  maxUses     Int?
+  useCount    Int       @default(0)
+
+  createdAt DateTime @default(now())
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, revokedAt])
+  @@map("club_invite_links")
+}
+
+// ── Club events ──
 
 model ClubEvent {
   id        String   @id @default(cuid())
@@ -217,25 +690,34 @@ model ClubEvent {
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  courts    ClubEventCourt[]
+  claims    SlotClaim[]
 
   @@index([active, startsAt])
   @@index([startsAt])
   @@map("club_events")
 }
 
+// One row per managed image. storagePath is the canonical key: public
+// assets store their browser URL ("/uploads/<dir>/<name>"); private assets
+// store a bare "private/<dir>/<name>" key that no route serves (a field
+// named publicPath WILL eventually be serialized by someone, hence the
+// rename). contentType/sizeBytes are always the PLAINTEXT values;
+// encryption records the at-rest scheme of the stored object; purgedAt is
+// the retention proof that the object is confirmed gone from storage.
 model ManagedMediaAsset {
   id               String    @id @default(cuid())
-  publicPath       String    @unique
+  storagePath      String    @unique
   usage            String
   status           String    @default("pending")
   contentType      String
   sizeBytes        Int
   originalFilename String
+  encryption       String?
   ownerType        String?
   ownerId          String?
   attachedAt       DateTime?
   discardedAt      DateTime?
+  purgedAt         DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -244,16 +726,143 @@ model ManagedMediaAsset {
   @@map("managed_media_assets")
 }
 
-model ClubEventCourt {
-  id        String   @id @default(cuid())
-  eventId   String
-  courtId   String
-  createdAt DateTime @default(now())
+// ── Account surface (package E) ──
 
-  event ClubEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  court Court     @relation(fields: [courtId], references: [id], onDelete: Restrict)
+// Notification toggles, owned by the communications BC (package F's outbox
+// consumers read them to decide delivery). Absent row = all defaults.
+model NotificationPreference {
+  memberId           String   @id
+  pushNotifications  Boolean  @default(true)
+  emailNotifications Boolean  @default(true)
+  bookingReminders   Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-  @@unique([eventId, courtId])
-  @@index([courtId])
-  @@map("club_event_courts")
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@map("notification_preferences")
 }
+
+// Push tokens (package F delivery targets). token is globally unique: a
+// device that changes hands re-registers and the row moves to the new
+// member. Deleted at account-deletion quiesce (a push channel must die
+// with the sessions).
+model Device {
+  id         String   @id @default(cuid())
+  memberId   String
+  token      String   @unique
+  platform   String // "ios" | "android"
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@index([memberId])
+  @@map("devices")
+}
+
+// ── Notification delivery (package F) ──
+
+// The delivered-notifications ledger: one row per (outbox event, recipient,
+// channel) delivery attempt, owned by the communications BC. The unique key
+// is the idempotency guard the outbox consumer claims BEFORE sending, so a
+// redelivered event row (dispatcher retry, concurrent dispatchers, a batch
+// that failed halfway) can never double-send anything already marked sent,
+// while a claim that never reached "sent" is retried, not dropped.
+// recipient is a member id, or the literal "staff" for staff alerts.
+// Deliberately no FK: delivery bookkeeping must never constrain (or be
+// cascaded away by) domain rows.
+model DeliveredNotification {
+  id        String    @id @default(cuid())
+  eventSeq  Int
+  recipient String
+  channel   String // "email" | "push"
+  status    String    @default("pending") // "pending" | "sent"
+  attempts  Int       @default(1)
+  lastError String?
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  @@unique([eventSeq, recipient, channel])
+  @@map("delivered_notifications")
+}
+
+// Reminder-sent markers for the booking-reminder cron: at most one reminder
+// per (reservation, member), claimed before sending exactly like the
+// delivery ledger. A marker that never reached "sent" (every channel
+// failed) is retried on the next cron pass; "sent" means at least one
+// channel delivered. No FK for the same reason as above.
+model BookingReminder {
+  id            String    @id @default(cuid())
+  reservationId String
+  memberId      String
+  status        String    @default("pending") // "pending" | "sent"
+  attempts      Int       @default(1)
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  sentAt        DateTime?
+
+  @@unique([reservationId, memberId])
+  @@map("booking_reminders")
+}
+
+// Government-ID verification, owned by the members BC. One row per member
+// carrying the CURRENT state; imageAssetRef is a PRIVATE media storage path
+// (never publicly served, encrypted at rest, deleted after review and on
+// account deletion).
+model IdVerification {
+  id                String    @id @default(cuid())
+  memberId          String    @unique
+  status            String    @default("not_submitted") // "not_submitted" | "submitted" | "verified" | "rejected"
+  imageAssetRef     String?
+  skippedAt         DateTime?
+  submittedAt       DateTime?
+  reviewedAt        DateTime?
+  reviewedByAdminId String?
+  note              String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+
+  @@index([status, submittedAt])
+  @@map("id_verifications")
+}
+
+// Resumable account-deletion saga (account BC). One live request per user;
+// steps is a map of step name -> { completedAt, attempts, lastError,
+// result } so a mid-pipeline Stripe failure retries exactly where it
+// stopped. lockedBy/lockedUntil lease a run so a user retry and the resume
+// cron can never drive the same request concurrently; every write is
+// compare-and-set on lockedBy and each completed step renews the lease.
+// Snapshot fields: memberNumberAtRequest is the only human-readable
+// provenance once the member row is scrubbed; emailAtRequest exists for
+// the erase_credentials step (magic links key on email) and is scrubbed —
+// along with ip — when the request completes, so no plaintext PII of an
+// erased account survives on the retained row.
+model DeletionRequest {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  memberId              String? // null: account never finished onboarding
+  requestedByUserId     String
+  status                String    @default("in_progress") // "in_progress" | "failed" | "blocked" | "completed"
+  steps                 Json      @default("{}")
+  stepsVersion          Int       @default(1)
+  attempts              Int       @default(0)
+  nextAttemptAt         DateTime? @db.Timestamptz(3)
+  lockedBy              String?
+  lockedUntil           DateTime? @db.Timestamptz(3)
+  blockedReasons        String[]  @default([])
+  stepUpMethod          String // "password" | "oauth" | "reauth_email"
+  client                String?
+  ip                    String?
+  emailAtRequest        String
+  memberNumberAtRequest String?
+  requestedAt           DateTime  @default(now())
+  completedAt           DateTime?
+  updatedAt             DateTime  @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@map("deletion_requests")
+}
+

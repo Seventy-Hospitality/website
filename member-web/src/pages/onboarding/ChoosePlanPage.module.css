@@ -1,0 +1,162 @@
+/* Figma onboarding/choose-membership (68:1559). */
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+/* Selectable plan card: overlay surface with an active border + check
+   circle when selected. */
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2xs);
+  padding: var(--space-lg);
+  text-align: left;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.card:hover {
+  border-color: var(--color-border-active);
+}
+
+.cardSelected {
+  background: var(--color-surface-overlay);
+  border-color: var(--color-border-active);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.cardName {
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: 700;
+  letter-spacing: var(--text-h2-spacing);
+  color: var(--color-text);
+}
+
+.checkCircle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+}
+
+.checkCircle > svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.priceRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  margin-top: var(--space-xs);
+}
+
+.price {
+  font-family: var(--font-display);
+  font-size: var(--text-h1-size);
+  line-height: var(--text-h1-line);
+  font-weight: var(--text-h1-weight);
+  letter-spacing: var(--text-h1-spacing);
+  color: var(--color-accent);
+}
+
+.priceSuffix {
+  color: var(--color-text-muted);
+}
+
+.priceCaption {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.features {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+.feature {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text);
+}
+
+.featureIcon {
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-accent);
+}
+
+/* Invite-only tier: de-emphasized, not interactive. */
+.lockedCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-lg);
+  background: var(--color-surface-card);
+  border-radius: var(--radius-lg);
+}
+
+.inviteBadge {
+  color: var(--color-success);
+}
+
+.lockedSummary {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.signOut {
+  align-self: center;
+  border: none;
+  background: none;
+  padding: var(--space-2xs) var(--space-xs);
+  border-radius: var(--radius-sm);
+  /* text/muted, not text/subtle: the quietest token that still meets
+     WCAG AA (4.5:1) for 14px text on bg/default. */
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  cursor: pointer;
+}
+
+.signOut:hover {
+  color: var(--color-text);
+  text-decoration: underline;
+}
+
+.signOut:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}

@@ -1,3 +1,5 @@
+import { minutesToTimeLabel } from '@/lib/kernel';
+
 export class SlotUnavailableError extends Error {
   constructor() {
     super('This time slot is already booked');
@@ -6,58 +8,74 @@ export class SlotUnavailableError extends Error {
 }
 
 export class OutsideOperatingHoursError extends Error {
-  constructor(start: string, end: string) {
-    super(`Booking must be within operating hours (${start}–${end})`);
+  constructor(opStartMinutes: number, opEndMinutes: number) {
+    super(
+      `Booking must be within operating hours (${minutesToTimeLabel(opStartMinutes)}–${minutesToTimeLabel(opEndMinutes)})`,
+    );
     this.name = 'OutsideOperatingHoursError';
   }
 }
 
-export class InvalidSlotDurationError extends Error {
-  constructor(expected: number) {
-    super(`Slot duration must be ${expected} minutes`);
-    this.name = 'InvalidSlotDurationError';
+export class InvalidSlotSelectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidSlotSelectionError';
   }
 }
 
-export class MaxBookingsExceededError extends Error {
+export class MaxReservationsExceededError extends Error {
   constructor(max: number) {
-    super(`Maximum of ${max} bookings per day exceeded`);
-    this.name = 'MaxBookingsExceededError';
+    super(`Maximum of ${max} reservations per day exceeded`);
+    this.name = 'MaxReservationsExceededError';
   }
 }
 
-export class BookingTooFarInAdvanceError extends Error {
+export class ReservationTooFarInAdvanceError extends Error {
   constructor(maxDays: number) {
     super(`Cannot book more than ${maxDays} days in advance`);
-    this.name = 'BookingTooFarInAdvanceError';
+    this.name = 'ReservationTooFarInAdvanceError';
   }
 }
 
-export class BookingInPastError extends Error {
+export class ReservationInPastError extends Error {
   constructor() {
     super('Cannot book a slot in the past');
-    this.name = 'BookingInPastError';
+    this.name = 'ReservationInPastError';
   }
 }
 
-export class CancellationDeadlinePassedError extends Error {
-  constructor(minutes: number) {
-    super(`Bookings must be cancelled at least ${minutes} minutes before start`);
-    this.name = 'CancellationDeadlinePassedError';
-  }
-}
-
-export class BookingNotFoundError extends Error {
+export class ReservationNotFoundError extends Error {
   constructor(id: string) {
-    super(`Booking not found: ${id}`);
-    this.name = 'BookingNotFoundError';
+    super(`Reservation not found: ${id}`);
+    this.name = 'ReservationNotFoundError';
   }
 }
 
-export class FacilityNotFoundError extends Error {
-  constructor(type: string, id: string) {
-    super(`${type} not found: ${id}`);
-    this.name = 'FacilityNotFoundError';
+export class ResourceTypeNotFoundError extends Error {
+  constructor(code: string) {
+    super(`Resource type not found: ${code}`);
+    this.name = 'ResourceTypeNotFoundError';
+  }
+}
+
+export class ResourceNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Resource not found: ${id}`);
+    this.name = 'ResourceNotFoundError';
+  }
+}
+
+export class NotReservationOrganizerError extends Error {
+  constructor() {
+    super('Only the reservation organizer can do this');
+    this.name = 'NotReservationOrganizerError';
+  }
+}
+
+export class TierRequiredError extends Error {
+  constructor(minTier: string) {
+    super(`A ${minTier.toUpperCase()} membership is required for this facility`);
+    this.name = 'TierRequiredError';
   }
 }
 
@@ -65,5 +83,130 @@ export class InactiveMembershipError extends Error {
   constructor() {
     super('An active membership is required to make bookings');
     this.name = 'InactiveMembershipError';
+  }
+}
+
+export class InvalidReservationStatusError extends Error {
+  constructor(status: string, expected: string) {
+    super(`Reservation is ${status}; expected ${expected}`);
+    this.name = 'InvalidReservationStatusError';
+  }
+}
+
+export class ReservationAlreadyStartedError extends Error {
+  constructor() {
+    super('This reservation has already started');
+    this.name = 'ReservationAlreadyStartedError';
+  }
+}
+
+export class InvalidParticipantTransitionError extends Error {
+  constructor(current: string, response: string) {
+    super(`Cannot ${response} an invitation that is ${current}`);
+    this.name = 'InvalidParticipantTransitionError';
+  }
+}
+
+export class OrganizerCannotRespondError extends Error {
+  constructor() {
+    super('The organizer cannot respond to their own reservation');
+    this.name = 'OrganizerCannotRespondError';
+  }
+}
+
+export class ParticipantNotFoundError extends Error {
+  constructor() {
+    super('No invitation found for this member');
+    this.name = 'ParticipantNotFoundError';
+  }
+}
+
+export class CannotRemoveOrganizerError extends Error {
+  constructor() {
+    super('The organizer cannot be removed from a reservation');
+    this.name = 'CannotRemoveOrganizerError';
+  }
+}
+
+export class NotInvitePermittedError extends Error {
+  constructor() {
+    super('Only the organizer and confirmed participants can invite');
+    this.name = 'NotInvitePermittedError';
+  }
+}
+
+export class InviteeNotFoundError extends Error {
+  constructor(ids: string[]) {
+    super(`Member not found: ${ids.join(', ')}`);
+    this.name = 'InviteeNotFoundError';
+  }
+}
+
+/**
+ * A club-chip invite naming a club the inviter does not belong to (or that
+ * does not exist: identical answer, no probing). 404-shaped on the wire.
+ */
+export class ClubInviteNotAllowedError extends Error {
+  constructor() {
+    super('Club not found');
+    this.name = 'ClubInviteNotAllowedError';
+  }
+}
+
+export class PaymentNotCompletedError extends Error {
+  constructor() {
+    super('Payment has not completed for this reservation');
+    this.name = 'PaymentNotCompletedError';
+  }
+}
+
+export class HoldExpiredError extends Error {
+  constructor() {
+    super('The hold on this reservation has expired');
+    this.name = 'HoldExpiredError';
+  }
+}
+
+// Thrown by the shared allocator in the kernel; re-exported here so the
+// bookings barrel keeps serving it.
+export { InsufficientRefundableBalanceError } from '@/lib/kernel';
+
+export class ReservationChangedError extends Error {
+  constructor() {
+    super('This reservation changed while the request was in flight; get a fresh quote and retry');
+    this.name = 'ReservationChangedError';
+  }
+}
+
+export class SeriesNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Reservation series not found: ${id}`);
+    this.name = 'SeriesNotFoundError';
+  }
+}
+
+/**
+ * The (seriesId, localDate) partial unique fired: another materializer pass
+ * created this occurrence between our existence check and the insert. Not a
+ * failure; the occurrence exists.
+ */
+export class DuplicateSeriesOccurrenceError extends Error {
+  constructor(seriesId: string, localDate: string) {
+    super(`Series ${seriesId} already has a reservation on ${localDate}`);
+    this.name = 'DuplicateSeriesOccurrenceError';
+  }
+}
+
+/**
+ * The series was deactivated (cancelled) between the materializer's active
+ * snapshot and the occurrence insert. The insert-time re-check under the
+ * series row lock makes cancel-vs-materialize serializable: no occurrence
+ * can be created for a cancelled series after cancel's future-occurrence
+ * sweep ran. Not a failure; there is simply nothing left to materialize.
+ */
+export class SeriesInactiveError extends Error {
+  constructor(seriesId: string) {
+    super(`Reservation series ${seriesId} is no longer active`);
+    this.name = 'SeriesInactiveError';
   }
 }

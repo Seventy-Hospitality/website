@@ -6,6 +6,10 @@ import path from 'path';
 const localOctahedron = path.resolve(__dirname, '../../octahedron/src');
 
 export default defineConfig({
+  // The admin app is served under /admin (the member app owns /); assets and
+  // the dev server both live under this base. Keep in sync with the
+  // BrowserRouter basename in src/App.tsx.
+  base: '/admin/',
   plugins: [react()],
   resolve: {
     alias: {

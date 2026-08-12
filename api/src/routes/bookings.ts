@@ -1,202 +1,310 @@
-import type { FastifyInstance } from 'fastify';
-import { bookingService } from '@/lib/container';
-import { createBookingSchema, availabilityQuerySchema, createFacilitySchema, updateFacilitySchema } from '@/src/lib/validation';
-import { success, error } from '@/src/lib/responses';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
-  SlotUnavailableError,
-  OutsideOperatingHoursError,
-  MaxBookingsExceededError,
-  BookingTooFarInAdvanceError,
-  BookingInPastError,
-  CancellationDeadlinePassedError,
-  BookingNotFoundError,
-  FacilityNotFoundError,
-  InactiveMembershipError,
-} from '@/lib/contexts/bookings';
+  reservationService,
+  resourceRepo,
+  resourceTypeRepo,
+  VENUE_TIMEZONE,
+} from '@/lib/container';
+import type { Resource, ResourceType } from '@/lib/contexts/bookings';
+import { ResourceTypeNotFoundError } from '@/lib/contexts/bookings';
+import { minutesToTimeLabel, timeLabelToMinutes } from '@/lib/kernel';
+import { handleReservationError, serializeLegacyBooking } from '@/src/lib/reservations';
+import { error, success } from '@/src/lib/responses';
+import {
+  adminReservationsQuerySchema,
+  availabilityQuerySchema,
+  createBookingSchema,
+  createFacilitySchema,
+  createResourceSchema,
+  createResourceTypeSchema,
+  updateFacilitySchema,
+  updateResourceSchema,
+  updateResourceTypeSchema,
+} from '@/src/lib/validation';
 
-export async function bookingRoutes(app: FastifyInstance) {
-  // ── Courts ──
+// The legacy admin surface maps courts and showers onto the resource model:
+// "courts" are the court-class resource types, "showers" the shower type.
+// Facility config lives on the TYPE now; legacy per-facility config edits are
+// applied to the resource's type.
+const COURT_TYPE_CODES = ['badminton_court', 'tennis_court'];
+const SHOWER_TYPE_CODES = ['shower'];
+const LEGACY_CREATE_TYPE: Record<string, string> = { court: 'badminton_court', shower: 'shower' };
 
-  app.get('/courts', async (_req, reply) => {
-    const courts = await bookingService.listCourts();
-    return success(reply, courts);
-  });
-
-  app.get<{ Params: { id: string } }>('/courts/:id/availability', async (req, reply) => {
-    const parsed = availabilityQuerySchema.safeParse(req.query);
-    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-
-    try {
-      const slots = await bookingService.getCourtAvailability(req.params.id, parsed.data.date);
-      return success(reply, slots);
-    } catch (e) {
-      if (e instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
-      throw e;
-    }
-  });
-
-  app.post<{ Params: { id: string } }>('/courts/:id/bookings', async (req, reply) => {
-    const parsed = createBookingSchema.safeParse(req.body);
-    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-
-    try {
-      const booking = await bookingService.bookCourt(
-        req.params.id,
-        parsed.data.date,
-        parsed.data.startTime,
-        parsed.data.memberId,
-      );
-      return success(reply, booking, 201);
-    } catch (e) {
-      return handleBookingError(reply, e);
-    }
-  });
-
-  app.delete<{ Params: { id: string; bookingId: string } }>(
-    '/courts/:id/bookings/:bookingId',
-    async (req, reply) => {
-      try {
-        await bookingService.adminCancel(req.params.bookingId);
-        return success(reply, { cancelled: true });
-      } catch (e) {
-        return handleBookingError(reply, e);
-      }
-    },
-  );
-
-  // ── Showers ──
-
-  app.get('/showers', async (_req, reply) => {
-    const showers = await bookingService.listShowers();
-    return success(reply, showers);
-  });
-
-  app.get<{ Params: { id: string } }>('/showers/:id/availability', async (req, reply) => {
-    const parsed = availabilityQuerySchema.safeParse(req.query);
-    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-
-    try {
-      const slots = await bookingService.getShowerAvailability(req.params.id, parsed.data.date);
-      return success(reply, slots);
-    } catch (e) {
-      if (e instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
-      throw e;
-    }
-  });
-
-  app.post<{ Params: { id: string } }>('/showers/:id/bookings', async (req, reply) => {
-    const parsed = createBookingSchema.safeParse(req.body);
-    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-
-    try {
-      const booking = await bookingService.bookShower(
-        req.params.id,
-        parsed.data.date,
-        parsed.data.startTime,
-        parsed.data.memberId,
-      );
-      return success(reply, booking, 201);
-    } catch (e) {
-      return handleBookingError(reply, e);
-    }
-  });
-
-  app.delete<{ Params: { id: string; bookingId: string } }>(
-    '/showers/:id/bookings/:bookingId',
-    async (req, reply) => {
-      try {
-        await bookingService.adminCancel(req.params.bookingId);
-        return success(reply, { cancelled: true });
-      } catch (e) {
-        return handleBookingError(reply, e);
-      }
-    },
-  );
-
-  // ── All Bookings (admin view) ──
-
-  app.get('/bookings', async (req, reply) => {
-    const query = req.query as Record<string, string>;
-    const date = query.date;
-    const bookings = await bookingService.listBookings(date);
-    return success(reply, bookings);
-  });
-
-  // ── Booking counts ──
-
-  app.get<{ Params: { type: string; id: string } }>('/facilities/:type/:id/booking-count', async (req, reply) => {
-    const { type, id } = req.params;
-    if (type !== 'court' && type !== 'shower') return error(reply, 'VALIDATION_ERROR', 'Invalid facility type');
-    const count = await bookingService.countUpcomingBookings(type, id);
-    return success(reply, { count });
-  });
-
-  // ── Court Admin ──
-
-  app.get('/courts/all', async (_req, reply) => {
-    const courts = await bookingService.listAllCourts();
-    return success(reply, courts);
-  });
-
-  app.post('/courts', async (req, reply) => {
-    const parsed = createFacilitySchema.safeParse(req.body);
-    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-
-    const court = await bookingService.createCourt(parsed.data);
-    return success(reply, court, 201);
-  });
-
-  app.patch<{ Params: { id: string } }>('/courts/:id', async (req, reply) => {
-    const parsed = updateFacilitySchema.safeParse(req.body);
-    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-
-    try {
-      const court = await bookingService.updateCourt(req.params.id, parsed.data);
-      return success(reply, court);
-    } catch (e) {
-      if (e instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
-      throw e;
-    }
-  });
-
-  // ── Shower Admin ──
-
-  app.get('/showers/all', async (_req, reply) => {
-    const showers = await bookingService.listAllShowers();
-    return success(reply, showers);
-  });
-
-  app.post('/showers', async (req, reply) => {
-    const parsed = createFacilitySchema.safeParse(req.body);
-    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-
-    const shower = await bookingService.createShower(parsed.data);
-    return success(reply, shower, 201);
-  });
-
-  app.patch<{ Params: { id: string } }>('/showers/:id', async (req, reply) => {
-    const parsed = updateFacilitySchema.safeParse(req.body);
-    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
-
-    try {
-      const shower = await bookingService.updateShower(req.params.id, parsed.data);
-      return success(reply, shower);
-    } catch (e) {
-      if (e instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
-      throw e;
-    }
-  });
+function serializeLegacyFacility(resource: Resource, type: ResourceType) {
+  return {
+    id: resource.id,
+    name: resource.name,
+    active: resource.active,
+    typeCode: type.code,
+    slotDurationMinutes: type.slotDurationMinutes,
+    operatingHoursStart: minutesToTimeLabel(type.opStartMinutes),
+    operatingHoursEnd: minutesToTimeLabel(type.opEndMinutes),
+    maxAdvanceDays: type.maxAdvanceDays,
+    maxBookingsPerMemberPerDay: type.maxReservationsPerMemberPerDay,
+    cancellationDeadlineMinutes: type.cancellationDeadlineMinutes,
+    hourlyRateCents: type.hourlyRateCents,
+    createdAt: resource.createdAt,
+    updatedAt: resource.updatedAt,
+  };
 }
 
-function handleBookingError(reply: any, e: unknown) {
-  if (e instanceof FacilityNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
-  if (e instanceof BookingNotFoundError) return error(reply, 'NOT_FOUND', e.message, 404);
-  if (e instanceof SlotUnavailableError) return error(reply, 'SLOT_UNAVAILABLE', e.message, 409);
-  if (e instanceof OutsideOperatingHoursError) return error(reply, 'OUTSIDE_HOURS', e.message, 422);
-  if (e instanceof MaxBookingsExceededError) return error(reply, 'MAX_BOOKINGS', e.message, 422);
-  if (e instanceof BookingTooFarInAdvanceError) return error(reply, 'TOO_FAR_ADVANCE', e.message, 422);
-  if (e instanceof BookingInPastError) return error(reply, 'BOOKING_IN_PAST', e.message, 422);
-  if (e instanceof CancellationDeadlinePassedError) return error(reply, 'DEADLINE_PASSED', e.message, 422);
-  if (e instanceof InactiveMembershipError) return error(reply, 'INACTIVE_MEMBERSHIP', e.message, 403);
-  throw e;
+async function listLegacyFacilities(codes: string[], includeInactive: boolean) {
+  const types = (await resourceTypeRepo.listAll()).filter((type) => codes.includes(type.code));
+  const typeById = new Map(types.map((type) => [type.id, type]));
+  const resources = await resourceRepo.listByTypeIds(types.map((type) => type.id));
+  return resources
+    .filter((resource) => includeInactive || resource.active)
+    .map((resource) => serializeLegacyFacility(resource, typeById.get(resource.typeId)!));
+}
+
+function legacyConfigToTypeUpdate(data: {
+  slotDurationMinutes?: number;
+  operatingHoursStart?: string;
+  operatingHoursEnd?: string;
+  maxAdvanceDays?: number;
+  maxBookingsPerMemberPerDay?: number;
+  cancellationDeadlineMinutes?: number;
+}) {
+  return {
+    ...(data.slotDurationMinutes !== undefined ? { slotDurationMinutes: data.slotDurationMinutes } : {}),
+    ...(data.operatingHoursStart !== undefined
+      ? { opStartMinutes: timeLabelToMinutes(data.operatingHoursStart) }
+      : {}),
+    ...(data.operatingHoursEnd !== undefined
+      ? { opEndMinutes: timeLabelToMinutes(data.operatingHoursEnd) }
+      : {}),
+    ...(data.maxAdvanceDays !== undefined ? { maxAdvanceDays: data.maxAdvanceDays } : {}),
+    ...(data.maxBookingsPerMemberPerDay !== undefined
+      ? { maxReservationsPerMemberPerDay: data.maxBookingsPerMemberPerDay }
+      : {}),
+    ...(data.cancellationDeadlineMinutes !== undefined
+      ? { cancellationDeadlineMinutes: data.cancellationDeadlineMinutes }
+      : {}),
+  };
+}
+
+function adminActor(req: FastifyRequest): string {
+  return req.principal!.userId;
+}
+
+export async function bookingRoutes(app: FastifyInstance) {
+  // ── Resource types (admin management; the member catalog is GET /api/resource-types) ──
+
+  app.get('/resource-types/all', { config: { policy: 'admin' } }, async (_req, reply) => {
+    const types = await resourceTypeRepo.listAll();
+    return success(reply, types);
+  });
+
+  app.post('/resource-types', { config: { policy: 'admin' } }, async (req, reply) => {
+    const parsed = createResourceTypeSchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    const existing = await resourceTypeRepo.getByCode(parsed.data.code);
+    if (existing) return error(reply, 'DUPLICATE_CODE', `Resource type ${parsed.data.code} already exists`, 409);
+
+    const type = await resourceTypeRepo.create(parsed.data);
+    return success(reply, type, 201);
+  });
+
+  app.patch<{ Params: { id: string } }>('/resource-types/:id', { config: { policy: 'admin' } }, async (req, reply) => {
+    const parsed = updateResourceTypeSchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    const existing = await resourceTypeRepo.getById(req.params.id);
+    if (!existing) return error(reply, 'NOT_FOUND', `Resource type not found: ${req.params.id}`, 404);
+
+    const type = await resourceTypeRepo.update(req.params.id, parsed.data);
+    return success(reply, type);
+  });
+
+  // ── Resources (admin management) ──
+
+  app.get('/resources', { config: { policy: 'admin' } }, async (_req, reply) => {
+    const resources = await resourceRepo.listAll();
+    return success(reply, resources);
+  });
+
+  app.post('/resources', { config: { policy: 'admin' } }, async (req, reply) => {
+    const parsed = createResourceSchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    const type = await resourceTypeRepo.getById(parsed.data.typeId);
+    if (!type) return error(reply, 'NOT_FOUND', `Resource type not found: ${parsed.data.typeId}`, 404);
+
+    const resource = await resourceRepo.create(parsed.data);
+    return success(reply, resource, 201);
+  });
+
+  app.patch<{ Params: { id: string } }>('/resources/:id', { config: { policy: 'admin' } }, async (req, reply) => {
+    const parsed = updateResourceSchema.safeParse(req.body);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    const existing = await resourceRepo.getById(req.params.id);
+    if (!existing) return error(reply, 'NOT_FOUND', `Resource not found: ${req.params.id}`, 404);
+
+    const resource = await resourceRepo.update(req.params.id, parsed.data);
+    return success(reply, resource);
+  });
+
+  // ── Legacy facility surface (admin web compat) ──
+
+  app.get('/courts', { config: { policy: 'admin' } }, async (_req, reply) => {
+    return success(reply, await listLegacyFacilities(COURT_TYPE_CODES, false));
+  });
+
+  app.get('/courts/all', { config: { policy: 'admin' } }, async (_req, reply) => {
+    return success(reply, await listLegacyFacilities(COURT_TYPE_CODES, true));
+  });
+
+  app.get('/showers', { config: { policy: 'admin' } }, async (_req, reply) => {
+    return success(reply, await listLegacyFacilities(SHOWER_TYPE_CODES, false));
+  });
+
+  app.get('/showers/all', { config: { policy: 'admin' } }, async (_req, reply) => {
+    return success(reply, await listLegacyFacilities(SHOWER_TYPE_CODES, true));
+  });
+
+  for (const [facility, codes] of [
+    ['courts', COURT_TYPE_CODES],
+    ['showers', SHOWER_TYPE_CODES],
+  ] as const) {
+    // Create a facility = create a resource under the class's default type;
+    // any legacy config fields update the type (config is type-level now).
+    app.post(`/${facility}`, { config: { policy: 'admin' } }, async (req, reply) => {
+      const parsed = createFacilitySchema.safeParse(req.body);
+      if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+      const typeCode = LEGACY_CREATE_TYPE[facility === 'courts' ? 'court' : 'shower'];
+      const type = await resourceTypeRepo.getByCode(typeCode);
+      if (!type) return handleReservationError(reply, new ResourceTypeNotFoundError(typeCode));
+
+      const configUpdate = legacyConfigToTypeUpdate(parsed.data);
+      const updatedType = Object.keys(configUpdate).length > 0
+        ? await resourceTypeRepo.update(type.id, configUpdate)
+        : type;
+
+      const resource = await resourceRepo.create({ typeId: type.id, name: parsed.data.name });
+      return success(reply, serializeLegacyFacility(resource, updatedType), 201);
+    });
+
+    app.patch<{ Params: { id: string } }>(`/${facility}/:id`, { config: { policy: 'admin' } }, async (req, reply) => {
+      const parsed = updateFacilitySchema.safeParse(req.body);
+      if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+      const existing = await resourceRepo.getById(req.params.id);
+      if (!existing) return error(reply, 'NOT_FOUND', `Resource not found: ${req.params.id}`, 404);
+
+      let type = (await resourceTypeRepo.getById(existing.typeId))!;
+      if (!codes.includes(type.code)) {
+        return error(reply, 'NOT_FOUND', `Resource not found: ${req.params.id}`, 404);
+      }
+
+      const configUpdate = legacyConfigToTypeUpdate(parsed.data);
+      if (Object.keys(configUpdate).length > 0) {
+        type = await resourceTypeRepo.update(type.id, configUpdate);
+      }
+
+      const resource = await resourceRepo.update(req.params.id, {
+        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.active !== undefined ? { active: parsed.data.active } : {}),
+      });
+      return success(reply, serializeLegacyFacility(resource, type));
+    });
+
+    app.get<{ Params: { id: string } }>(
+      `/${facility}/:id/availability`,
+      { config: { policy: 'admin' } },
+      async (req, reply) => {
+        const parsed = availabilityQuerySchema.safeParse(req.query);
+        if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+        try {
+          const slots = await reservationService.getResourceAvailability(req.params.id, parsed.data.date);
+          return success(reply, slots);
+        } catch (err) {
+          return handleReservationError(reply, err);
+        }
+      },
+    );
+
+    // Admin-created reservation: organizer is the target member,
+    // createdByAdminId set, payment comped.
+    app.post<{ Params: { id: string } }>(
+      `/${facility}/:id/bookings`,
+      { config: { policy: 'admin' } },
+      async (req, reply) => {
+        const parsed = createBookingSchema.safeParse(req.body);
+        if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+        const resource = await resourceRepo.getById(req.params.id);
+        if (!resource) return error(reply, 'NOT_FOUND', `Resource not found: ${req.params.id}`, 404);
+        const type = (await resourceTypeRepo.getById(resource.typeId))!;
+
+        try {
+          const result = await reservationService.create({
+            typeCode: type.code,
+            date: parsed.data.date,
+            slots: [parsed.data.startTime],
+            organizerId: parsed.data.memberId,
+            resourceId: resource.id,
+            admin: { adminUserId: adminActor(req) },
+            actorId: adminActor(req),
+          });
+          return success(
+            reply,
+            serializeLegacyBooking(result.reservation, VENUE_TIMEZONE, { audience: 'admin' }),
+            201,
+          );
+        } catch (err) {
+          return handleReservationError(reply, err);
+        }
+      },
+    );
+
+    app.delete<{ Params: { id: string; bookingId: string } }>(
+      `/${facility}/:id/bookings/:bookingId`,
+      { config: { policy: 'admin' } },
+      async (req, reply) => {
+        try {
+          // Admin cancellation refunds in full: the club cancelled.
+          await reservationService.cancel(req.params.bookingId, {
+            fullRefund: true,
+            actorId: adminActor(req),
+          });
+          return success(reply, { cancelled: true });
+        } catch (err) {
+          return handleReservationError(reply, err);
+        }
+      },
+    );
+  }
+
+  // ── Reservations (admin view) ──
+
+  app.get('/bookings', { config: { policy: 'admin' } }, async (req, reply) => {
+    const parsed = adminReservationsQuerySchema.safeParse(req.query);
+    if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
+
+    const reservations = await reservationService.listAll({
+      localDate: parsed.data.date,
+      includeInactive: parsed.data.includeInactive,
+    });
+    return success(
+      reply,
+      reservations.map((reservation) =>
+        serializeLegacyBooking(reservation, VENUE_TIMEZONE, { audience: 'admin' }),
+      ),
+    );
+  });
+
+  app.get<{ Params: { type: string; id: string } }>(
+    '/facilities/:type/:id/booking-count',
+    { config: { policy: 'admin' } },
+    async (req, reply) => {
+      const { type, id } = req.params;
+      if (type !== 'court' && type !== 'shower') return error(reply, 'VALIDATION_ERROR', 'Invalid facility type');
+      const count = await reservationService.countUpcomingForResources([id]);
+      return success(reply, { count });
+    },
+  );
 }

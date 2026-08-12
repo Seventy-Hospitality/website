@@ -1,11 +1,13 @@
-export { MediaService } from './media.service';
+export { MediaService, MEDIA_ENCRYPTION_V1 } from './media.service';
 export type {
-  CleanupStaleEventImagesInput,
-  CleanupStaleEventImagesResult,
-  EventImageProcessor,
+  CleanupStaleAssetsInput,
+  CleanupStaleAssetsResult,
+  ImageProcessor,
+  ManagedMediaAssetRecord,
   ManagedMediaAssetRepository,
   MediaAssetOwner,
   MediaAssetReadResult,
-  MediaStorage,
-  UploadEventImageInput,
+  MediaCipher,
+  MediaObjectStorage,
+  UploadImageInput,
 } from './media.service';

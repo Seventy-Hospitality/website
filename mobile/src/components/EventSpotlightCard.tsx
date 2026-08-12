@@ -1,8 +1,8 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
-import type { ClubEvent } from '../lib/api';
+import { resolveApiAssetUrl, type ClubEvent } from '../lib/api';
 import { formatEventWindow } from '../lib/format';
-import { colors, radius, shadows, spacing } from '../theme/tokens';
+import { colors, fonts, radius, shadows, spacing } from '../theme/tokens';
 
 interface EventSpotlightCardProps {
   event: ClubEvent;
@@ -21,7 +21,7 @@ export function EventSpotlightCard({ compact = false, event, onPress }: EventSpo
       ]}
     >
       {event.imageUrl ? (
-        <Image source={event.imageUrl} style={[styles.image, compact ? styles.compactImage : null]} contentFit="cover" />
+        <Image source={resolveApiAssetUrl(event.imageUrl) as string} style={[styles.image, compact ? styles.compactImage : null]} contentFit="cover" />
       ) : (
         <View style={[styles.imageFallback, compact ? styles.compactImage : null]}>
           <Text style={styles.imageFallbackText}>Spotlight</Text>
@@ -75,8 +75,8 @@ const styles = StyleSheet.create({
   },
   imageFallbackText: {
     color: colors.accent,
+    fontFamily: fonts.bodyBold,
     fontSize: 14,
-    fontWeight: '700',
     letterSpacing: 1.2,
     textTransform: 'uppercase',
   },
@@ -86,16 +86,17 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.text,
+    fontFamily: fonts.displayBold,
     fontSize: 18,
-    fontWeight: '700',
   },
   schedule: {
-    color: colors.sand,
+    color: colors.accentMuted,
+    fontFamily: fonts.bodySemibold,
     fontSize: 12,
-    fontWeight: '600',
   },
   details: {
     color: colors.textMuted,
+    fontFamily: fonts.body,
     fontSize: 13,
     lineHeight: 18,
   },

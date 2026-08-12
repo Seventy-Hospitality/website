@@ -1,0 +1,165 @@
+/* Figma browse-courts 7:2331: title + caption, then one elevated row per
+   amenity type (icon tile, name, availability count, rate, chevron). */
+
+.subtitle {
+  margin-top: calc(-1 * var(--space-md));
+  margin-bottom: var(--space-lg);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: var(--space-md);
+  background: var(--color-surface-card);
+  border: none;
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  text-align: left;
+}
+
+.rowInteractive {
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.rowInteractive:hover {
+  background: var(--color-surface-overlay);
+}
+
+.rowLocked {
+  /* Muted, not hidden: the PRO badge explains the gate. */
+  color: var(--color-text-muted);
+}
+
+.rowText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.rowTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.rowSubtitle {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.rowTrailing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.rowRate {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.rowChevron {
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--color-text-muted);
+}
+
+.errorBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  color: var(--color-danger-strong);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* ── Desktop: the amenity stack becomes a deliberate card grid that fills
+   the width. Each full-width mobile row reflows into a vertical card
+   (icon, name, availability, then a rate / chevron footer). Mobile keeps
+   the stacked rows byte-for-byte. ── */
+
+@media (min-width: 768px) {
+  .list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: var(--space-md);
+  }
+
+  .list > li {
+    display: flex;
+  }
+
+  .row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-md);
+    width: 100%;
+    padding: var(--space-lg);
+    border: 1px solid var(--color-border);
+    transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+  }
+
+  .rowInteractive:hover {
+    border-color: var(--color-border-active);
+    transform: translateY(-2px);
+  }
+
+  .rowText {
+    flex: none;
+    gap: var(--space-2xs);
+  }
+
+  .rowTitle {
+    font-size: var(--text-h3-size);
+    line-height: var(--text-h3-line);
+  }
+
+  /* Rate on the left, chevron/lock on the right: a card footer that lines
+     up across every card in the row. */
+  .rowTrailing {
+    width: 100%;
+    margin-top: auto;
+    padding-top: var(--space-sm);
+    justify-content: space-between;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .rowRate {
+    font-size: var(--text-body-size);
+    line-height: var(--text-body-line);
+    color: var(--color-text);
+    font-weight: 600;
+  }
+}
+
+/* auto-fill above handles every width: 2 columns on a laptop, more as the
+   viewport grows, filling the content area instead of capping at 3. */

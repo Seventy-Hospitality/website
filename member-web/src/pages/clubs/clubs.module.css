@@ -1,0 +1,732 @@
+/* Clubs flow (package W5).
+   Figma "Managing clubs" 105:7056: your-clubs 91:3774 / 91:3935,
+   create-club 95:4384 / 99:4980, invite-players 95:4294 / 99:5498,
+   club detail 99:5623 / 105:5927, members 105:6876, invite modal
+   195:17988. Phone frames are 1:1; desktop puts the club cards in a
+   two-column grid and the detail in two columns (info | activity). */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding-bottom: var(--space-xl);
+}
+
+/* Desktop width: forms/landings (join, members) keep the comfortable
+   reading column; the club grid and detail opt into the wide column via
+   .pageWide so they fill the desktop content area. */
+@media (min-width: 768px) {
+  .page {
+    max-width: none;
+    margin-inline: 0;
+    width: 100%;
+  }
+
+  .pageWide {
+    max-width: none;
+  }
+}
+
+.sublead {
+  margin-top: calc(-1 * var(--space-md));
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+/* Round accent "+" header action (your-clubs, members). */
+.addButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  cursor: pointer;
+}
+
+.addButton:hover {
+  background: var(--color-accent-hover);
+}
+
+.addButton > svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/* ── Club cards (your-clubs) ── */
+
+.clubGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-md);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+@media (min-width: 768px) {
+  .clubGrid {
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  }
+}
+
+.clubCard {
+  position: relative;
+  display: block;
+  height: 13rem;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--color-bg-elevated);
+}
+
+.clubCard:hover .clubCardName {
+  text-decoration: underline;
+}
+
+.clubCover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.clubCoverFallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-overlay);
+  color: var(--color-text-muted);
+}
+
+.clubCoverFallback > svg {
+  width: 3rem;
+  height: 3rem;
+}
+
+.clubShade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(20, 30, 21, 0.85) 0%, rgba(20, 30, 21, 0.35) 40%, transparent 70%);
+}
+
+.clubCardText {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-md);
+}
+
+.clubCardName {
+  font-family: var(--font-display);
+  font-size: var(--text-h2-size);
+  line-height: var(--text-h2-line);
+  font-weight: var(--text-h2-weight);
+  color: var(--color-text);
+}
+
+.clubCardMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.metaDivider {
+  color: var(--color-text-subtle);
+}
+
+/* Dashed "Create a new club" CTA. */
+.createCard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  min-height: 4.5rem;
+  border: 1px dashed var(--color-border-active);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-muted);
+  font-size: var(--text-body-size);
+  text-decoration: none;
+}
+
+.createCard:hover {
+  color: var(--color-text);
+  border-color: var(--color-surface-muted);
+}
+
+.createCard > svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+/* ── Pending invitations (clubs tab) ── */
+
+.inviterLine {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.inviterName {
+  color: var(--color-text);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.inviteHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+.inviteHeadText {
+  display: flex;
+  flex-direction: column;
+}
+
+.inviteClubName {
+  font-weight: 600;
+}
+
+.inviteClubMeta {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.respondRow {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+.cardStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* ── Create wizard: cover picker + fields ── */
+
+.fieldStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+}
+
+.coverPicker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  width: 100%;
+  min-height: 11rem;
+  border: 1px dashed var(--color-border-active);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.coverPicker:hover {
+  color: var(--color-text);
+}
+
+.coverPickerIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-muted);
+  color: var(--color-text-on-accent);
+}
+
+.coverPickerIcon > svg {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+.coverPreviewWrap {
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.coverPreview {
+  display: block;
+  width: 100%;
+  height: 11rem;
+  object-fit: cover;
+}
+
+.coverActions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+.textarea {
+  width: 100%;
+  min-height: 6rem;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--text-body-size);
+  line-height: var(--text-body-line);
+  resize: vertical;
+}
+
+.textarea::placeholder {
+  color: var(--color-text-subtle);
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--color-border-active);
+}
+
+/* ── Club detail ── */
+
+.detailGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+@media (min-width: 1024px) {
+  .detailGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-xl);
+    align-items: start;
+  }
+
+  .detailMain {
+    position: sticky;
+    top: var(--space-lg);
+  }
+}
+
+.hero {
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  min-height: 16rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.heroCover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.heroFallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-overlay);
+  color: var(--color-text-muted);
+}
+
+.heroFallback > svg {
+  width: 4rem;
+  height: 4rem;
+}
+
+.heroShade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(20, 30, 21, 0.9) 0%, rgba(20, 30, 21, 0.25) 45%, rgba(20, 30, 21, 0.35) 100%);
+}
+
+.heroTop {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  padding: var(--space-md);
+}
+
+.heroButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--color-scrim);
+  color: var(--color-text);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.heroButton:hover {
+  background: var(--color-surface-overlay);
+}
+
+.heroButton > svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.heroText {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-md);
+}
+
+.heroText > h1 {
+  overflow-wrap: anywhere;
+}
+
+.heroText > h1:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+.heroMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.description {
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Members / Invite / Share / Book action bar. */
+.actionBar {
+  display: flex;
+  justify-content: space-around;
+  gap: var(--space-sm);
+}
+
+.actionItem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--color-text);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.actionCircle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+}
+
+.actionItem:hover .actionCircle {
+  background: var(--color-surface-overlay);
+}
+
+.actionCircle > svg {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+/* ── Group activity ── */
+
+.activityList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.activityRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  text-decoration: none;
+  color: var(--color-text);
+}
+
+a.activityRow:hover {
+  background: var(--color-surface-overlay);
+}
+
+.activityText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+
+.activityWhen {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.activityDay {
+  font-weight: 700;
+}
+
+.activityTime {
+  font-weight: 600;
+}
+
+.activitySub {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.activityEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  color: var(--color-text-muted);
+}
+
+.activityEmptyLink {
+  color: var(--color-accent);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.activityEmptyLink:hover {
+  text-decoration: underline;
+}
+
+/* ── Members roster ── */
+
+.memberList {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.memberRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.memberText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.memberName {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-weight: 600;
+}
+
+.memberNumber {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.memberMenuButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.memberMenuButton:hover {
+  background: var(--color-bg-elevated);
+  color: var(--color-text);
+}
+
+/* ── Back link (shared with W4's treatment) ── */
+
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  align-self: flex-start;
+  padding: var(--space-2xs) 0;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-link);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.backLink:hover {
+  text-decoration: underline;
+}
+
+.backLink > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* ── Dialogs (menus + confirms ride the Sheet) ── */
+
+.dialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.dialogText {
+  color: var(--color-text);
+}
+
+.dialogHint {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.dialogActions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* ── Invite modal ── */
+
+.linkActions {
+  display: flex;
+  justify-content: space-around;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.qrPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+}
+
+.qrFrame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-sm);
+  background: #ffffff;
+  border-radius: var(--radius-md);
+}
+
+.qr {
+  width: 11rem;
+  height: 11rem;
+  color: #1a1a1a;
+  shape-rendering: crispedges;
+}
+
+/* Text fallback when the code cannot be scanned. */
+.qrUrl {
+  max-width: 100%;
+  color: var(--color-text-muted);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  overflow-wrap: anywhere;
+  text-align: center;
+  user-select: all;
+}
+
+.qrActions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+/* ── Join page ── */
+
+.joinCard {
+  overflow: hidden;
+}
+
+.joinCover {
+  display: block;
+  width: calc(100% + 2 * var(--space-md));
+  margin: calc(-1 * var(--space-md)) calc(-1 * var(--space-md)) var(--space-md);
+  height: 10rem;
+  object-fit: cover;
+}
+
+.joinBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}

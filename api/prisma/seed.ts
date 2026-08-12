@@ -2,9 +2,10 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 import Stripe from 'stripe';
-import { createId } from '@paralleldrive/cuid2';
 import dotenv from 'dotenv';
 import path from 'path';
+import { zonedDateKey } from '../lib/kernel/venue-time';
+import { generateMemberNumber } from '../lib/contexts/members/domain/member';
 
 dotenv.config({ path: path.resolve(import.meta.dirname, '../.env') });
 
@@ -39,31 +40,54 @@ async function main() {
   // Replace with actual Stripe test IDs from your dashboard
   const monthlyPlan = await prisma.membershipPlan.upsert({
     where: { stripePriceId: process.env.SEED_MONTHLY_PRICE_ID ?? 'price_monthly_placeholder' },
-    update: {},
+    update: { tier: 'member', sortOrder: 0 },
     create: {
       name: 'Monthly Membership',
       stripePriceId: process.env.SEED_MONTHLY_PRICE_ID ?? 'price_monthly_placeholder',
       stripeProductId: process.env.SEED_MONTHLY_PRODUCT_ID ?? 'prod_monthly_placeholder',
       amountCents: 5000,
       interval: 'month',
+      tier: 'member',
+      features: ['Court reservations', 'Club events'],
+      sortOrder: 0,
       active: true,
     },
   });
 
   const annualPlan = await prisma.membershipPlan.upsert({
     where: { stripePriceId: process.env.SEED_ANNUAL_PRICE_ID ?? 'price_annual_placeholder' },
-    update: {},
+    update: { tier: 'member', sortOrder: 1 },
     create: {
       name: 'Annual Membership',
       stripePriceId: process.env.SEED_ANNUAL_PRICE_ID ?? 'price_annual_placeholder',
       stripeProductId: process.env.SEED_ANNUAL_PRODUCT_ID ?? 'prod_annual_placeholder',
       amountCents: 48000,
       interval: 'year',
+      tier: 'member',
+      features: ['Court reservations', 'Club events', '2 months free'],
+      sortOrder: 1,
       active: true,
     },
   });
 
-  console.log(`  Plans: ${monthlyPlan.name}, ${annualPlan.name}`);
+  const proPlan = await prisma.membershipPlan.upsert({
+    where: { stripePriceId: process.env.SEED_PRO_PRICE_ID ?? 'price_pro_placeholder' },
+    update: { tier: 'pro', inviteOnly: true, sortOrder: 2 },
+    create: {
+      name: 'PRO Membership',
+      stripePriceId: process.env.SEED_PRO_PRICE_ID ?? 'price_pro_placeholder',
+      stripeProductId: process.env.SEED_PRO_PRODUCT_ID ?? 'prod_pro_placeholder',
+      amountCents: 96000,
+      interval: 'year',
+      tier: 'pro',
+      inviteOnly: true,
+      features: ['Everything in Annual', 'PRO facilities', 'Priority booking'],
+      sortOrder: 2,
+      active: true,
+    },
+  });
+
+  console.log(`  Plans: ${monthlyPlan.name}, ${annualPlan.name}, ${proPlan.name}`);
 
   // ── Sample Members ──
   const members = [
@@ -100,7 +124,7 @@ async function main() {
     const member = await prisma.member.upsert({
       where: { email: m.email },
       update: { stripeCustomerId: stripeCustomerId ?? undefined },
-      create: { ...m, stripeCustomerId },
+      create: { ...m, stripeCustomerId, memberNumber: generateMemberNumber() },
     });
     created.push(member);
   }
@@ -115,7 +139,8 @@ async function main() {
 
   const subs = [
     { member: created[0], plan: monthlyPlan, status: 'active', periodEnd: nextMonth, cancel: false },
-    { member: created[1], plan: monthlyPlan, status: 'active', periodEnd: nextMonth, cancel: false },
+    // Bob is PRO so tier-gated facilities (showers) are testable.
+    { member: created[1], plan: proPlan, status: 'active', periodEnd: nextYear, cancel: false },
     { member: created[2], plan: monthlyPlan, status: 'active', periodEnd: nextMonth, cancel: false },
     { member: created[3], plan: annualPlan, status: 'active', periodEnd: nextYear, cancel: false },
     { member: created[4], plan: monthlyPlan, status: 'past_due', periodEnd: lastWeek, cancel: false },
@@ -124,7 +149,9 @@ async function main() {
   ];
 
   for (const s of subs) {
-    let stripeSubId = `sub_dev_${createId()}`;
+    // Deterministic per member so re-seeding stays idempotent now that
+    // memberships upsert by subscription id (memberId is no longer unique).
+    let stripeSubId = `sub_dev_${s.member.id}`;
 
     if (stripe && s.member.stripeCustomerId && s.status === 'active') {
       // Check for existing subscription before creating
@@ -147,7 +174,7 @@ async function main() {
     }
 
     await prisma.membership.upsert({
-      where: { memberId: s.member.id },
+      where: { stripeSubscriptionId: stripeSubId },
       update: {},
       create: {
         memberId: s.member.id,
@@ -163,7 +190,7 @@ async function main() {
   console.log(`  Memberships: 3 active, 1 annual, 1 past_due, 1 canceling, 1 canceled, 3 none${stripe ? ' (active ones synced to Stripe)' : ''}`);
 
   // ── Admin Notes ──
-  const adminUser = await prisma.user.findFirst({ where: { role: 'admin' } });
+  const adminUser = await prisma.user.findFirst({ where: { staffRole: 'admin' } });
 
   if (adminUser) {
     const notes = [
@@ -189,38 +216,71 @@ async function main() {
     console.log('  Notes: skipped (no admin user)');
   }
 
-  // ── Courts ──
-  const courts = [
-    { name: 'Court 1' },
-    { name: 'Court 2' },
-    { name: 'Court 3' },
+  // ── Resource types (the Figma taxonomy) + resources ──
+  // Operating hours are minutes from venue-local midnight; end may pass 1440
+  // (mahjong runs to 00:30 next day to exercise the past-midnight path).
+  const resourceTypes = [
+    {
+      id: 'rt_badminton_court', code: 'badminton_court', name: 'Badminton Court',
+      slotDurationMinutes: 30, opStartMinutes: 7 * 60, opEndMinutes: 22 * 60,
+      hourlyRateCents: 2000, maxAdvanceDays: 7, maxReservationsPerMemberPerDay: 2,
+      cancellationDeadlineMinutes: 60, minTier: 'member', displayOrder: 0,
+      resources: ['Court 1', 'Court 2', 'Court 3'],
+    },
+    {
+      id: 'rt_tennis_court', code: 'tennis_court', name: 'Tennis Court',
+      slotDurationMinutes: 30, opStartMinutes: 7 * 60, opEndMinutes: 22 * 60,
+      hourlyRateCents: 2500, maxAdvanceDays: 7, maxReservationsPerMemberPerDay: 2,
+      cancellationDeadlineMinutes: 60, minTier: 'member', displayOrder: 10,
+      resources: ['Tennis 1', 'Tennis 2'],
+    },
+    {
+      id: 'rt_mahjong_table', code: 'mahjong_table', name: 'Mahjong Table',
+      slotDurationMinutes: 30, opStartMinutes: 7 * 60, opEndMinutes: 24 * 60 + 30,
+      hourlyRateCents: 1000, maxAdvanceDays: 7, maxReservationsPerMemberPerDay: 2,
+      cancellationDeadlineMinutes: 60, minTier: 'member', displayOrder: 20,
+      resources: ['Table 1', 'Table 2'],
+    },
+    {
+      id: 'rt_tennis_simulator', code: 'tennis_simulator', name: 'Tennis Simulator',
+      slotDurationMinutes: 30, opStartMinutes: 7 * 60, opEndMinutes: 22 * 60,
+      hourlyRateCents: 4000, maxAdvanceDays: 7, maxReservationsPerMemberPerDay: 2,
+      cancellationDeadlineMinutes: 60, minTier: 'member', displayOrder: 30,
+      resources: ['Simulator 1'],
+    },
+    {
+      id: 'rt_shower', code: 'shower', name: 'Shower',
+      slotDurationMinutes: 30, opStartMinutes: 7 * 60, opEndMinutes: 22 * 60,
+      hourlyRateCents: 1000, maxAdvanceDays: 3, maxReservationsPerMemberPerDay: 1,
+      cancellationDeadlineMinutes: 30, minTier: 'pro', displayOrder: 40,
+      resources: ['Shower A', 'Shower B'],
+    },
   ];
 
-  for (const c of courts) {
-    await prisma.court.upsert({
-      where: { id: c.name.toLowerCase().replace(' ', '-') },
+  let resourceCount = 0;
+  for (const { resources, ...type } of resourceTypes) {
+    await prisma.resourceType.upsert({
+      where: { code: type.code },
       update: {},
-      create: { id: c.name.toLowerCase().replace(' ', '-'), ...c },
+      create: type,
     });
+
+    for (const [index, name] of resources.entries()) {
+      await prisma.resource.upsert({
+        where: { id: name.toLowerCase().replace(/\s+/g, '-') },
+        update: {},
+        create: {
+          id: name.toLowerCase().replace(/\s+/g, '-'),
+          typeId: type.id,
+          name,
+          displayOrder: index,
+        },
+      });
+      resourceCount++;
+    }
   }
 
-  console.log(`  Courts: ${courts.length}`);
-
-  // ── Showers ──
-  const showers = [
-    { name: 'Shower A' },
-    { name: 'Shower B' },
-  ];
-
-  for (const s of showers) {
-    await prisma.shower.upsert({
-      where: { id: s.name.toLowerCase().replace(' ', '-') },
-      update: {},
-      create: { id: s.name.toLowerCase().replace(' ', '-'), ...s },
-    });
-  }
-
-  console.log(`  Showers: ${showers.length}`);
+  console.log(`  Resource types: ${resourceTypes.length} (${resourceCount} resources)`);
 
   // ── Club Events ──
   const clubEvents = [
@@ -274,23 +334,26 @@ async function main() {
     const { id, courtIds, ...eventData } = event;
     await prisma.clubEvent.upsert({
       where: { id },
-      update: {
-        ...eventData,
-        courts: {
-          deleteMany: {},
-          ...(courtIds.length > 0
-            ? { create: courtIds.map((courtId) => ({ courtId })) }
-            : {}),
-        },
-      },
-      create: {
-        id,
-        ...eventData,
-        courts: courtIds.length > 0
-          ? { create: courtIds.map((courtId) => ({ courtId })) }
-          : undefined,
-      },
+      update: eventData,
+      create: { id, ...eventData },
     });
+
+    // Court blocks live in slot_claims (kind 'event'); inactive events keep
+    // their selection as released claims that never block availability.
+    await prisma.slotClaim.deleteMany({ where: { clubEventId: id } });
+    if (courtIds.length > 0) {
+      await prisma.slotClaim.createMany({
+        data: courtIds.map((resourceId) => ({
+          resourceId,
+          clubEventId: id,
+          kind: 'event',
+          status: eventData.active ? 'active' : 'released',
+          startsAt: eventData.startsAt,
+          endsAt: eventData.endsAt,
+          localDate: zonedDateKey(eventData.startsAt, eventData.timezone),
+        })),
+      });
+    }
   }
 
   console.log(`  Events: ${clubEvents.length}`);

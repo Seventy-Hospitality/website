@@ -8,4 +8,3 @@ export {
   ClubEventCourtNotFoundError,
   ClubEventCourtConflictError,
 } from './event';
-export { dateToKey, getEventDateKeys, getEventCourtSlotOnDate } from './schedule';

@@ -1,24 +1,91 @@
-export { type Court } from './court';
-export { type Shower } from './shower';
-export { type Booking, type FacilityType } from './booking';
-export { type MembershipChecker } from './ports';
+export { type MemberTier, type ResourceType, type Resource, tierSatisfies } from './resource';
 export {
-  type TimeSlot,
-  createTimeSlot,
-  timeToMinutes,
-  slotsOverlap,
-  generateAvailableSlots,
-} from './value-objects';
-export { bookingRules } from './booking-rules';
+  type ActivityFamily,
+  type ActivityStats,
+  type ActivityStatRow,
+  activityFamilyForTypeCode,
+  aggregateActivityStats,
+} from './activity-stats';
+export {
+  type Reservation,
+  type ReservationParticipant,
+  type ReservationPayment,
+  type ReservationPendingChange,
+  type ReservationStatus,
+  type ParticipantRole,
+  type ParticipantStatus,
+  type ParticipantResponse,
+  type PaymentKind,
+  isActiveReservationStatus,
+  applyParticipantResponse,
+  canManageInvites,
+} from './reservation';
+export {
+  type SlotGridConfig,
+  type InstantRange,
+  type ClaimRange,
+  generateSlotStarts,
+  parseSlotSelection,
+  selectionToRange,
+  rangesOverlap,
+  freeSlotStartsByResource,
+  unionSlotStarts,
+  resourcesFreeForSelection,
+  computeTotalCents,
+} from './slots';
+export {
+  refundPercentFor,
+  computeNetPaidCents,
+  computeRefundableCents,
+  computeRefundCents,
+  computeRescheduleDeltaCents,
+  allocateRefund,
+  type RefundAllocation,
+} from './cancellation-policy';
+export {
+  type MembershipChecker,
+  type BookingPaymentPort,
+  type PaymentIntentHandle,
+  type PaymentStatus,
+  type ResourceClaimPort,
+  type ClaimedResource,
+  type EventClaimConflict,
+  type ClubRoster,
+  type ClubRosterPort,
+  EventClaimConflictError,
+} from './ports';
+export {
+  listSeriesOccurrenceDates,
+  weekdayOfDateKey,
+  type SeriesOccurrenceQuery,
+} from './series';
 export {
   SlotUnavailableError,
   OutsideOperatingHoursError,
-  InvalidSlotDurationError,
-  MaxBookingsExceededError,
-  BookingTooFarInAdvanceError,
-  BookingInPastError,
-  CancellationDeadlinePassedError,
-  BookingNotFoundError,
-  FacilityNotFoundError,
+  InvalidSlotSelectionError,
+  MaxReservationsExceededError,
+  ReservationTooFarInAdvanceError,
+  ReservationInPastError,
+  ReservationNotFoundError,
+  ResourceTypeNotFoundError,
+  ResourceNotFoundError,
+  NotReservationOrganizerError,
+  TierRequiredError,
   InactiveMembershipError,
+  InvalidReservationStatusError,
+  ReservationAlreadyStartedError,
+  InvalidParticipantTransitionError,
+  OrganizerCannotRespondError,
+  ParticipantNotFoundError,
+  CannotRemoveOrganizerError,
+  NotInvitePermittedError,
+  InviteeNotFoundError,
+  ClubInviteNotAllowedError,
+  PaymentNotCompletedError,
+  HoldExpiredError,
+  InsufficientRefundableBalanceError,
+  ReservationChangedError,
+  SeriesNotFoundError,
+  DuplicateSeriesOccurrenceError,
+  SeriesInactiveError,
 } from './errors';

@@ -1,2 +1,24 @@
 export { NotificationService } from './notification.service';
-export type { NotificationSender } from './ports';
+export { NotificationSettingsService } from './notification-settings.service';
+export {
+  NotificationDispatchService,
+  type DispatchableEvent,
+  type DispatchResult,
+  type NotificationDispatchConfig,
+} from './notification-dispatch.service';
+export {
+  BookingReminderService,
+  type ReminderSource,
+  type ReminderRunResult,
+} from './booking-reminder.service';
+export type {
+  NotificationSender,
+  PushMessage,
+  PushSender,
+  RecipientContact,
+  RecipientDirectory,
+  ReservationDirectory,
+  ReservationNotificationView,
+  ClubDirectory,
+  ClubInvitationNotificationView,
+} from './ports';

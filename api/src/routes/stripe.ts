@@ -7,7 +7,7 @@ import { MembershipError, PlanNotFoundError } from '@/lib/contexts/memberships';
 
 export async function stripeRoutes(app: FastifyInstance) {
   // Create checkout session
-  app.post('/create-checkout-session', async (req, reply) => {
+  app.post('/create-checkout-session', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createCheckoutSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -33,7 +33,7 @@ export async function stripeRoutes(app: FastifyInstance) {
   });
 
   // Create portal session
-  app.post('/create-portal-session', async (req, reply) => {
+  app.post('/create-portal-session', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createPortalSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 

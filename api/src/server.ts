@@ -1,24 +1,33 @@
 import 'dotenv/config';
-import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
-import { authHook } from './middleware/auth';
+import rateLimit from '@fastify/rate-limit';
+import { SERVER_FASTIFY_OPTIONS } from './lib/server-options';
+import { registerLenientJsonBodyParser } from './lib/json-body';
+import { assertRoutePolicy, authHook } from './middleware/auth';
 import { memberRoutes } from './routes/members';
 import { authRoutes } from './routes/auth';
 import { stripeRoutes } from './routes/stripe';
 import { webhookRoutes } from './routes/webhooks';
 import { cronRoutes } from './routes/cron';
 import { bookingRoutes } from './routes/bookings';
+import { reservationRoutes } from './routes/reservations';
+import { clubRoutes } from './routes/clubs';
 import { eventRoutes } from './routes/events';
 import { mediaRoutes } from './routes/media';
 import { uploadAssetRoutes } from './routes/uploads';
 import { meRoutes } from './routes/me';
+import { meAccountRoutes } from './routes/me-account';
+import { meBillingRoutes } from './routes/me-billing';
+import { meMembershipRoutes } from './routes/me-membership';
+import { qrRoutes } from './routes/qr';
+import { idVerificationReviewRoutes, meIdVerificationRoutes } from './routes/id-verification';
 
-const app = Fastify({ logger: true });
+const app = Fastify(SERVER_FASTIFY_OPTIONS);
 
 function getAllowedWebOrigins(configuredWebUrl: string): string[] {
   const origins = new Set<string>([configuredWebUrl]);
@@ -47,55 +56,61 @@ await app.register(cors, {
   methods: ['GET', 'HEAD', 'POST', 'PATCH', 'DELETE'],
 });
 
+await app.register(rateLimit, {
+  max: 300,
+  timeWindow: '1 minute',
+});
+
 await app.register(cookie);
 
 await app.register(multipart);
-await app.register(uploadAssetRoutes, { prefix: '/uploads' });
 
+// Bodyless POSTs (signout, resend-verification, id-verification skip, ...)
+// must accept an empty application/json body; see src/lib/json-body.ts.
+registerLenientJsonBodyParser(app);
+
+// Authorization: the boot assertion must see every route that follows, so it
+// is installed before the first registration.
+app.addHook('onRoute', assertRoutePolicy);
 app.addHook('preHandler', authHook);
 
 // Routes
+await app.register(uploadAssetRoutes, { prefix: '/uploads' });
 await app.register(authRoutes, { prefix: '/api/auth' });
 await app.register(memberRoutes, { prefix: '/api/members' });
 await app.register(stripeRoutes, { prefix: '/api/stripe' });
 await app.register(webhookRoutes, { prefix: '/api/webhooks' });
 await app.register(cronRoutes, { prefix: '/api/cron' });
 await app.register(bookingRoutes, { prefix: '/api' });
+await app.register(reservationRoutes, { prefix: '/api' });
+await app.register(clubRoutes, { prefix: '/api' });
 await app.register(eventRoutes, { prefix: '/api/events' });
 await app.register(mediaRoutes, { prefix: '/api/media' });
 await app.register(meRoutes, { prefix: '/api/me' });
+await app.register(meAccountRoutes, { prefix: '/api/me' });
+await app.register(meMembershipRoutes, { prefix: '/api/me' });
+await app.register(meBillingRoutes, { prefix: '/api/me' });
+await app.register(qrRoutes, { prefix: '/api/qr' });
+await app.register(meIdVerificationRoutes, { prefix: '/api/me' });
+await app.register(idVerificationReviewRoutes, { prefix: '/api' });
 import { adminRoutes } from './routes/admin';
 await app.register(adminRoutes, { prefix: '/api/admin' });
 
-// Plans
+// Plans — the catalog is shown before signup, so it is public
 import { planRepo } from '@/lib/container';
-app.get('/api/plans', async (_req, reply) => {
+app.get('/api/plans', { config: { policy: 'public' } }, async (_req, reply) => {
   const plans = await planRepo.list();
   return reply.send({ data: plans });
 });
 
 // Health check
-app.get('/api/health', async () => ({ status: 'ok' }));
+app.get('/api/health', { config: { policy: 'public' } }, async () => ({ status: 'ok' }));
 
-// Serve bundled web app in production
+// Serve the bundled web apps in production: member app at `/`, admin app
+// under `/admin`, each with its own SPA history fallback.
+import { registerStaticBundles } from './lib/static-bundles';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const publicDir = join(__dirname, '..', '..', 'public');
-
-if (existsSync(publicDir)) {
-  const fastifyStatic = await import('@fastify/static');
-  await app.register(fastifyStatic.default, {
-    root: publicDir,
-    wildcard: false,
-  });
-
-  // SPA fallback: serve index.html for non-API routes
-  app.setNotFoundHandler(async (req, reply) => {
-    if (req.url.startsWith('/api/')) {
-      return reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'Route not found' } });
-    }
-    return reply.sendFile('index.html');
-  });
-}
+await registerStaticBundles(app, join(__dirname, '..', '..', 'public'));
 
 const port = Number(process.env.PORT ?? 3001);
 await app.listen({ port, host: '0.0.0.0' });

@@ -10,7 +10,7 @@ import { success, error } from '@/src/lib/responses';
 import { createEventSchema, eventsQuerySchema, updateEventSchema } from '@/src/lib/validation';
 
 export async function eventRoutes(app: FastifyInstance) {
-  app.get('/', async (req, reply) => {
+  app.get('/', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = eventsQuerySchema.safeParse(req.query);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -18,7 +18,7 @@ export async function eventRoutes(app: FastifyInstance) {
     return success(reply, events);
   });
 
-  app.get<{ Params: { id: string } }>('/:id', async (req, reply) => {
+  app.get<{ Params: { id: string } }>('/:id', { config: { policy: 'admin' } }, async (req, reply) => {
     try {
       const event = await clubEventService.getById(req.params.id);
       return success(reply, event);
@@ -27,7 +27,7 @@ export async function eventRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post('/', async (req, reply) => {
+  app.post('/', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = createEventSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 
@@ -39,7 +39,7 @@ export async function eventRoutes(app: FastifyInstance) {
     }
   });
 
-  app.patch<{ Params: { id: string } }>('/:id', async (req, reply) => {
+  app.patch<{ Params: { id: string } }>('/:id', { config: { policy: 'admin' } }, async (req, reply) => {
     const parsed = updateEventSchema.safeParse(req.body);
     if (!parsed.success) return error(reply, 'VALIDATION_ERROR', parsed.error.message);
 

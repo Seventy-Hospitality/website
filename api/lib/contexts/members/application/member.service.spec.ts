@@ -8,9 +8,14 @@ function mockRepo(): MemberRepository {
     getById: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    updateProfile: vi.fn(),
+    setAvatarUrl: vi.fn(),
+    scrubForAccountDeletion: vi.fn(),
     addNote: vi.fn(),
     setStripeCustomerId: vi.fn(),
     findByStripeCustomerId: vi.fn(),
+    searchByNamePrefix: vi.fn().mockResolvedValue([]),
+    listDirectory: vi.fn().mockResolvedValue([]),
   } as unknown as MemberRepository;
 }
 
@@ -115,6 +120,70 @@ describe('MemberService', () => {
 
       const service = new MemberService(repo);
       await expect(service.addNote('missing', 'usr_1', 'Hello')).rejects.toThrow(MemberNotFoundError);
+    });
+  });
+
+  describe('updateDisplayName', () => {
+    it('trims and saves; empty string clears to null', async () => {
+      const repo = mockRepo();
+      (repo.getById as ReturnType<typeof vi.fn>).mockResolvedValue({ id: '1' });
+
+      const service = new MemberService(repo);
+      await service.updateDisplayName('1', '  Junebug  ');
+      expect(repo.updateProfile).toHaveBeenCalledWith('1', { displayName: 'Junebug' });
+
+      await service.updateDisplayName('1', '');
+      expect(repo.updateProfile).toHaveBeenLastCalledWith('1', { displayName: null });
+    });
+
+    it('rejects over-length display names', async () => {
+      const repo = mockRepo();
+      (repo.getById as ReturnType<typeof vi.fn>).mockResolvedValue({ id: '1' });
+      const service = new MemberService(repo);
+      await expect(service.updateDisplayName('1', 'x'.repeat(61))).rejects.toThrow(MemberValidationError);
+    });
+
+    it('throws MemberNotFoundError for missing member', async () => {
+      const repo = mockRepo();
+      (repo.getById as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const service = new MemberService(repo);
+      await expect(service.updateDisplayName('missing', 'X')).rejects.toThrow(MemberNotFoundError);
+    });
+  });
+
+  describe('setAvatar', () => {
+    it('swaps the pointer and reports the replaced path', async () => {
+      const repo = mockRepo();
+      (repo.getById as ReturnType<typeof vi.fn>).mockResolvedValue({ id: '1', avatarUrl: '/uploads/avatars/old.webp' });
+
+      const service = new MemberService(repo);
+      const result = await service.setAvatar('1', '/uploads/avatars/new.webp');
+
+      expect(repo.setAvatarUrl).toHaveBeenCalledWith('1', '/uploads/avatars/new.webp');
+      expect(result).toEqual({ previousAvatarUrl: '/uploads/avatars/old.webp' });
+    });
+  });
+
+  describe('directory', () => {
+    it('search forwards the paging offset', async () => {
+      const repo = mockRepo();
+      const service = new MemberService(repo);
+
+      await service.search('bo', 10, 20);
+
+      expect(repo.searchByNamePrefix).toHaveBeenCalledWith('bo', 10, 20);
+    });
+
+    it('browseDirectory excludes the caller and pages alphabetically', async () => {
+      const repo = mockRepo();
+      const rows = [{ id: 'mem_2', firstName: 'Bob', lastName: 'Park' }];
+      (repo.listDirectory as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
+      const service = new MemberService(repo);
+
+      const result = await service.browseDirectory('mem_1', 10, 10);
+
+      expect(repo.listDirectory).toHaveBeenCalledWith({ excludeMemberId: 'mem_1', offset: 10, limit: 10 });
+      expect(result).toBe(rows);
     });
   });
 });

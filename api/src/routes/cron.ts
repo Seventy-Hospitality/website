@@ -1,48 +1,131 @@
 import type { FastifyInstance } from 'fastify';
-import { mediaService, membershipService } from '@/lib/container';
-import { db } from '@/lib/db';
+import {
+  accountDeletionService,
+  bookingReminderService,
+  mediaService,
+  membershipService,
+  outboxDispatcher,
+  reconciliationService,
+  reservationService,
+  seriesService,
+} from '@/lib/container';
 import { cleanupManagedImagesQuerySchema } from '@/src/lib/validation';
 
+// The shared-secret check lives in the `cron` policy (src/middleware/auth.ts).
+// Every job answers GET as well as POST: URL-triggering schedulers (Vercel
+// cron and friends) issue GETs; the secret, not the verb, is the guard.
+const CRON_METHODS = ['GET', 'POST'] as const;
+
 export async function cronRoutes(app: FastifyInstance) {
-  app.get('/sync-memberships', async (req, reply) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return reply.status(401).send({ error: 'Unauthorized' });
-    }
-
-    const members = await db.member.findMany({
-      where: { stripeCustomerId: { not: null } },
-      select: { id: true, stripeCustomerId: true },
-    });
-
-    let synced = 0;
-    let errors = 0;
-
-    for (const member of members) {
-      try {
-        await membershipService.syncFromStripe(member.id, member.stripeCustomerId);
-        synced++;
-      } catch (e) {
-        console.error(`Failed to sync member ${member.id}:`, e);
-        errors++;
-      }
-    }
-
-    return reply.send({ synced, errors, total: members.length });
+  // Release stale pending_payment holds. The sweeper checks the
+  // PaymentIntent first: a hold whose payment actually succeeded is
+  // confirmed, never expired.
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/expire-holds',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await reservationService.expireStaleHolds();
+      return reply.send(result);
+    },
   });
 
-  app.post('/cleanup-event-images', async (req, reply) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return reply.status(401).send({ error: 'Unauthorized' });
-    }
+  // Hand undispatched audit-log rows to the notification dispatcher and
+  // mark the delivered ones dispatched (FOR UPDATE SKIP LOCKED; no
+  // seq-cursor checkpoints). A row whose delivery failed stays pending and
+  // is retried next pass; the delivered-notifications ledger keeps the
+  // retry from double-sending what already went out.
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/dispatch-outbox',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await outboxDispatcher.dispatch();
+      return reply.send(result);
+    },
+  });
 
-    const parsed = cleanupManagedImagesQuerySchema.safeParse(req.query);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: parsed.error.message });
-    }
+  // Booking reminders: confirmed reservations starting within the next 24
+  // hours, reminding their confirmed participants per the
+  // bookingReminders/push/email toggles; idempotent per (reservation,
+  // member) via the booking_reminders markers.
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/send-booking-reminders',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await bookingReminderService.sendDueReminders();
+      return reply.send(result);
+    },
+  });
 
-    const result = await mediaService.cleanupStaleEventImages(parsed.data);
-    return reply.send(result);
+  // Weekly series materialization: concrete comp reservations from active
+  // series inside each type's booking horizon. An occurrence that cannot be
+  // created is skipped and the organizer notified exactly once (skip
+  // markers + the (seriesId, localDate) partial unique keep repeated and
+  // concurrent passes idempotent).
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/materialize-series',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await seriesService.materializeDue();
+      return reply.send(result);
+    },
+  });
+
+  // Nightly account-wide money sweep: charges + invoices + refunds of the
+  // last 72h upserted into the ledger, bookings settlement re-driven
+  // (closes webhook gaps and the residual pay-vs-drop TOCTOU), webhook
+  // dedupe rows pruned.
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/reconcile-billing',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await reconciliationService.reconcileBilling();
+      return reply.send(result);
+    },
+  });
+
+  // Account-wide subscription drift check (replaces the per-member
+  // syncFromStripe loop: one list call instead of O(members) reads).
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/subscription-drift',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await membershipService.reconcileSubscriptionDrift();
+      return reply.send(result);
+    },
+  });
+
+  // Re-drives incomplete account-deletion sagas: after the pipeline has
+  // revoked the user's credentials they cannot retry through DELETE
+  // /api/me, so a mid-pipeline Stripe/Apple failure resumes here (leases
+  // prevent a user retry and the cron racing the same request).
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/resume-deletions',
+    config: { policy: 'cron' },
+    handler: async (_req, reply) => {
+      const result = await accountDeletionService.resumeDue();
+      return reply.send(result);
+    },
+  });
+
+  app.route({
+    method: [...CRON_METHODS],
+    url: '/cleanup-event-images',
+    config: { policy: 'cron' },
+    handler: async (req, reply) => {
+      const parsed = cleanupManagedImagesQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: parsed.error.message });
+      }
+
+      const result = await mediaService.cleanupStaleAssets(parsed.data);
+      return reply.send(result);
+    },
   });
 }

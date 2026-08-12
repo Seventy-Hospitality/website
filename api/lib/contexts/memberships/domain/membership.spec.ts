@@ -1,53 +1,168 @@
-import { membershipInvariants, MembershipError } from './membership';
-import type { Membership } from './membership';
+import {
+  deriveMembershipPaymentStatus,
+  isEntitledStatus,
+  isPlanUpgrade,
+  membershipInvariants,
+  normalizeSubscriptionStatus,
+  pickCurrentMembership,
+  MembershipError,
+  type Plan,
+} from './membership';
+import { resolveSubscriptionApply } from './webhook-handlers';
 
-function makeMembership(overrides: Partial<Membership> = {}): Membership {
+function plan(overrides: Partial<Plan> = {}): Plan {
   return {
-    id: 'mem_1',
-    memberId: 'mbr_1',
-    planId: 'plan_1',
-    stripeSubscriptionId: 'sub_1',
-    status: 'active',
-    currentPeriodEnd: new Date('2025-12-31'),
-    cancelAtPeriodEnd: false,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    id: 'plan_m',
+    name: 'Monthly',
+    stripePriceId: 'price_m',
+    stripeProductId: 'prod_1',
+    amountCents: 5000,
+    interval: 'month',
+    tier: 'member',
+    inviteOnly: false,
+    features: [],
+    sortOrder: 0,
+    active: true,
     ...overrides,
   };
 }
 
-describe('membershipInvariants', () => {
-  describe('canStartSubscription', () => {
-    it('allows when no current membership', () => {
-      expect(() => membershipInvariants.canStartSubscription(null)).not.toThrow();
-    });
-
-    it('allows when current membership is canceled', () => {
-      expect(() =>
-        membershipInvariants.canStartSubscription(makeMembership({ status: 'canceled' }))
-      ).not.toThrow();
-    });
-
-    it('allows when current membership is past_due', () => {
-      expect(() =>
-        membershipInvariants.canStartSubscription(makeMembership({ status: 'past_due' }))
-      ).not.toThrow();
-    });
-
-    it('blocks when current membership is active', () => {
-      expect(() =>
-        membershipInvariants.canStartSubscription(makeMembership({ status: 'active' }))
-      ).toThrow(MembershipError);
-    });
+describe('deriveMembershipPaymentStatus', () => {
+  it('trusts a paid invoice over any intent state', () => {
+    expect(
+      deriveMembershipPaymentStatus({ invoiceStatus: 'paid', paymentIntentStatus: 'processing' }),
+    ).toBe('succeeded');
   });
 
-  describe('requiresStripeCustomer', () => {
-    it('passes with a customer ID', () => {
-      expect(() => membershipInvariants.requiresStripeCustomer('cus_123')).not.toThrow();
-    });
+  it.each([
+    ['succeeded', 'succeeded'],
+    ['processing', 'processing'],
+    ['requires_action', 'requires_action'],
+    ['requires_confirmation', 'requires_action'],
+    ['requires_payment_method', 'requires_payment_method'],
+    ['canceled', 'canceled'],
+  ] as const)('maps intent status %s to %s', (intentStatus, expected) => {
+    expect(
+      deriveMembershipPaymentStatus({ invoiceStatus: 'open', paymentIntentStatus: intentStatus }),
+    ).toBe(expected);
+  });
 
-    it('throws without a customer ID', () => {
-      expect(() => membershipInvariants.requiresStripeCustomer(null)).toThrow(MembershipError);
-    });
+  it('fails closed to unknown without an observation or with a novel status', () => {
+    expect(deriveMembershipPaymentStatus(null)).toBe('unknown');
+    expect(deriveMembershipPaymentStatus({ invoiceStatus: 'open', paymentIntentStatus: null })).toBe('unknown');
+    expect(
+      deriveMembershipPaymentStatus({ invoiceStatus: 'open', paymentIntentStatus: 'brand_new_state' }),
+    ).toBe('unknown');
+  });
+});
+
+describe('normalizeSubscriptionStatus', () => {
+  it('passes known statuses through', () => {
+    for (const status of ['active', 'trialing', 'past_due', 'canceled', 'unpaid', 'incomplete', 'incomplete_expired', 'paused']) {
+      expect(normalizeSubscriptionStatus(status)).toEqual({ status, recognized: true });
+    }
+  });
+
+  it('maps an unknown future status fail-closed to unpaid and flags it', () => {
+    expect(normalizeSubscriptionStatus('quantum')).toEqual({ status: 'unpaid', recognized: false });
+  });
+});
+
+describe('isEntitledStatus', () => {
+  it('entitles active and trialing only', () => {
+    expect(isEntitledStatus('active')).toBe(true);
+    expect(isEntitledStatus('trialing')).toBe(true);
+    for (const status of ['past_due', 'canceled', 'unpaid', 'incomplete', 'incomplete_expired', 'paused']) {
+      expect(isEntitledStatus(status)).toBe(false);
+    }
+  });
+});
+
+describe('pickCurrentMembership', () => {
+  const row = (status: string, end: string, id = status) => ({
+    id,
+    status,
+    currentPeriodEnd: new Date(end),
+  });
+
+  it('returns null with no rows', () => {
+    expect(pickCurrentMembership([])).toBeNull();
+  });
+
+  it('prefers an entitled row over anything else', () => {
+    const rows = [row('canceled', '2027-01-01'), row('active', '2026-09-01'), row('past_due', '2026-12-01')];
+    expect(pickCurrentMembership(rows)!.id).toBe('active');
+  });
+
+  it('prefers past_due over mid-purchase and dead rows (re-subscribe history)', () => {
+    const rows = [row('canceled', '2026-01-01'), row('incomplete', '2026-09-01'), row('past_due', '2026-08-01')];
+    expect(pickCurrentMembership(rows)!.id).toBe('past_due');
+  });
+
+  it('breaks ties within a rank by latest period end', () => {
+    const rows = [row('canceled', '2025-01-01', 'old'), row('canceled', '2026-01-01', 'new')];
+    expect(pickCurrentMembership(rows)!.id).toBe('new');
+  });
+});
+
+describe('isPlanUpgrade', () => {
+  it('tier raise is an upgrade regardless of price or interval', () => {
+    expect(isPlanUpgrade(plan(), plan({ tier: 'pro', amountCents: 100 }))).toBe(true);
+    expect(isPlanUpgrade(plan({ tier: 'pro' }), plan({ amountCents: 999999 }))).toBe(false);
+  });
+
+  it('monthly -> annual at the same tier is an upgrade; the reverse is not', () => {
+    expect(isPlanUpgrade(plan(), plan({ interval: 'year', amountCents: 48000 }))).toBe(true);
+    expect(isPlanUpgrade(plan({ interval: 'year', amountCents: 48000 }), plan())).toBe(false);
+  });
+
+  it('same tier and interval compares price', () => {
+    expect(isPlanUpgrade(plan(), plan({ amountCents: 6000 }))).toBe(true);
+    expect(isPlanUpgrade(plan({ amountCents: 6000 }), plan())).toBe(false);
+  });
+});
+
+describe('membershipInvariants.canStartSubscription', () => {
+  it('blocks while entitled or collecting', () => {
+    for (const status of ['active', 'trialing', 'past_due'] as const) {
+      expect(() => membershipInvariants.canStartSubscription({ status })).toThrow(MembershipError);
+    }
+  });
+
+  it('allows after cancellation, expiry or with no membership', () => {
+    for (const status of ['canceled', 'incomplete', 'incomplete_expired', 'unpaid'] as const) {
+      expect(() => membershipInvariants.canStartSubscription({ status })).not.toThrow();
+    }
+    expect(() => membershipInvariants.canStartSubscription(null)).not.toThrow();
+  });
+});
+
+describe('resolveSubscriptionApply', () => {
+  const snapshot = (status: string) => ({ status }) as { status: any };
+
+  it('applies when the plan resolves and a row exists', () => {
+    expect(
+      resolveSubscriptionApply({ snapshot: snapshot('canceled'), hasExistingRow: true, planId: 'p', memberId: null }),
+    ).toEqual({ action: 'apply' });
+  });
+
+  it('never creates a row for a dead subscription (no resurrection)', () => {
+    for (const status of ['canceled', 'incomplete_expired']) {
+      expect(
+        resolveSubscriptionApply({ snapshot: snapshot(status), hasExistingRow: false, planId: 'p', memberId: 'm' }),
+      ).toEqual({ action: 'skip_dead' });
+    }
+  });
+
+  it('refuses to apply an unknown price (dashboard-changed plan must alert)', () => {
+    expect(
+      resolveSubscriptionApply({ snapshot: snapshot('active'), hasExistingRow: true, planId: null, memberId: 'm' }),
+    ).toEqual({ action: 'skip_unknown_plan' });
+  });
+
+  it('refuses to create without a resolvable member', () => {
+    expect(
+      resolveSubscriptionApply({ snapshot: snapshot('active'), hasExistingRow: false, planId: 'p', memberId: null }),
+    ).toEqual({ action: 'skip_no_member' });
   });
 });

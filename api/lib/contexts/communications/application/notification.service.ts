@@ -23,4 +23,17 @@ export class NotificationService {
   async sendMembershipCanceled(to: string, memberName: string, endsAt: string): Promise<void> {
     await this.sender.send({ type: 'membership-canceled', to, memberName, endsAt });
   }
+
+  async sendEmailVerification(to: string, verifyUrl: string): Promise<void> {
+    await this.sender.send({ type: 'email-verification', to, verifyUrl });
+  }
+
+  async sendPasswordReset(to: string, resetUrl: string): Promise<void> {
+    await this.sender.send({ type: 'password-reset', to, resetUrl });
+  }
+
+  /** Step-up re-auth code for destructive account actions (deletion). */
+  async sendAccountReauth(to: string, token: string): Promise<void> {
+    await this.sender.send({ type: 'account-reauth', to, token });
+  }
 }

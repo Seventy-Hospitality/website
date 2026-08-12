@@ -1,0 +1,406 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+/* ── Feed layout ──
+   Below the lg breakpoint the feed is a single column (mobile untouched).
+   From 1024px it splits into a main column and a right-hand Spotlight
+   events rail. .feedFlow is the no-events fallback: always a single
+   column so the main feed uses the full width. */
+
+.feedFlow,
+.feedMain,
+.feedRail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  min-width: 0;
+}
+
+.feedGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+@media (min-width: 1024px) {
+  .feedGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22rem;
+    gap: var(--space-xl);
+    align-items: start;
+  }
+
+  /* The feed fills its column with cards rather than one stretched row per
+     item: amenities / upcoming reservations reflow into as many columns as
+     fit. Mobile (single column) is untouched below this breakpoint. */
+  .feedMain .cardStack {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+    gap: var(--space-md);
+    align-items: start;
+  }
+
+  .feedRail {
+    position: sticky;
+    top: var(--space-xl);
+  }
+
+  /* In the narrow rail the events stack vertically instead of the 2-up
+     grid the full-width feed uses below 1024. */
+  .feedRail .eventList {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── Header ── */
+
+.headerSkeleton {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding-top: var(--space-xs);
+}
+
+.headerSkeletonText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+/* The lime QR tile in the header (Figma home 68:1105). */
+.qrButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.qrButton:hover {
+  background: var(--color-accent-hover);
+}
+
+.qrButton > svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+/* ── Sections ── */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.section > h2 {
+  outline: none;
+}
+
+.section > h2:focus-visible {
+  box-shadow: var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.cardStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.errorBox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--color-surface-card);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-muted);
+}
+
+/* ── Quick book ── */
+
+.aiLine {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+}
+
+.aiIcon {
+  width: 0.875rem;
+  height: 0.875rem;
+  align-self: center;
+  color: var(--color-accent);
+}
+
+.aiTag {
+  font-weight: 700;
+  letter-spacing: var(--text-caption-spacing);
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.aiReason {
+  color: var(--color-text-muted);
+}
+
+.bookNow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-size: var(--text-sm-size);
+  font-weight: 700;
+  color: var(--color-accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.bookNow:hover {
+  text-decoration: underline;
+  color: var(--color-accent);
+}
+
+.bookNow > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* ── Upcoming reservations ── */
+
+.cardLink {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-lg);
+  transition: filter 120ms ease;
+}
+
+.cardLink:hover {
+  text-decoration: none;
+  filter: brightness(1.08);
+}
+
+.weeklyChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-xs);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-overlay);
+  color: var(--color-accent);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  font-weight: 600;
+}
+
+.weeklyChip > svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+/* ── Invitation cards (reservation + club) ── */
+
+.inviterLine {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  color: var(--color-text-muted);
+}
+
+.inviterName {
+  font-weight: 700;
+  letter-spacing: var(--text-caption-spacing);
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.inviteMeta {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+.respondRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm);
+}
+
+.clubCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.clubHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.clubHeadText {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.clubName {
+  font-family: var(--font-display);
+  font-size: var(--text-h3-size);
+  line-height: var(--text-h3-line);
+  font-weight: var(--text-h3-weight);
+}
+
+.clubMeta {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text-muted);
+}
+
+/* ── Spotlight events ── */
+
+.eventList {
+  border-radius: var(--radius-lg);
+  display: flex;
+  gap: var(--space-sm);
+  list-style: none;
+  margin: 0;
+  padding: 0 0 var(--space-2xs);
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+}
+
+.eventCard {
+  position: relative;
+  flex: 0 0 17rem;
+  height: 11rem;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  scroll-snap-align: start;
+  background: var(--color-surface-card);
+}
+
+.eventImage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.eventImageFallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-subtle);
+}
+
+.eventImageFallback > svg {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.eventShade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 35%, var(--color-scrim) 70%, var(--color-bg));
+}
+
+.eventText {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: var(--space-sm) var(--space-md);
+}
+
+.eventTitle {
+  font-family: var(--font-display);
+  font-size: var(--text-h3-size);
+  line-height: var(--text-h3-line);
+  font-weight: var(--text-h3-weight);
+  color: var(--color-text);
+}
+
+.eventWhen {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text);
+  opacity: 0.85;
+}
+
+/* Desktop: the scroller becomes a grid (the feed column stays centered). */
+@media (min-width: 768px) {
+  .eventList {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .eventCard {
+    flex: none;
+    height: 12rem;
+  }
+}
+
+/* ── Empty state ── */
+
+.firstSession {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  background: linear-gradient(135deg, var(--color-surface-overlay), var(--color-surface-card));
+}
+
+.firstSessionTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--text-caption-size);
+  line-height: var(--text-caption-line);
+  font-weight: 700;
+  letter-spacing: var(--text-caption-spacing);
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.firstSessionTitle > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.firstSessionCopy {
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--color-text);
+}
+
+.amenityLocked {
+  display: inline-flex;
+  color: var(--color-text-subtle);
+}

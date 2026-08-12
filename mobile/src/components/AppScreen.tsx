@@ -1,6 +1,7 @@
 import { useEffect, useRef, type PropsWithChildren } from 'react';
 import {
   Animated,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   View,
@@ -67,7 +68,17 @@ export function AppScreen({
             style={styles.scroll}
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
-            refreshControl={undefined}
+            refreshControl={
+              onRefresh ? (
+                <RefreshControl
+                  refreshing={refreshing ?? false}
+                  onRefresh={onRefresh}
+                  tintColor={colors.accent}
+                  colors={[colors.accent]}
+                  progressBackgroundColor={colors.bgElevated}
+                />
+              ) : undefined
+            }
           >
             {content}
           </ScrollView>
