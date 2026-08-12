@@ -174,6 +174,13 @@ describe('ClubMembersPage', () => {
     expect(
       await screen.findByText('Nadia Kowalski is now the club owner.'),
     ).toBeInTheDocument();
+
+    // The refetched detail drops every overflow menu (the viewer is no
+    // longer the owner), so focus must be parked on the page heading, not
+    // dropped to <body>.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1, name: 'Members' })).toHaveFocus(),
+    );
   });
 
   it('removes a member through the confirmation', async () => {
@@ -209,6 +216,11 @@ describe('ClubMembersPage', () => {
       expect(
         screen.queryByRole('button', { name: 'Actions for Theo Baptiste' }),
       ).not.toBeInTheDocument(),
+    );
+    // The removed row held the overflow button the confirm dialog would
+    // return focus to; focus must land on the page heading, not <body>.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1, name: 'Members' })).toHaveFocus(),
     );
   });
 });

@@ -66,6 +66,11 @@ function JoinPreview({ token }: { token: string }) {
     mutationFn: () => api.joinClub(token),
     onSuccess: ({ club, alreadyMember }) => {
       void queryClient.invalidateQueries({ queryKey: ['clubs'] });
+      // Joining via link accepts any pending invitation to the same club
+      // server-side, so refresh the pending list too: otherwise the clubs
+      // tab keeps a phantom invite card for a club the member is now in
+      // (home carries its own copy and is refreshed below).
+      void queryClient.invalidateQueries({ queryKey: ['club-invitations'] });
       void queryClient.invalidateQueries({ queryKey: ['home'] });
       toast({
         variant: 'success',
@@ -101,12 +106,18 @@ function JoinPreview({ token }: { token: string }) {
     const dead = deadLinkMessage(preview.error);
     if (dead) {
       return (
-        <EmptyState
-          icon={<LinkIcon aria-hidden />}
-          title="Invite link not usable"
-          description={`${dead} Ask a club member for a fresh invite link.`}
-          action={<ButtonLink to="/clubs">Back to clubs</ButtonLink>}
-        />
+        // This replaces the pending role=status region; without a live
+        // region of its own the outcome would never be announced, and the
+        // dead link is the very thing this landing exists to report. Mount
+        // it as an alert like the generic error branch below.
+        <div role="alert">
+          <EmptyState
+            icon={<LinkIcon aria-hidden />}
+            title="Invite link not usable"
+            description={`${dead} Ask a club member for a fresh invite link.`}
+            action={<ButtonLink to="/clubs">Back to clubs</ButtonLink>}
+          />
+        </div>
       );
     }
     return (

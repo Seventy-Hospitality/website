@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
-import { api, ApiError, type ClubSummary } from '../../lib/api';
+import { api, ApiError, type ClubInvitation, type ClubSummary } from '../../lib/api';
 import { ToastProvider } from '../../components';
 import { JoinClubPage } from './JoinClubPage';
 
@@ -41,8 +41,8 @@ function DetailProbe() {
   return <p>club detail {clubId}</p>;
 }
 
-function renderJoin(entry = '/clubs/join?token=tok-1') {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderJoin(entry = '/clubs/join?token=tok-1', queryClient?: QueryClient) {
+  queryClient ??= new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
@@ -79,6 +79,26 @@ describe('JoinClubPage', () => {
     expect(await screen.findByText('club detail club-1')).toBeInTheDocument();
   });
 
+  it('refreshes the pending club invitations after joining (a link join can accept one)', async () => {
+    joinClub.mockResolvedValue({ club: CLUB, joined: true, alreadyMember: false });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const pendingInvitation: ClubInvitation = {
+      id: 'inv-1',
+      club: CLUB,
+      invitedBy: { memberId: 'm-1', firstName: 'Nadia', lastName: 'Kowalski' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    queryClient.setQueryData(['club-invitations'], [pendingInvitation]);
+    renderJoin(undefined, queryClient);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Join club' }));
+    await screen.findByText('club detail club-1');
+
+    // The clubs tab must not keep a phantom invite card for the club the
+    // member just joined; the backend accepted that invitation server-side.
+    expect(queryClient.getQueryState(['club-invitations'])?.isInvalidated).toBe(true);
+  });
+
   it('offers existing members the shortcut instead of joining again', async () => {
     previewClubInvite.mockResolvedValue({ club: CLUB, alreadyMember: true });
     renderJoin();
@@ -106,6 +126,11 @@ describe('JoinClubPage', () => {
       screen.getByText(new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Join club' })).not.toBeInTheDocument();
+    // The dead-link outcome replaces the role=status loading region, so it
+    // must announce itself: the terminal state renders inside a live region.
+    expect(
+      within(screen.getByRole('alert')).getByText('Invite link not usable'),
+    ).toBeInTheDocument();
   });
 
   it('keeps other failures retryable', async () => {

@@ -97,7 +97,10 @@ reservation shapes the booking flow consumes. Reuse, do not redefine:
 - Club share links: the raw token is returned once by
   `POST /api/clubs/:id/invite-link`; `clubJoinUrl` (clubs-lib) builds the
   `/clubs/join?token=` URL that both the QR (via `src/lib/qr.ts`) and the
-  Copy/Share actions use. Backend gaps: `docs/w5-clubs-notes.md`.
+  Copy/Share actions use. `useClubInviteLink` keeps the minted URL in the
+  `['clubs', id, 'invite-link']` cache entry so every surface shares one
+  link and a rotate replaces it everywhere. Backend gaps:
+  `docs/w5-clubs-notes.md`.
 
 ## Member QR card (set by W2)
 

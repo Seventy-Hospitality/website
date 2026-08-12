@@ -6,8 +6,8 @@
  * ['clubs', id, 'activity'] the feed, ['club-invitations'] the viewer's
  * pending invitations. Mutations invalidate by those prefixes.
  */
-import { useRef, useState } from 'react';
-import { queryOptions, useMutation } from '@tanstack/react-query';
+import { useRef } from 'react';
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { clubJoinUrl } from './clubs-lib';
 
@@ -49,14 +49,31 @@ export function clubDirectoryQuery(q: string) {
   });
 }
 
+/** Cache entry holding the club's current share URL (see useClubInviteLink). */
+function clubInviteLinkKey(clubId: string) {
+  return ['clubs', clubId, 'invite-link'] as const;
+}
+
 /**
- * Lazily minted share link for one club, held for the component's
- * lifetime: the first Copy/QR/Share action mints a link (POST invite-link)
- * and every later action reuses it. `reset` rotates (owner only): mints a
- * fresh link AND revokes every other active one.
+ * Lazily minted share link for one club: the first Copy/QR/Share action
+ * mints a link (POST invite-link) and every later action reuses it.
+ * `reset` rotates (owner only): mints a fresh link AND revokes every other
+ * active one. The URL lives in the query cache (['clubs', id,
+ * 'invite-link'], never fetched; the actions below are its only writers),
+ * so every surface sharing links for the club (the detail page's Share
+ * button, the invite modal) sees the same URL and a rotate swaps it for
+ * all of them at once; no surface can keep handing out a revoked token.
  */
 export function useClubInviteLink(clubId: string) {
-  const [url, setUrl] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const queryKey = clubInviteLinkKey(clubId);
+  // Cache-only subscription: disabled, so the queryFn never runs and
+  // invalidations never refetch; setQueryData below is the only writer.
+  const { data: url = null } = useQuery({
+    queryKey,
+    queryFn: () => null as string | null,
+    enabled: false,
+  });
   // Single-flight: concurrent ensureUrl calls share one mint request.
   const inFlight = useRef<Promise<string> | null>(null);
 
@@ -65,12 +82,17 @@ export function useClubInviteLink(clubId: string) {
   });
 
   async function ensureUrl(): Promise<string> {
-    if (url) return url;
+    const cached = queryClient.getQueryData<string>(queryKey);
+    if (cached) return cached;
     inFlight.current ??= mint
       .mutateAsync({})
       .then((link) => {
+        // A rotate may have landed while this mint was in flight; the
+        // rotated URL wins (this one may already be revoked by it).
+        const current = queryClient.getQueryData<string>(queryKey);
+        if (current) return current;
         const next = clubJoinUrl(link.token, window.location.origin);
-        setUrl(next);
+        queryClient.setQueryData(queryKey, next);
         return next;
       })
       .finally(() => {
@@ -82,7 +104,7 @@ export function useClubInviteLink(clubId: string) {
   async function reset(): Promise<string> {
     const link = await mint.mutateAsync({ rotate: true });
     const next = clubJoinUrl(link.token, window.location.origin);
-    setUrl(next);
+    queryClient.setQueryData(queryKey, next);
     return next;
   }
 

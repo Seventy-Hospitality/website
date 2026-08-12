@@ -41,10 +41,14 @@ and rely on search for everything beyond it. `GET /api/members/search`
 already supports `page`; add "load more" to `ClubMemberPicker` if a
 larger membership makes the first page insufficient.
 
-## Invite modal mints links per surface instance (accepted)
+## Share links: one lazily minted URL per club, shared across surfaces
 
-Each invite-modal/detail-page instance lazily mints its own share link
-(`POST /api/clubs/:id/invite-link`) the first time Copy/QR/Share is used
-and reuses it for the component's lifetime. Multiple active links per
-club are by design (per-member links, default 30-day TTL); the owner's
-"Reset link" (rotate) revokes all others when a leaked URL must die.
+The first Copy/QR/Share action mints a share link
+(`POST /api/clubs/:id/invite-link`); the built join URL then lives in the
+query cache (`['clubs', id, 'invite-link']`, written only by
+`useClubInviteLink`), so the detail page's Share button and the invite
+modal reuse the same URL and the owner's "Reset link" (rotate) swaps it
+on every surface at once; nothing keeps offering a revoked token.
+Multiple active links per club remain by design (per-member links,
+default 30-day TTL); rotate revokes all others when a leaked URL must
+die.

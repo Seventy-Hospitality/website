@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Ellipsis, Plus, Search } from 'lucide-react';
@@ -123,11 +123,22 @@ function MembersView({
     void queryClient.invalidateQueries({ queryKey: ['clubs'] });
   };
 
+  // Success unmounts the row's overflow button the confirm dialog would
+  // return focus to (remove drops the row; transfer drops every menu once
+  // canManageMembers flips), which would strand keyboard focus on <body>.
+  // Park it on the page heading instead (the ClubsPage pattern), after the
+  // dialog's own close has run.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const parkFocusOnHeading = () => {
+    window.setTimeout(() => headingRef.current?.focus(), 0);
+  };
+
   const transfer = useMutation({
     mutationFn: (entry: ClubRosterEntry) =>
       api.changeClubMemberRole(clubId, entry.memberId, 'owner'),
     onSuccess: (_result, entry) => {
       setConfirm(null);
+      parkFocusOnHeading();
       // The whole ['clubs'] prefix moved: list roles, detail permissions,
       // and the roster's Owner badge.
       invalidateClub();
@@ -153,6 +164,7 @@ function MembersView({
     mutationFn: (entry: ClubRosterEntry) => api.removeClubMember(clubId, entry.memberId),
     onSuccess: (_result, entry) => {
       setConfirm(null);
+      parkFocusOnHeading();
       queryClient.setQueryData<ClubRosterEntry[]>(['clubs', clubId, 'members'], (rows) =>
         rows?.filter((row) => row.memberId !== entry.memberId),
       );
@@ -182,6 +194,7 @@ function MembersView({
       <BackToClub clubId={clubId} />
       <PageHeader
         title="Members"
+        headingRef={headingRef}
         actions={
           detail.permissions.canInvite ? (
             <button

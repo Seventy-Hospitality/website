@@ -293,6 +293,56 @@ describe('ClubDetailPage', () => {
     );
   });
 
+  it('shares the rotated link after the invite modal resets it (no stale revoked URL)', async () => {
+    const createClubInviteLink = vi.mocked(api.createClubInviteLink);
+    createClubInviteLink
+      .mockResolvedValueOnce({ token: 'tok-a', expiresAt: null, maxUses: null })
+      .mockResolvedValueOnce({ token: 'tok-c', expiresAt: null, maxUses: null });
+    const nativeShare = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, 'share', {
+      value: nativeShare,
+      configurable: true,
+    });
+
+    try {
+      renderDetail();
+      await screen.findByRole('heading', { name: 'baddies' });
+
+      // The action-bar Share mints the club's link.
+      await userEvent.click(screen.getByRole('button', { name: 'Share' }));
+      await waitFor(() =>
+        expect(nativeShare).toHaveBeenCalledWith(
+          expect.objectContaining({ url: expect.stringContaining('token=tok-a') }),
+        ),
+      );
+
+      // The invite modal rides the SAME link (no extra mint for the QR),
+      // then Reset rotates it, revoking every previously shared URL.
+      await userEvent.click(screen.getByRole('button', { name: 'Invite' }));
+      const invite = screen.getByRole('dialog', { hidden: true, name: 'Invite to Club' });
+      await userEvent.click(within(invite).getByRole('button', { name: 'QR Code' }));
+      expect(await within(invite).findByText(/token=tok-a/)).toBeInTheDocument();
+      await userEvent.click(within(invite).getByRole('button', { name: 'Reset link' }));
+      expect(
+        await screen.findByText('New invite link created. Older links no longer work.'),
+      ).toBeInTheDocument();
+      await userEvent.click(within(invite).getByRole('button', { name: 'Close' }));
+
+      // The action-bar Share must now hand out the rotated link, never the
+      // revoked one it cached before the reset.
+      await userEvent.click(screen.getByRole('button', { name: 'Share' }));
+      await waitFor(() =>
+        expect(nativeShare).toHaveBeenLastCalledWith(
+          expect.objectContaining({ url: expect.stringContaining('token=tok-c') }),
+        ),
+      );
+      expect(createClubInviteLink).toHaveBeenCalledTimes(2);
+      expect(createClubInviteLink).toHaveBeenNthCalledWith(2, 'club-1', { rotate: true });
+    } finally {
+      Reflect.deleteProperty(window.navigator, 'share');
+    }
+  });
+
   it('handles the outsider 404 shape gracefully', async () => {
     getClub.mockRejectedValue(new ApiError('NOT_FOUND', 'Club not found', 404));
     renderDetail();
