@@ -17,6 +17,10 @@ interface WizardFrameProps {
   onClose: () => void;
   /** The active step; omitted on the frame-level states (loader/error/gate). */
   step?: WizardStep;
+  /** Total segments in the progress bar (booking is 3, M4 edit is 2). */
+  steps?: number;
+  /** Overrides the derived step name for the progress accessibility label. */
+  stepName?: string;
   /**
    * Disables Back/Close while a submitted payment may have captured: leaving
    * then would try to cancel a hold the member paid for. The hold ledger is
@@ -35,9 +39,12 @@ export function WizardFrame({
   onBack,
   onClose,
   step,
+  steps = 3,
+  stepName,
   chromeDisabled = false,
   children,
 }: WizardFrameProps) {
+  const segments = Array.from({ length: steps }, (_, index) => index + 1);
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       <View style={styles.chrome}>
@@ -77,10 +84,10 @@ export function WizardFrame({
         <View
           style={styles.progress}
           accessibilityRole="progressbar"
-          accessibilityValue={{ min: 1, max: 3, now: step }}
-          accessibilityLabel={`Step ${step} of 3: ${STEP_NAMES[step]}`}
+          accessibilityValue={{ min: 1, max: steps, now: step }}
+          accessibilityLabel={`Step ${step} of ${steps}: ${stepName ?? STEP_NAMES[step]}`}
         >
-          {([1, 2, 3] as const).map((index) => (
+          {segments.map((index) => (
             <View
               key={index}
               style={[

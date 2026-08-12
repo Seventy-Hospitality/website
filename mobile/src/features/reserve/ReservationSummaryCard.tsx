@@ -16,6 +16,8 @@ export interface ReservationSummaryCardProps {
   rows: ReservationSummaryRow[];
   /** Trailing badge in the header (e.g. a status badge for M4). */
   trailing?: ReactNode;
+  /** Custom body under the header (M4 edit's old -> new change rows). */
+  children?: ReactNode;
 }
 
 /**
@@ -30,6 +32,7 @@ export function ReservationSummaryCard({
   resourceName,
   rows,
   trailing,
+  children,
 }: ReservationSummaryCardProps) {
   return (
     <View style={styles.card}>
@@ -48,19 +51,23 @@ export function ReservationSummaryCard({
         {trailing ? <View style={styles.headTrailing}>{trailing}</View> : null}
       </View>
 
-      <View style={styles.rows}>
-        {rows.map((row, index) => (
-          <View
-            key={row.label}
-            style={[styles.row, index === 0 ? styles.rowFirst : null]}
-          >
-            <Text style={styles.label}>{row.label}</Text>
-            <Text style={styles.value} numberOfLines={1}>
-              {row.value}
-            </Text>
-          </View>
-        ))}
-      </View>
+      {rows.length > 0 ? (
+        <View style={styles.rows}>
+          {rows.map((row, index) => (
+            <View
+              key={row.label}
+              style={[styles.row, index === 0 ? styles.rowFirst : null]}
+            >
+              <Text style={styles.label}>{row.label}</Text>
+              <Text style={styles.value} numberOfLines={1}>
+                {row.value}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      {children}
     </View>
   );
 }

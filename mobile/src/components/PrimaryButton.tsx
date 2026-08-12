@@ -7,7 +7,7 @@ interface PrimaryButtonProps {
   loading?: boolean;
   /** Muted, non-interactive gate (e.g. "Confirm" until terms are accepted). */
   disabled?: boolean;
-  variant?: 'primary' | 'secondary' | 'ghost';
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
 }
 
 export function PrimaryButton({
@@ -33,15 +33,26 @@ export function PrimaryButton({
         variant === 'primary' ? styles.primary : null,
         variant === 'secondary' ? styles.secondary : null,
         variant === 'ghost' ? styles.ghost : null,
+        variant === 'danger' ? styles.danger : null,
         inactive ? styles.inactive : null,
         pressed && !blocked ? styles.pressed : null,
       ]}
     >
       <View style={styles.inner}>
         {loading ? (
-          <ActivityIndicator color={variant === 'primary' ? colors.backgroundDeep : colors.text} />
+          <ActivityIndicator
+            color={variant === 'primary' || variant === 'danger' ? colors.backgroundDeep : colors.text}
+          />
         ) : (
-          <Text style={[styles.label, variant === 'primary' ? styles.primaryLabel : null]}>{label}</Text>
+          <Text
+            style={[
+              styles.label,
+              variant === 'primary' ? styles.primaryLabel : null,
+              variant === 'danger' ? styles.dangerLabel : null,
+            ]}
+          >
+            {label}
+          </Text>
         )}
       </View>
     </Pressable>
@@ -72,6 +83,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     borderColor: colors.border,
   },
+  danger: {
+    backgroundColor: colors.danger,
+    borderColor: colors.danger,
+  },
   pressed: {
     opacity: 0.9,
   },
@@ -85,5 +100,8 @@ const styles = StyleSheet.create({
   },
   primaryLabel: {
     color: colors.textOnAccent,
+  },
+  dangerLabel: {
+    color: colors.backgroundDeep,
   },
 });

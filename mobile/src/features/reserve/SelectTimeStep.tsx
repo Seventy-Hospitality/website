@@ -31,6 +31,20 @@ export interface SelectTimeStepProps {
   notice: string | null;
   onDismissNotice: () => void;
   onContinue: () => void;
+  /** Step title; defaults to the booking "Book a court" heading. */
+  title?: string;
+  /** Footer label; defaults to "Continue". */
+  continueLabel?: string;
+  /**
+   * Extra gate on Continue on top of "needs a slot" (M4 edit's dirty check:
+   * Continue stays disabled until the selection actually changes).
+   */
+  continueDisabled?: boolean;
+  /**
+   * M4 edit/reschedule: exclude this reservation's own claim from availability
+   * so its current slots read as bookable to itself (backend self-exclusion).
+   */
+  excludeReservationId?: string;
 }
 
 /**
@@ -50,6 +64,10 @@ export function SelectTimeStep({
   notice,
   onDismissNotice,
   onContinue,
+  title,
+  continueLabel = 'Continue',
+  continueDisabled = false,
+  excludeReservationId,
 }: SelectTimeStepProps) {
   const strip = useMemo(
     () => buildDateStrip(todayDateKey(timezone), type.maxAdvanceDays),
@@ -58,7 +76,7 @@ export function SelectTimeStep({
   const [expanded, setExpanded] = useState(() => strip.indexOf(date) >= INITIAL_STRIP_DAYS);
   const visibleStrip = expanded ? strip : strip.slice(0, INITIAL_STRIP_DAYS);
 
-  const availability = useQuery(availabilityQuery(type.code, date));
+  const availability = useQuery(availabilityQuery(type.code, date, excludeReservationId));
   const day = availability.data?.[0];
   const available = useMemo(() => day?.slots.map((slot) => slot.start) ?? [], [day]);
 
@@ -71,14 +89,16 @@ export function SelectTimeStep({
     onSlotsChange(pruneSelection(slots, available, type.slotDurationMinutes));
   }, [availability.isSuccess, available, slots, onSlotsChange, type.slotDurationMinutes]);
 
+  const canContinue = slots.length > 0 && !continueDisabled;
+
   return (
     <StepShell
-      title={`Book a ${resourceNoun(type.name)}`}
+      title={title ?? `Book a ${resourceNoun(type.name)}`}
       footer={
         <PrimaryButton
-          label="Continue"
-          onPress={slots.length > 0 ? onContinue : undefined}
-          variant={slots.length > 0 ? 'primary' : 'ghost'}
+          label={continueLabel}
+          onPress={canContinue ? onContinue : undefined}
+          variant={canContinue ? 'primary' : 'ghost'}
         />
       }
     >

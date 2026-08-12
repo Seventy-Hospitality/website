@@ -21,11 +21,21 @@ export const resourceTypesQuery = queryOptions({
   staleTime: 60_000,
 });
 
-/** One day of bookable slots. Volatile: other members are booking too. */
-export function availabilityQuery(typeCode: string, date: string) {
+/**
+ * One day of bookable slots. Volatile: other members are booking too.
+ *
+ * `excludeReservationId` (M4 edit/reschedule) asks the backend to self-exclude
+ * that reservation's own claim, so its current slots read as available to
+ * itself. It carries its own cache key element so the edit view never shares a
+ * cache with a fresh booking view of the same day; the ['availability', code]
+ * prefix still invalidates both.
+ */
+export function availabilityQuery(typeCode: string, date: string, excludeReservationId?: string) {
   return queryOptions({
-    queryKey: ['availability', typeCode, date],
-    queryFn: () => api.getAvailability(typeCode, { date }),
+    queryKey: excludeReservationId
+      ? ['availability', typeCode, date, { excludeReservationId }]
+      : ['availability', typeCode, date],
+    queryFn: () => api.getAvailability(typeCode, { date, excludeReservationId }),
     staleTime: 15_000,
     refetchOnWindowFocus: true,
   });
