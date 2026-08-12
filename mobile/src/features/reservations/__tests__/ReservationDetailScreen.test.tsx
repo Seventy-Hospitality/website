@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { StyleSheet } from 'react-native';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -126,6 +127,27 @@ describe('ReservationDetailScreen capability-flag-driven actions', () => {
     expect(screen.getByText('Decline reservation')).toBeTruthy();
     expect(screen.queryByLabelText('Accept invitation')).toBeNull();
     expect(screen.queryByText('Edit reservation')).toBeNull();
+  });
+});
+
+describe('ReservationDetailScreen respond-pill touch targets', () => {
+  it('Accept / Decline pills meet the 44pt minimum touch target', () => {
+    mockMemberId = 'm_self';
+    renderDetail(
+      makeDetail(
+        { role: 'guest', status: 'pending', canInvite: false, canManage: false, canRespond: true },
+        [ORG, guest('pending')],
+      ),
+    );
+    for (const label of ['Accept invitation', 'Decline invitation']) {
+      const pill = screen.getByLabelText(label);
+      const flat = StyleSheet.flatten(pill.props.style) ?? {};
+      const slop = pill.props.hitSlop;
+      const verticalSlop =
+        typeof slop === 'number' ? slop * 2 : (slop?.top ?? 0) + (slop?.bottom ?? 0);
+      const effectiveHeight = (flat.minHeight ?? 0) + verticalSlop;
+      expect(effectiveHeight).toBeGreaterThanOrEqual(44);
+    }
   });
 });
 

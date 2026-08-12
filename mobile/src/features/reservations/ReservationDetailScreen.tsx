@@ -708,6 +708,9 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   respondPill: {
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.xs,
     borderRadius: radius.pill,

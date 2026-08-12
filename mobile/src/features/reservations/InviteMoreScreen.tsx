@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '../../lib/api';
+import { api, ApiError } from '../../lib/api';
 import { EmptyStateView, PrimaryButton, useToast } from '../../components';
 import { colors, fonts, spacing } from '../../theme/tokens';
 import { formatDateHeading, formatTimeRangeCompact } from '../reserve/booking';
@@ -66,14 +66,31 @@ export function InviteMoreScreen({ reservationId }: { reservationId: string }) {
   }
 
   if (detail.isError) {
+    const error = detail.error;
+    // The backend answers 404/403 for outsiders on purpose (a reservation you
+    // are not part of looks exactly like one that does not exist); that is a
+    // terminal gate. A transient 5xx or network drop is retryable in place, so
+    // do not falsely tell an entitled member they are not part of it.
+    if (error instanceof ApiError && (error.status === 404 || error.status === 403)) {
+      return (
+        <WizardFrame onBack={backToDetail} onClose={backToDetail}>
+          <View style={styles.gate}>
+            <EmptyStateView
+              title="Reservation not found"
+              description="This reservation does not exist, was removed, or you are not part of it."
+            />
+            <PrimaryButton label="Back to home" onPress={() => router.replace('/(tabs)')} />
+          </View>
+        </WizardFrame>
+      );
+    }
     return (
       <WizardFrame onBack={backToDetail} onClose={backToDetail}>
-        <View style={styles.gate}>
-          <EmptyStateView
-            title="Reservation not found"
-            description="This reservation does not exist, was removed, or you are not part of it."
-          />
-          <PrimaryButton label="Back to home" onPress={() => router.replace('/(tabs)')} />
+        <View style={styles.center}>
+          <Text style={styles.centerTitle}>We could not load this reservation.</Text>
+          <View style={styles.centerAction}>
+            <PrimaryButton label="Try again" variant="secondary" onPress={() => void detail.refetch()} />
+          </View>
         </View>
       </WizardFrame>
     );
@@ -122,11 +139,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.sm,
+    paddingHorizontal: spacing.xl,
   },
   centerText: {
     color: colors.textMuted,
     fontFamily: fonts.body,
     fontSize: 14,
+  },
+  centerTitle: {
+    color: colors.text,
+    fontFamily: fonts.displayBold,
+    fontSize: 18,
+    textAlign: 'center',
+  },
+  centerAction: {
+    marginTop: spacing.md,
+    alignSelf: 'stretch',
+    paddingHorizontal: spacing.md,
   },
   gate: {
     flex: 1,
