@@ -2,14 +2,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 import { useSession } from '../../src/lib/session';
-import { colors } from '../../src/theme/tokens';
+import { colors, fonts } from '../../src/theme/tokens';
 
 export default function TabsLayout() {
   const { status } = useSession();
 
   if (status === 'loading') {
     return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background }}>
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg }}>
         <ActivityIndicator color={colors.accent} />
       </View>
     );
@@ -23,15 +23,17 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
+        sceneStyle: { backgroundColor: colors.bg },
         tabBarStyle: {
-          backgroundColor: '#202B20',
-          borderTopColor: 'rgba(255,255,255,0.06)',
+          backgroundColor: colors.bg,
+          borderTopColor: colors.border,
           height: 84,
           paddingTop: 8,
           paddingBottom: 18,
         },
+        tabBarLabelStyle: { fontFamily: fonts.bodySemibold, fontSize: 11 },
         tabBarActiveTintColor: colors.accent,
-        tabBarInactiveTintColor: 'rgba(242, 245, 234, 0.48)',
+        tabBarInactiveTintColor: colors.textSubtle,
       }}
     >
       <Tabs.Screen
@@ -49,10 +51,10 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="connect"
+        name="clubs"
         options={{
-          title: 'Connect',
-          tabBarIcon: ({ color, size }) => <Ionicons name="sparkles-outline" color={color} size={size} />,
+          title: 'Clubs',
+          tabBarIcon: ({ color, size }) => <Ionicons name="people-outline" color={color} size={size} />,
         }}
       />
       <Tabs.Screen
