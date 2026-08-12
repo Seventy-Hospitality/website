@@ -305,7 +305,9 @@ export interface MemberSearchResult {
   avatarUrl: string | null;
 }
 
-// ── Club types (W3 consumes list + roster for invite chips; W5 widens) ──
+// ── Club types (W3 consumes list + roster for invite chips; W5 owns the rest) ──
+
+export type ClubRole = 'owner' | 'member';
 
 export interface ClubSummary {
   id: string;
@@ -316,7 +318,7 @@ export interface ClubSummary {
 }
 
 export interface MyClub extends ClubSummary {
-  myRole: string;
+  myRole: ClubRole;
   joinedAt: string;
   createdAt: string;
 }
@@ -328,8 +330,82 @@ export interface ClubRosterEntry {
   lastName: string;
   displayName: string | null;
   avatarUrl: string | null;
-  role: string;
+  role: ClubRole;
   joinedAt: string;
+}
+
+/**
+ * What the viewer may do on a club (GET /api/clubs/:id). The backend
+ * derives these from the viewer's role; the client renders actions from
+ * the flags, never from the role directly.
+ */
+export interface ClubPermissionFlags {
+  canEdit: boolean;
+  canDelete: boolean;
+  canManageMembers: boolean;
+  canInvite: boolean;
+  /** True only when leaving will succeed (an owner must transfer first). */
+  canLeave: boolean;
+}
+
+export interface ClubDetail extends ClubSummary {
+  myRole: ClubRole;
+  permissions: ClubPermissionFlags;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A club-linked reservation in the GROUP ACTIVITY feed
+ * (GET /api/clubs/:id/activity). Club membership is not booking
+ * participation, so this is the reduced non-participant projection:
+ * counts and the organizer only, never the full roster.
+ */
+export interface ClubActivityItem {
+  id: string;
+  reference: string;
+  typeCode: string;
+  typeName: string;
+  resource: { id: string; name: string };
+  date: string;
+  startTime: string;
+  endTime: string;
+  startsAt: string;
+  endsAt: string;
+  durationMinutes: number;
+  status: ReservationStatus;
+  clubId: string | null;
+  seriesId: string | null;
+  organizer: { memberId: string; firstName: string; lastName: string } | null;
+  /** Confirmed attendees (organizer included): the feed's "N players". */
+  confirmedCount: number;
+  /** The viewer's own participation, when they are on the reservation. */
+  myParticipation: {
+    role: 'organizer' | 'guest';
+    status: ReservationParticipantStatus;
+    invitedByName: string | null;
+  } | null;
+}
+
+/**
+ * POST /api/clubs/:id/invite-link. The raw token leaves the API exactly
+ * once, here; the client builds the share URL and QR payload from it.
+ */
+export interface ClubInviteLink {
+  token: string;
+  expiresAt: string | null;
+  maxUses: number | null;
+}
+
+export interface ClubInvitePreview {
+  club: ClubSummary;
+  alreadyMember: boolean;
+}
+
+export interface ClubJoinResult {
+  club: ClubSummary;
+  joined: boolean;
+  alreadyMember: boolean;
 }
 
 // ── Home types (W2; GET /api/me/home is the one aggregated home read) ──
@@ -725,16 +801,83 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(change),
     }),
-  /** Member directory search by name prefix or member number (min 1 char). */
+  /**
+   * Member directory search by name prefix or member number. An empty
+   * query serves the default alphabetical directory page (the invite
+   * pickers' pre-search list, which excludes the caller server-side).
+   */
   searchMembers: (q: string, limit = 10) => {
-    const query = new URLSearchParams({ q, limit: String(limit) });
+    const query = new URLSearchParams({ limit: String(limit) });
+    const trimmed = q.trim();
+    if (trimmed) query.set('q', trimmed);
     return request<MemberSearchResult[]>(`/api/members/search?${query}`);
   },
 
   // ── Clubs (W3 reads list + roster for invite chips; W5 owns the rest) ──
   getMyClubs: () => request<MyClub[]>('/api/me/clubs'),
+  /** Viewer-scoped detail; outsiders get the 404 shape on purpose. */
+  getClub: (clubId: string) =>
+    request<ClubDetail>(`/api/clubs/${encodeURIComponent(clubId)}`),
+  /** Creates the club (creator becomes owner) and sends the initial
+      invitations; invitees must accept before they join the roster. */
+  createClub: (input: { name: string; description?: string; inviteeMemberIds?: string[] }) =>
+    request<{ club: ClubSummary; invited: string[] }>('/api/clubs', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** Owner edit. `coverImageUrl: null` removes the cover; a NEW cover goes
+      through the multipart upload endpoint, never this PATCH. */
+  updateClub: (
+    clubId: string,
+    input: { name?: string; description?: string | null; coverImageUrl?: null },
+  ) =>
+    request<ClubSummary>(`/api/clubs/${encodeURIComponent(clubId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  deleteClub: (clubId: string) =>
+    request<{ deleted: boolean }>(`/api/clubs/${encodeURIComponent(clubId)}`, {
+      method: 'DELETE',
+    }),
+  /** Owner cover upload (multipart; JPG/PNG/WebP/GIF, 5 MB max). */
+  uploadClubCover: (clubId: string, image: File) => {
+    const body = new FormData();
+    body.append('image', image);
+    return request<ClubSummary>(`/api/clubs/${encodeURIComponent(clubId)}/cover-image`, {
+      method: 'POST',
+      body,
+    });
+  },
+  /** Leave a club (members only; the owner answers 409 OWNER_MUST_TRANSFER). */
+  leaveClub: (clubId: string) =>
+    request<{ left: boolean }>(`/api/clubs/${encodeURIComponent(clubId)}/leave`, {
+      method: 'POST',
+      body: '{}',
+    }),
   getClubMembers: (clubId: string) =>
     request<ClubRosterEntry[]>(`/api/clubs/${encodeURIComponent(clubId)}/members`),
+  /** Owner role change; `role: 'owner'` transfers ownership (the previous
+      owner becomes a member in the same transaction). */
+  changeClubMemberRole: (clubId: string, memberId: string, role: ClubRole) =>
+    request<{ updated: boolean }>(
+      `/api/clubs/${encodeURIComponent(clubId)}/members/${encodeURIComponent(memberId)}`,
+      { method: 'PATCH', body: JSON.stringify({ role }) },
+    ),
+  removeClubMember: (clubId: string, memberId: string) =>
+    request<{ removed: boolean }>(
+      `/api/clubs/${encodeURIComponent(clubId)}/members/${encodeURIComponent(memberId)}`,
+      { method: 'DELETE' },
+    ),
+  /** Batch invitations (require acceptance). Members already in the club or
+      already holding a live invite are silently skipped; `invited` lists
+      who actually got one. */
+  inviteClubMembers: (clubId: string, memberIds: string[]) =>
+    request<{ invited: string[] }>(`/api/clubs/${encodeURIComponent(clubId)}/invitations`, {
+      method: 'POST',
+      body: JSON.stringify({ memberIds }),
+    }),
+  /** The viewer's pending club invitations (same shape as the home feed's). */
+  getMyClubInvitations: () => request<ClubInvitation[]>('/api/me/club-invitations'),
   /**
    * Accept or decline a pending club invitation. Idempotent when the state
    * already agrees; a stale invitation answers 409 INVALID_INVITATION_STATE
@@ -744,6 +887,34 @@ export const api = {
     request<{ status: string; clubId: string }>(
       `/api/club-invitations/${encodeURIComponent(id)}/respond`,
       { method: 'POST', body: JSON.stringify({ response }) },
+    ),
+  /** Mint a share link (any member). `rotate: true` (owner only) also
+      revokes every other active link, killing a leaked URL. */
+  createClubInviteLink: (
+    clubId: string,
+    options: { expiresInDays?: number; maxUses?: number; rotate?: boolean } = {},
+  ) =>
+    request<ClubInviteLink>(`/api/clubs/${encodeURIComponent(clubId)}/invite-link`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
+  /** Resolve a share-link token to a club preview for the join screen.
+      Dead links (revoked/expired/used up) answer 410 INVITE_LINK_INVALID. */
+  previewClubInvite: (token: string) =>
+    request<ClubInvitePreview>('/api/clubs/invite-preview', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+  /** Join via share link. Idempotent for existing members. */
+  joinClub: (token: string) =>
+    request<ClubJoinResult>('/api/clubs/join', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+  /** GROUP ACTIVITY: the club's linked reservations (members only). */
+  getClubActivity: (clubId: string, filter: 'upcoming' | 'past' | 'all' = 'all') =>
+    request<ClubActivityItem[]>(
+      `/api/clubs/${encodeURIComponent(clubId)}/activity?${new URLSearchParams({ filter })}`,
     ),
 
   // ── Home (W2) ──

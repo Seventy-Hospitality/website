@@ -5,7 +5,7 @@
  * converges after any of them.
  */
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, ApiError, type HomeFeed } from '../../lib/api';
+import { api, ApiError, type ClubInvitation, type HomeFeed } from '../../lib/api';
 
 /**
  * The browser's IANA zone for the greeting ("Good evening" in the
@@ -45,9 +45,11 @@ export function isClubInviteConflict(error: unknown): boolean {
 /**
  * Accept/decline a club invitation (POST /api/club-invitations/:id/respond)
  * with the same cache discipline as the reservation respond hook: the card
- * leaves the ['home'] feed optimistically with snapshot rollback, conflicts
- * re-fetch the truth, and settlement invalidates ['home'] plus the ['clubs']
- * prefix (accepting adds a club to the member's list).
+ * leaves the ['home'] feed AND the ['club-invitations'] list (the clubs
+ * tab renders the same invitations, W5) optimistically with snapshot
+ * rollback, conflicts re-fetch the truth, and settlement invalidates
+ * ['home'], ['club-invitations'], and the ['clubs'] prefix (accepting adds
+ * a club to the member's list).
  */
 export function useRespondToClubInvitation() {
   const queryClient = useQueryClient();
@@ -57,7 +59,11 @@ export function useRespondToClubInvitation() {
       api.respondToClubInvitation(invitationId, response),
     onMutate: async ({ invitationId }) => {
       await queryClient.cancelQueries({ queryKey: ['home'] });
+      await queryClient.cancelQueries({ queryKey: ['club-invitations'] });
       const previousHome = queryClient.getQueriesData<HomeFeed>({ queryKey: ['home'] });
+      const previousInvitations = queryClient.getQueriesData<ClubInvitation[]>({
+        queryKey: ['club-invitations'],
+      });
       queryClient.setQueriesData<HomeFeed>({ queryKey: ['home'] }, (home) =>
         home
           ? {
@@ -66,18 +72,26 @@ export function useRespondToClubInvitation() {
             }
           : home,
       );
-      return { previousHome };
+      queryClient.setQueriesData<ClubInvitation[]>({ queryKey: ['club-invitations'] }, (rows) =>
+        rows?.filter((row) => row.id !== invitationId),
+      );
+      return { previousHome, previousInvitations };
     },
     onError: (error, _input, context) => {
       for (const [key, data] of context?.previousHome ?? []) {
         queryClient.setQueryData(key, data);
       }
+      for (const [key, data] of context?.previousInvitations ?? []) {
+        queryClient.setQueryData(key, data);
+      }
       if (isClubInviteConflict(error)) {
         void queryClient.invalidateQueries({ queryKey: ['home'] });
+        void queryClient.invalidateQueries({ queryKey: ['club-invitations'] });
       }
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['home'] });
+      void queryClient.invalidateQueries({ queryKey: ['club-invitations'] });
       void queryClient.invalidateQueries({ queryKey: ['clubs'] });
     },
   });

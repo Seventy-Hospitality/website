@@ -15,12 +15,16 @@ import { BookingWizardPage } from './pages/reserve/BookingWizardPage';
 import { ReservationDetailPage } from './pages/reservations/ReservationDetailPage';
 import { EditReservationPage } from './pages/reservations/EditReservationPage';
 import { InviteParticipantsPage } from './pages/reservations/InviteParticipantsPage';
+import { ClubsPage } from './pages/clubs/ClubsPage';
+import { CreateClubPage } from './pages/clubs/CreateClubPage';
+import { ClubDetailPage } from './pages/clubs/ClubDetailPage';
+import { ClubMembersPage } from './pages/clubs/ClubMembersPage';
+import { JoinClubPage } from './pages/clubs/JoinClubPage';
 import { AccountPage } from './pages/account/AccountPage';
 import { OnboardingGate } from './pages/onboarding/OnboardingGate';
 import { ChoosePlanPage } from './pages/onboarding/ChoosePlanPage';
 import { CheckoutPage } from './pages/onboarding/CheckoutPage';
 import { VerifyIdentityPage } from './pages/onboarding/VerifyIdentityPage';
-import { PlaceholderPage } from './pages/PlaceholderPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 
 /**
@@ -73,6 +77,10 @@ export default function App() {
               element={<InviteParticipantsPage />}
             />
 
+            {/* Create-club wizard (W5): full-screen, outside the tab
+                shell, with the same chrome as the booking wizard. */}
+            <Route path="/clubs/new" element={<CreateClubPage />} />
+
             <Route element={<AppShell />}>
               <Route path="/" element={<HomePage />} />
               <Route path="/reserve" element={<ReservePage />} />
@@ -80,36 +88,12 @@ export default function App() {
                 path="/reservations/:reservationId"
                 element={<ReservationDetailPage />}
               />
-              <Route
-                path="/clubs"
-                element={
-                  <PlaceholderPage
-                    title="Clubs"
-                    ownerPackage="W5"
-                    description="Your clubs and the clubs you can join"
-                  />
-                }
-              />
-              <Route
-                path="/clubs/new"
-                element={
-                  <PlaceholderPage
-                    title="Create a club"
-                    ownerPackage="W5"
-                    description="The club creation wizard"
-                  />
-                }
-              />
-              <Route
-                path="/clubs/:clubId/*"
-                element={
-                  <PlaceholderPage
-                    title="Club"
-                    ownerPackage="W5"
-                    description="Club details, roster, invites, and activity"
-                  />
-                }
-              />
+              {/* Clubs (W5). /clubs/join is the invite-link/QR landing and
+                  must rank above the dynamic :clubId. */}
+              <Route path="/clubs" element={<ClubsPage />} />
+              <Route path="/clubs/join" element={<JoinClubPage />} />
+              <Route path="/clubs/:clubId" element={<ClubDetailPage />} />
+              <Route path="/clubs/:clubId/members" element={<ClubMembersPage />} />
               <Route path="/account/*" element={<AccountPage />} />
             </Route>
           </Route>
