@@ -220,12 +220,12 @@ a.memberCard:hover {
     min-width: 0;
   }
 
-  /* Content is a left-anchored column (never re-centered into a floating
-     island): it fills the area up to a comfortable working width and then
-     lets dead space fall to the far right on ultrawide. Individual pages
-     narrow further (forms) via .page, left-aligned within this column. */
+  /* Content FILLS the area (the shell already spans the full viewport with
+     the sidebar pinned left). Collection pages reflow into more columns to
+     use the width; only inherently single-column reading content (forms,
+     a settings list, a detail card) caps its own width via .page. */
   .main {
-    max-width: var(--content-wide);
+    max-width: none;
     width: 100%;
     margin: 0;
     padding: var(--space-xl) clamp(var(--space-lg), 3vw, var(--space-3xl));

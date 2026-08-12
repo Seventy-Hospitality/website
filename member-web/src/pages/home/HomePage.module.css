@@ -28,8 +28,18 @@
 @media (min-width: 1024px) {
   .feedGrid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 20rem;
+    grid-template-columns: minmax(0, 1fr) 22rem;
     gap: var(--space-xl);
+    align-items: start;
+  }
+
+  /* The feed fills its column with cards rather than one stretched row per
+     item: amenities / upcoming reservations reflow into as many columns as
+     fit. Mobile (single column) is untouched below this breakpoint. */
+  .feedMain .cardStack {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+    gap: var(--space-md);
     align-items: start;
   }
 

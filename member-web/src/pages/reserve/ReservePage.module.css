@@ -110,7 +110,7 @@
 @media (min-width: 768px) {
   .list {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
     gap: var(--space-md);
   }
 
@@ -161,8 +161,5 @@
   }
 }
 
-@media (min-width: 1280px) {
-  .list {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
+/* auto-fill above handles every width: 2 columns on a laptop, more as the
+   viewport grows, filling the content area instead of capping at 3. */
