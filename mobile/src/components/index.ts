@@ -20,5 +20,6 @@ export { SegmentedControl, type SegmentedOption } from './SegmentedControl';
 export { ListRow, IconTile } from './ListRow';
 export { Sheet } from './Sheet';
 export { QRCode } from './QRCode';
+export { MemberCardSheet, type MemberCardSheetProps } from './MemberCardSheet';
 export { ToastProvider } from './Toast';
 export { useToast, type ToastOptions, type ToastVariant } from './toast-context';
