@@ -75,6 +75,30 @@ reservation shapes the booking flow consumes. Reuse, do not redefine:
   its outcome toasts from a mutation owned by the PAGE, not the card
   (mutate-time callbacks are dropped for unmounted callers).
 
+## Clubs surface (set by W5)
+
+- Query keys: `['clubs']` (list; `myClubsQuery` in
+  `src/pages/reserve/booking-data.ts`), `['clubs', id]` (detail with the
+  backend's `permissions` flags), `['clubs', id, 'members']`
+  (`clubRosterQuery`), `['clubs', id, 'activity']`, `['club-invitations']`
+  (the viewer's pending invitations). Club mutations invalidate by these
+  prefixes; render club actions from the `permissions` flags, never from
+  `myRole`.
+- `useRespondToClubInvitation()` (`src/pages/home/home-data.ts`) is THE
+  club-invite respond mutation for every surface (home cards and the
+  clubs tab): optimistic removal from `['home']` AND
+  `['club-invitations']` with rollback, then invalidation of both plus
+  `['clubs']`.
+- The invite pickers ride the member directory:
+  `api.searchMembers('')` serves the default alphabetical page (caller
+  excluded server-side); `clubDirectoryQuery` in
+  `src/pages/clubs/clubs-data.ts` is the picker feed, and
+  `ClubMemberPicker` reuses `src/lib/invites.ts` selection logic.
+- Club share links: the raw token is returned once by
+  `POST /api/clubs/:id/invite-link`; `clubJoinUrl` (clubs-lib) builds the
+  `/clubs/join?token=` URL that both the QR (via `src/lib/qr.ts`) and the
+  Copy/Share actions use. Backend gaps: `docs/w5-clubs-notes.md`.
+
 ## Member QR card (set by W2)
 
 `MemberQrSheet` in `src/components` is THE membership card overlay
