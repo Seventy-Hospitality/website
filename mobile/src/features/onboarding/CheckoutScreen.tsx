@@ -34,11 +34,10 @@ import {
 import { useSession } from '../../lib/session';
 import { usePaymentSheet, usePaymentsConfigured } from '../../lib/stripe';
 import { AppScreen } from '../../components/AppScreen';
+import { Checkbox } from '../../components/Checkbox';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { Skeleton } from '../../components/Skeleton';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
-import { Checkbox } from './components/Checkbox';
-import { GatedButton } from './components/GatedButton';
 import { TERMS_VERSION } from './onboarding';
 import { formatAmountWithCents } from './plan-pricing';
 import { billingQuery, plansQuery } from './queries';
@@ -175,7 +174,17 @@ export function CheckoutScreen() {
       void queryClient.invalidateQueries({ queryKey: ['onboarding'], refetchType: 'none' });
       void queryClient.invalidateQueries({ queryKey: ['membership'], refetchType: 'none' });
       void queryClient.invalidateQueries({ queryKey: ['billing'], refetchType: 'none' });
-      await refresh();
+      // The membership is active server-side and the resume cache is already
+      // patched to the ID step, so navigating is safe regardless of refresh.
+      // Guard it so a transient getMe() blip cannot strand a paid member on
+      // the processing hold (and cannot reject the "Check again" caller) —
+      // this is what keeps runConfirm's "never rejects" contract true.
+      try {
+        await refresh();
+      } catch {
+        // Session read failed transiently; the gate re-reads on the next
+        // screen. Proceed to the ID step either way.
+      }
       setPhase('idle');
       router.replace('/onboarding/verify-identity');
       return;
@@ -318,7 +327,7 @@ export function CheckoutScreen() {
       <View style={styles.footer}>
         <BackToPlans />
         {configured && phase !== 'processing' && (
-          <GatedButton
+          <PrimaryButton
             label="Confirm membership"
             loading={busy}
             disabled={!agreed}

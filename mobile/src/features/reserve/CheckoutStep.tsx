@@ -22,6 +22,8 @@ import {
   selectionSummary,
 } from './booking';
 import {
+  classifyReissueError,
+  classifyReissueResult,
   describeBookingFailure,
   isPaymentClearing,
   isTerminalHoldError,
@@ -110,9 +112,14 @@ export function CheckoutStep({
   const [payError, setPayError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [processingHold, setProcessingHold] = useState(false);
   const [holdExpired, setHoldExpired] = useState(false);
   const [confirmError, setConfirmError] = useState(false);
+  // Set when a reissue could not prove the previous charge did NOT capture
+  // (network / 5xx, or an unexpected response). The payment lock STAYS ON and
+  // the member re-runs the reissue; see recoverFromDecline.
+  const [recoverError, setRecoverError] = useState<string | null>(null);
 
   // Hold the slot as soon as the server quote lands (the Figma checkout is
   // entered with the court already assigned). Fired once.
@@ -128,7 +135,13 @@ export function CheckoutStep({
   const countdownLapsed = holdSecondsLeft !== null && holdSecondsLeft <= 0;
   const showHoldExpired =
     holdExpired ||
-    (countdownLapsed && !paying && !confirming && !confirmError && !processingHold);
+    (countdownLapsed &&
+      !paying &&
+      !confirming &&
+      !confirmError &&
+      !processingHold &&
+      !recovering &&
+      !recoverError);
 
   async function handlePaid() {
     if (!held) return;
@@ -155,43 +168,73 @@ export function CheckoutStep({
     }
   }
 
+  /**
+   * Recover a hold after a failed PaymentSheet result by reissuing its
+   * PaymentIntent. The native sheet cannot tell a definitive decline from an
+   * ambiguous failure (a network drop AFTER the charge confirmed), so the
+   * capture state is unknown until the backend reissue resolves it.
+   *
+   * Money-safety invariant (see classifyReissue* + hold-session.ts): the
+   * payment lock is cleared ONLY on a proven-unpaid outcome — a fresh secret
+   * minted after the old intent was retired at Stripe. A captured charge, a
+   * gone hold, and every indeterminate failure all KEEP the lock on, because
+   * a client cancel of a possibly-paid hold settles at the cancellation
+   * percent (0% within 2h of start) and loses the money.
+   */
   async function recoverFromDecline(message: string | null) {
     if (!held) return;
-    try {
-      const reissue = await api.reissuePaymentIntent(held.reservation.id);
-      if (reissue.alreadyPaid) {
-        // The charge actually captured despite the failure signal: settle it.
+    setRecovering(true);
+    const disposition = await api
+      .reissuePaymentIntent(held.reservation.id)
+      .then(classifyReissueResult, classifyReissueError);
+    setRecovering(false);
+
+    switch (disposition.kind) {
+      case 'paid':
+        // The charge actually captured despite the failure signal: keep the
+        // lock and settle the hold to a confirmed booking.
+        setRecoverError(null);
         onPaymentLock(true);
         await handlePaid();
         return;
-      }
-      if (!reissue.clientSecret) {
+      case 'retry-in-place':
+        // Fresh PaymentIntent on the SAME hold: the old intent was PROVABLY
+        // retired at Stripe, so nothing captured. Safe to clear the lock and
+        // let the member retry in place on the fresh secret.
+        setRecoverError(null);
+        setHeld((prev) =>
+          prev
+            ? {
+                ...prev,
+                clientSecret: disposition.clientSecret,
+                holdExpiresAt: disposition.expiresAt,
+              }
+            : prev,
+        );
         onPaymentLock(false);
-        onPickAnotherTime('We could not restart your payment. Pick another time to try again.');
+        setPayError(message ?? 'Your payment could not be completed. Try again.');
         return;
-      }
-      // Fresh PaymentIntent on the SAME hold: swap the payable secret + TTL
-      // and let the member retry in place. The old intent was retired at
-      // Stripe, so a retry can never double-charge.
-      setHeld((prev) =>
-        prev
-          ? { ...prev, clientSecret: reissue.clientSecret, holdExpiresAt: reissue.expiresAt }
-          : prev,
-      );
-      onPaymentLock(false);
-      setPayError(message ?? 'Your payment could not be completed. Try again.');
-    } catch (err) {
-      onPaymentLock(false);
-      if (isTerminalHoldError(err)) {
+      case 'expired':
+        // The hold is gone server-side; the paid-but-expired sweeper owns any
+        // captured charge. KEEP the lock so showHoldExpired -> onPickAnotherTime
+        // releases WITHOUT cancelling (a client cancel would settle at the
+        // policy percent).
+        setRecoverError(null);
         setHoldExpired(true);
         return;
-      }
-      setPayError('Your payment could not be completed. Try again.');
+      case 'recover':
+        // Indeterminate: the original charge state is unknown. The lock STAYS
+        // ON and the member re-runs the reissue, which settles a captured
+        // charge or mints a fresh secret once the service is reachable.
+        setRecoverError(
+          'We could not reach the payment service to finish checking your payment. Check your connection and try again.',
+        );
+        return;
     }
   }
 
   async function pay() {
-    if (!held?.clientSecret || paying) return;
+    if (!held?.clientSecret || paying || recovering) return;
     setPayError(null);
     setPaying(true);
     // From here the charge may capture at Stripe: the wizard must not let
@@ -312,6 +355,21 @@ export function CheckoutStep({
     );
   }
 
+  if (recoverError) {
+    return (
+      <StepShell title="Checkout" subtitle={subtitle}>
+        <NoticeBox title="We couldn't finish your payment" message={recoverError}>
+          <PrimaryButton
+            label="Try again"
+            variant="secondary"
+            loading={recovering}
+            onPress={() => void recoverFromDecline(null)}
+          />
+        </NoticeBox>
+      </StepShell>
+    );
+  }
+
   if (quote.isPending || create.isPending || (quote.isSuccess && !held)) {
     return (
       <StepShell title="Checkout" subtitle={subtitle}>
@@ -352,7 +410,7 @@ export function CheckoutStep({
       footer={
         <PrimaryButton
           label={`Confirm & pay ${formatAmountWithCents(held.totalCents)}`}
-          loading={paying || confirming}
+          loading={paying || confirming || recovering}
           onPress={() => void pay()}
         />
       }

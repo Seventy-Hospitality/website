@@ -25,7 +25,6 @@ import { useToast } from '../../components/toast-context';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { Skeleton } from '../../components/Skeleton';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
-import { GatedButton } from './components/GatedButton';
 import { idVerificationQuery } from './queries';
 
 export function VerifyIdentityScreen() {
@@ -259,7 +258,7 @@ export function VerifyIdentityScreen() {
             >
               <Text style={styles.skipLink}>Skip for now</Text>
             </Pressable>
-            <GatedButton
+            <PrimaryButton
               label="Submit ID"
               loading={submit.isPending}
               disabled={!view?.hasPhoto || skip.isPending}

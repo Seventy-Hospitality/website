@@ -5,25 +5,36 @@ interface PrimaryButtonProps {
   label: string;
   onPress?: () => void;
   loading?: boolean;
+  /** Muted, non-interactive gate (e.g. "Confirm" until terms are accepted). */
+  disabled?: boolean;
   variant?: 'primary' | 'secondary' | 'ghost';
 }
 
 export function PrimaryButton({
   label,
   loading = false,
+  disabled = false,
   onPress,
   variant = 'primary',
 }: PrimaryButtonProps) {
+  // Loading shows a spinner and blocks presses; disabled is the Figma's muted
+  // affordance (dimmed, non-interactive) while some gate is unmet.
+  const inactive = disabled && !loading;
+  const blocked = loading || disabled;
   return (
     <Pressable
       onPress={onPress}
-      disabled={loading}
+      disabled={blocked}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: blocked, busy: loading }}
+      accessibilityLabel={label}
       style={({ pressed }) => [
         styles.button,
         variant === 'primary' ? styles.primary : null,
         variant === 'secondary' ? styles.secondary : null,
         variant === 'ghost' ? styles.ghost : null,
-        pressed ? styles.pressed : null,
+        inactive ? styles.inactive : null,
+        pressed && !blocked ? styles.pressed : null,
       ]}
     >
       <View style={styles.inner}>
@@ -63,6 +74,9 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.9,
+  },
+  inactive: {
+    opacity: 0.45,
   },
   label: {
     color: colors.text,

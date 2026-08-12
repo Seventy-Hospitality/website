@@ -1,5 +1,7 @@
 import { ApiError } from '../../../lib/api';
 import {
+  classifyReissueError,
+  classifyReissueResult,
   describeBookingFailure,
   isPaymentClearing,
   isTerminalHoldError,
@@ -53,5 +55,67 @@ describe('confirm-time error classification', () => {
     expect(isTerminalHoldError(err('INVALID_STATUS'))).toBe(true);
     expect(isTerminalHoldError(err('NOT_FOUND', 404))).toBe(true);
     expect(isTerminalHoldError(err('SLOT_UNAVAILABLE'))).toBe(false);
+  });
+});
+
+describe('reissue disposition (money-lock safety after a failed PaymentSheet)', () => {
+  // The load-bearing invariant the reserve review turns on: the payment lock
+  // is cleared for EXACTLY ONE disposition — 'retry-in-place' — because that
+  // is the only proven-unpaid outcome. Every other path keeps the lock so a
+  // client cancel can never settle a possibly-captured hold at the
+  // cancellation percent (0% within 2h of start).
+  const clearsLock = (kind: string) => kind === 'retry-in-place';
+
+  it('settles (keeps the lock) when the previous intent already captured', () => {
+    const d = classifyReissueResult({ alreadyPaid: true, clientSecret: null, expiresAt: null });
+    expect(d.kind).toBe('paid');
+    expect(clearsLock(d.kind)).toBe(false);
+  });
+
+  it('unlocks and retries in place ONLY when a fresh secret was minted', () => {
+    const d = classifyReissueResult({
+      alreadyPaid: false,
+      clientSecret: 'pi_new_secret',
+      expiresAt: '2026-08-12T10:12:00.000Z',
+    });
+    expect(d).toEqual({
+      kind: 'retry-in-place',
+      clientSecret: 'pi_new_secret',
+      expiresAt: '2026-08-12T10:12:00.000Z',
+    });
+    expect(clearsLock(d.kind)).toBe(true);
+  });
+
+  it('keeps the lock on an unexpected response with neither capture nor secret', () => {
+    // The backend does not produce this for a live hold; treat as indeterminate
+    // rather than unlocking on an unproven-unpaid state.
+    const d = classifyReissueResult({ alreadyPaid: false, clientSecret: null, expiresAt: null });
+    expect(d.kind).toBe('recover');
+    expect(clearsLock(d.kind)).toBe(false);
+  });
+
+  it('routes a terminal (gone) hold to the sweeper WITHOUT unlocking', () => {
+    for (const code of ['HOLD_EXPIRED', 'INVALID_STATUS', 'NOT_FOUND']) {
+      const d = classifyReissueError(err(code, code === 'NOT_FOUND' ? 404 : 409));
+      expect(d.kind).toBe('expired');
+      expect(clearsLock(d.kind)).toBe(false);
+    }
+  });
+
+  it('keeps the lock on an indeterminate reissue failure (network / 5xx / non-terminal)', () => {
+    // The exact loss window in the finding: a network throw or a 5xx while the
+    // original charge may have captured must NEVER unlock the hold.
+    const cases: unknown[] = [
+      new TypeError('Network request failed'),
+      err('UNKNOWN', 500),
+      err('SERVER_ERROR', 503),
+      new Error('boom'),
+      err('SLOT_UNAVAILABLE', 409),
+    ];
+    for (const e of cases) {
+      const d = classifyReissueError(e);
+      expect(d.kind).toBe('recover');
+      expect(clearsLock(d.kind)).toBe(false);
+    }
   });
 });

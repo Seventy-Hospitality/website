@@ -1,13 +1,12 @@
 /**
- * Flow-local checkbox for the checkout terms gate. M0's component set has no
- * checkbox; this is a minimal, tokens-only, accessible one. NOTE (for the
- * component-library owner): if a second flow needs a checkbox, hoist this into
- * src/components and delete this copy.
+ * Tokens-only, accessible checkbox. Hoisted from the M1 onboarding checkout
+ * (the terms gate) into the shared component set now that more than one flow
+ * needs a checkbox.
  */
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, fonts, radius, spacing } from '../../../theme/tokens';
+import { colors, fonts, radius, spacing } from '../theme/tokens';
 
 interface CheckboxProps {
   checked: boolean;

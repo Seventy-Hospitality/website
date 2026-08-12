@@ -1,6 +1,7 @@
 export { AppScreen } from './AppScreen';
 export { SectionCard } from './SectionCard';
 export { PrimaryButton } from './PrimaryButton';
+export { Checkbox } from './Checkbox';
 export { ChoiceChip } from './ChoiceChip';
 export { EmptyStateView } from './EmptyStateView';
 export { BookingCard } from './BookingCard';

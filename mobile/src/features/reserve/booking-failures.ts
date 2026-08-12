@@ -72,3 +72,57 @@ export function isTerminalHoldError(error: unknown): boolean {
 export function isPaymentClearing(error: unknown): boolean {
   return error instanceof ApiError && error.code === 'PAYMENT_REQUIRED';
 }
+
+/**
+ * What the checkout should do after attempting a payment-intent reissue on a
+ * failed PaymentSheet result. This is the money-lock decision, kept pure so it
+ * is directly testable: the payment lock (which blocks a client cancel of a
+ * possibly-paid hold) may be cleared for exactly ONE of these outcomes.
+ *
+ *  - `paid`           the previous intent actually captured: keep the lock and
+ *                     settle the hold to a confirmed booking (never cancel it).
+ *  - `retry-in-place` a fresh intent was minted, which the backend does only
+ *                     AFTER retiring the old one at Stripe (provably
+ *                     uncapturable). This is the ONLY proven-unpaid outcome, so
+ *                     it is the only one that clears the lock and lets the
+ *                     member retry on the fresh secret.
+ *  - `expired`        the hold is gone server-side; the backend's paid-but-
+ *                     expired sweeper owns any captured charge (full refund /
+ *                     re-acquire). Keep the lock so the follow-on navigation
+ *                     RELEASES WITHOUT a client cancel — a DELETE of a captured
+ *                     hold settles at the cancellation percent (0% within 2h of
+ *                     start), losing the money.
+ *  - `recover`        an indeterminate outcome (network / 5xx, or a response
+ *                     with neither a capture nor a fresh secret). The original
+ *                     intent's capture state is UNKNOWN, so the lock stays on
+ *                     and the member re-runs the reissue.
+ *
+ * The invariant the reserve money-safety review turns on: only `retry-in-place`
+ * clears the lock. Every ambiguous path keeps it.
+ */
+export type ReissueDisposition =
+  | { kind: 'paid' }
+  | { kind: 'retry-in-place'; clientSecret: string; expiresAt: string | null }
+  | { kind: 'expired' }
+  | { kind: 'recover' };
+
+/** Classify a SUCCESSFUL reissue response into a lock-safe disposition. */
+export function classifyReissueResult(result: {
+  alreadyPaid: boolean;
+  clientSecret: string | null;
+  expiresAt: string | null;
+}): ReissueDisposition {
+  if (result.alreadyPaid) return { kind: 'paid' };
+  if (result.clientSecret) {
+    return { kind: 'retry-in-place', clientSecret: result.clientSecret, expiresAt: result.expiresAt };
+  }
+  // Neither a capture nor a fresh secret: an outcome the backend does not
+  // produce for a live hold. Do NOT unlock on an unproven-unpaid state.
+  return { kind: 'recover' };
+}
+
+/** Classify a THROWN reissue error into a lock-safe disposition. */
+export function classifyReissueError(error: unknown): ReissueDisposition {
+  if (isTerminalHoldError(error)) return { kind: 'expired' };
+  return { kind: 'recover' };
+}
