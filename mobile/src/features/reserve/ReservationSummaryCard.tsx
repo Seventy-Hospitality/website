@@ -14,6 +14,11 @@ export interface ReservationSummaryCardProps {
   /** The server-assigned court/resource ("Court 2"), revealed at checkout. */
   resourceName?: string;
   rows: ReservationSummaryRow[];
+  /**
+   * Full-width line above the amenity head (M2 home's "AI suggestion" and
+   * "SARAH invited you" lines; mirrors member-web's ReservationCard header).
+   */
+  header?: ReactNode;
   /** Trailing badge in the header (e.g. a status badge for M4). */
   trailing?: ReactNode;
   /** Custom body under the header (M4 edit's old -> new change rows). */
@@ -31,11 +36,13 @@ export function ReservationSummaryCard({
   typeName,
   resourceName,
   rows,
+  header,
   trailing,
   children,
 }: ReservationSummaryCardProps) {
   return (
     <View style={styles.card}>
+      {header}
       <View style={styles.head}>
         <ResourceTypeTile code={typeCode} />
         <View style={styles.headText}>

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -52,6 +52,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     },
     [hide, opacity, translateY],
   );
+
+  // Clear the pending auto-dismiss on unmount so a fired timer never calls
+  // setState on a torn-down tree (a leak that also crashes jest post-teardown).
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
 
   const value = useMemo(() => ({ toast }), [toast]);
 

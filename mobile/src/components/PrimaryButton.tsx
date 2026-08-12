@@ -8,6 +8,9 @@ interface PrimaryButtonProps {
   /** Muted, non-interactive gate (e.g. "Confirm" until terms are accepted). */
   disabled?: boolean;
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
+  /** Screen-reader name when it should differ from the visible label
+      (e.g. a short "Accept" button that announces "Accept invitation"). */
+  accessibilityLabel?: string;
 }
 
 export function PrimaryButton({
@@ -16,6 +19,7 @@ export function PrimaryButton({
   disabled = false,
   onPress,
   variant = 'primary',
+  accessibilityLabel,
 }: PrimaryButtonProps) {
   // Loading shows a spinner and blocks presses; disabled is the Figma's muted
   // affordance (dimmed, non-interactive) while some gate is unmet.
@@ -27,7 +31,7 @@ export function PrimaryButton({
       disabled={blocked}
       accessibilityRole="button"
       accessibilityState={{ disabled: blocked, busy: loading }}
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel ?? label}
       style={({ pressed }) => [
         styles.button,
         variant === 'primary' ? styles.primary : null,
