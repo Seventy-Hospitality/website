@@ -82,6 +82,7 @@
   --space-lg: 1.5rem;
   --space-xl: 2rem;
   --space-2xl: 3rem;
+  --space-3xl: 4rem;
 
   /* ── Radii (inputs 12, cards 16, icon tiles 12, buttons pill) ── */
   --radius-sm: 0.5rem;
@@ -110,10 +111,12 @@
        --breakpoint-md: 768px   shell switches bottom tab bar -> sidebar
        --breakpoint-lg: 1024px  multi-column page layouts
   */
-  --app-frame-max: 1320px; /* sidebar + content frame on desktop */
-  --content-max: 720px; /* default reading column inside the shell (forms) */
-  --content-wide: 1080px; /* list/grid pages that fill the desktop width */
-  --sidebar-width: 240px;
+  /* Content caps are LEFT-anchored inside the filled content area (the shell
+     spans the full viewport; the sidebar hugs the left edge). No global frame
+     centers the app. */
+  --content-max: 760px; /* reading column: forms, detail, single-column pages */
+  --content-wide: 1320px; /* list/grid + multi-column pages, left-anchored */
+  --sidebar-width: 248px;
   --bottombar-height: 68px;
   --gutter: var(--space-lg);
 }

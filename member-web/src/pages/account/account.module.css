@@ -85,8 +85,8 @@
 @media (min-width: 1024px) {
   .accountGrid {
     display: grid;
-    grid-template-columns: minmax(0, 24rem) minmax(0, 28rem);
-    justify-content: center;
+    grid-template-columns: minmax(0, 20rem) minmax(0, 34rem);
+    justify-content: start;
     gap: var(--space-2xl);
     align-items: start;
   }
