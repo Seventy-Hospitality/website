@@ -64,8 +64,13 @@ export function ClubsPage() {
     [invitations.data, respond, toast],
   );
 
+  // The card grid fills the wide desktop column; the empty state and the
+  // loading skeleton stay in the comfortable reading column so a single CTA
+  // is not stranded across the full width.
+  const wide = clubs.isSuccess && clubs.data.length > 0;
+
   return (
-    <div className={styles.page}>
+    <div className={[styles.page, wide ? styles.pageWide : ''].filter(Boolean).join(' ')}>
       <PageHeader
         title="Your clubs"
         headingRef={pageHeadingRef}

@@ -12,6 +12,21 @@
   padding-bottom: var(--space-xl);
 }
 
+/* Desktop width: account main, preferences and the settings forms keep the
+   comfortable reading column; billing opts into the wide column via
+   .pageWide for its two-column membership | history layout. */
+@media (min-width: 768px) {
+  .page {
+    max-width: var(--content-max);
+    margin-inline: auto;
+    width: 100%;
+  }
+
+  .pageWide {
+    max-width: var(--content-wide);
+  }
+}
+
 .backLink {
   display: inline-flex;
   align-items: center;
@@ -51,6 +66,39 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
+}
+
+/* ── Account main: identity aside + stats/settings content ──
+   A single stacked column up to the lg breakpoint (mobile is untouched);
+   from 1024px the identity sits in a left aside and the stats + settings
+   fill the content column, so the page uses the width instead of a short
+   centered strip. */
+
+.accountGrid,
+.accountAside,
+.accountContent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+@media (min-width: 1024px) {
+  .accountGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 24rem) minmax(0, 28rem);
+    justify-content: center;
+    gap: var(--space-2xl);
+    align-items: start;
+  }
+
+  .accountGrid .accountAside {
+    position: sticky;
+    top: var(--space-xl);
+  }
+
+  .accountGrid .profileHeader {
+    padding-top: 0;
+  }
 }
 
 /* ── Profile header (account main) ── */

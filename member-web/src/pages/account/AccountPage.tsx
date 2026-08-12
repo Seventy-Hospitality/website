@@ -125,9 +125,11 @@ function AccountView({ profile }: { profile: MyProfile }) {
   const name = memberDisplayName(member);
 
   return (
-    <div className={styles.page}>
+    <div className={[styles.page, styles.pageWide].join(' ')}>
       <h1 className="visually-hidden">Account</h1>
 
+      <div className={styles.accountGrid}>
+      <div className={styles.accountAside}>
       <header className={styles.profileHeader}>
         <div className={styles.avatarWrap}>
           <Avatar name={name} src={member.avatarUrl} size="xl" />
@@ -189,7 +191,9 @@ function AccountView({ profile }: { profile: MyProfile }) {
         <StatTile value={formatHours(stats.badmintonHours)} label="Badminton hours" />
         <StatTile value={formatHours(stats.tennisHours)} label="Tennis hours" />
       </section>
+      </div>
 
+      <div className={styles.accountContent}>
       <section className={styles.section} aria-labelledby="account-settings-label">
         <h2 id="account-settings-label" className={styles.sectionLabel}>
           Account settings
@@ -212,6 +216,8 @@ function AccountView({ profile }: { profile: MyProfile }) {
           </button>
         </Card>
       </section>
+      </div>
+      </div>
 
       <MemberQrSheet
         open={qrOpen}

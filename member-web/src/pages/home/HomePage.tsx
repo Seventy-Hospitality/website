@@ -198,6 +198,10 @@ export function HomePage() {
   const isEmpty = feed.amenities !== null;
   const hasUpcoming =
     feed.pendingInvitations.length > 0 || feed.upcomingReservations.length > 0;
+  // On wide screens the feed splits into a main column and a right-hand
+  // Spotlight events rail; with no events there is nothing to rail, so the
+  // feed stays a single column.
+  const hasRail = feed.spotlightEvents.length > 0;
 
   return (
     <div className={styles.page}>
@@ -218,99 +222,105 @@ export function HomePage() {
         }
       />
 
-      {feed.amenities !== null ? (
-        <>
-          <FirstSessionBanner />
-          <HomeSection id="home-reserve-play" title="Reserve play">
-            <ul className={styles.cardStack}>
-              {feed.amenities.map((amenity) => (
-                <li key={amenity.typeCode}>
-                  <AmenityRow amenity={amenity} />
-                </li>
-              ))}
-            </ul>
-          </HomeSection>
-        </>
-      ) : (
-        <>
-          {feed.quickBook && (
-            <HomeSection id="home-quick-book" title="Quick book">
-              <QuickBookCard suggestion={feed.quickBook} />
-            </HomeSection>
+      <div className={hasRail ? styles.feedGrid : styles.feedFlow}>
+        <div className={styles.feedMain}>
+          {feed.amenities !== null ? (
+            <>
+              <FirstSessionBanner />
+              <HomeSection id="home-reserve-play" title="Reserve play">
+                <ul className={styles.cardStack}>
+                  {feed.amenities.map((amenity) => (
+                    <li key={amenity.typeCode}>
+                      <AmenityRow amenity={amenity} />
+                    </li>
+                  ))}
+                </ul>
+              </HomeSection>
+            </>
+          ) : (
+            <>
+              {feed.quickBook && (
+                <HomeSection id="home-quick-book" title="Quick book">
+                  <QuickBookCard suggestion={feed.quickBook} />
+                </HomeSection>
+              )}
+
+              {hasUpcoming ? (
+                <HomeSection
+                  id="home-upcoming"
+                  title="Upcoming reservations"
+                  headingRef={upcomingHeadingRef}
+                >
+                  <ul className={styles.cardStack}>
+                    {feed.pendingInvitations.map((reservation) => (
+                      <li key={reservation.id}>
+                        <InvitationCard
+                          reservation={reservation}
+                          onRespond={respondToInvitation}
+                          pendingResponse={
+                            respond.isPending && respond.variables.reservationId === reservation.id
+                              ? respond.variables.response
+                              : null
+                          }
+                        />
+                      </li>
+                    ))}
+                    {feed.upcomingReservations.map((reservation) => (
+                      <li key={reservation.id}>
+                        <UpcomingCard reservation={reservation} />
+                      </li>
+                    ))}
+                  </ul>
+                </HomeSection>
+              ) : (
+                // Transient client-side gap only: the last invitation was just
+                // declined optimistically and the refetch (which brings the
+                // amenity empty state) has not landed yet.
+                <EmptyState
+                  icon={<CalendarDays aria-hidden />}
+                  title="Nothing coming up"
+                  description="Book a court or amenity to get back on the schedule."
+                  action={<ButtonLink to="/reserve">Reserve play</ButtonLink>}
+                />
+              )}
+            </>
           )}
 
-          {hasUpcoming ? (
-            <HomeSection
-              id="home-upcoming"
-              title="Upcoming reservations"
-              headingRef={upcomingHeadingRef}
-            >
+          {feed.clubInvitations.length > 0 && (
+            <HomeSection id="home-club-invites" title="Club invitations" headingRef={clubsHeadingRef}>
               <ul className={styles.cardStack}>
-                {feed.pendingInvitations.map((reservation) => (
-                  <li key={reservation.id}>
-                    <InvitationCard
-                      reservation={reservation}
-                      onRespond={respondToInvitation}
+                {feed.clubInvitations.map((invitation) => (
+                  <li key={invitation.id}>
+                    <ClubInvitationCard
+                      invitation={invitation}
+                      onRespond={respondToClubInvitation}
                       pendingResponse={
-                        respond.isPending && respond.variables.reservationId === reservation.id
-                          ? respond.variables.response
+                        clubRespond.isPending && clubRespond.variables.invitationId === invitation.id
+                          ? clubRespond.variables.response
                           : null
                       }
                     />
                   </li>
                 ))}
-                {feed.upcomingReservations.map((reservation) => (
-                  <li key={reservation.id}>
-                    <UpcomingCard reservation={reservation} />
-                  </li>
+              </ul>
+            </HomeSection>
+          )}
+        </div>
+
+        {hasRail && (
+          <div className={styles.feedRail}>
+            <HomeSection id="home-events" title="Spotlight events">
+              {/* The list itself is the horizontal scroller; it takes focus so
+                  keyboard users can scroll it with the arrow keys. */}
+              <ul className={styles.eventList} aria-label="Spotlight events" tabIndex={0}>
+                {feed.spotlightEvents.map((event) => (
+                  <EventCard key={event.id} event={event} />
                 ))}
               </ul>
             </HomeSection>
-          ) : (
-            // Transient client-side gap only: the last invitation was just
-            // declined optimistically and the refetch (which brings the
-            // amenity empty state) has not landed yet.
-            <EmptyState
-              icon={<CalendarDays aria-hidden />}
-              title="Nothing coming up"
-              description="Book a court or amenity to get back on the schedule."
-              action={<ButtonLink to="/reserve">Reserve play</ButtonLink>}
-            />
-          )}
-        </>
-      )}
-
-      {feed.clubInvitations.length > 0 && (
-        <HomeSection id="home-club-invites" title="Club invitations" headingRef={clubsHeadingRef}>
-          <ul className={styles.cardStack}>
-            {feed.clubInvitations.map((invitation) => (
-              <li key={invitation.id}>
-                <ClubInvitationCard
-                  invitation={invitation}
-                  onRespond={respondToClubInvitation}
-                  pendingResponse={
-                    clubRespond.isPending && clubRespond.variables.invitationId === invitation.id
-                      ? clubRespond.variables.response
-                      : null
-                  }
-                />
-              </li>
-            ))}
-          </ul>
-        </HomeSection>
-      )}
-
-      {feed.spotlightEvents.length > 0 && (
-        <HomeSection id="home-events" title="Spotlight events">
-          {/* The list itself is the horizontal scroller; it takes focus so
-              keyboard users can scroll it with the arrow keys. */}
-          <ul className={styles.eventList} aria-label="Spotlight events" tabIndex={0}>
-            {feed.spotlightEvents.map((event) => (
-              <EventCard key={event.id} event={event} />
-            ))}
-          </ul>
-        </HomeSection>
-      )}
+          </div>
+        )}
+      </div>
 
       <MemberQrSheet
         open={qrOpen}

@@ -4,6 +4,47 @@
   gap: var(--space-lg);
 }
 
+/* ── Feed layout ──
+   Below the lg breakpoint the feed is a single column (mobile untouched).
+   From 1024px it splits into a main column and a right-hand Spotlight
+   events rail. .feedFlow is the no-events fallback: always a single
+   column so the main feed uses the full width. */
+
+.feedFlow,
+.feedMain,
+.feedRail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  min-width: 0;
+}
+
+.feedGrid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+@media (min-width: 1024px) {
+  .feedGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 20rem;
+    gap: var(--space-xl);
+    align-items: start;
+  }
+
+  .feedRail {
+    position: sticky;
+    top: var(--space-xl);
+  }
+
+  /* In the narrow rail the events stack vertically instead of the 2-up
+     grid the full-width feed uses below 1024. */
+  .feedRail .eventList {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ── Header ── */
 
 .headerSkeleton {

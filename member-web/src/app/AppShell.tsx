@@ -1,6 +1,10 @@
 import type { ReactNode, Ref } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { House, CalendarRange, Users, CircleUserRound } from 'lucide-react';
+import { Avatar, Skeleton } from '../components';
+import { memberDisplayName } from '../lib/invites';
+import { profileQuery } from '../pages/account/account-data';
 import { BrandMark } from './BrandMark';
 import styles from './AppShell.module.css';
 
@@ -37,6 +41,43 @@ function NavItems() {
 }
 
 /**
+ * The signed-in member's footer at the bottom of the desktop rail: an
+ * initials avatar + display name that links to the account page, so the
+ * tall sidebar column reads as finished rather than empty. Reuses the
+ * already-cached `['profile']` query (the account page's source), so it
+ * adds no new network call on the pages that navigate through it.
+ */
+function SidebarMember() {
+  const profile = useQuery(profileQuery);
+
+  if (!profile.data) {
+    return (
+      <div className={styles.memberCard} aria-hidden>
+        <Skeleton width="2.25rem" height="2.25rem" shape="circle" />
+        <Skeleton width="6.5rem" height="0.875rem" />
+      </div>
+    );
+  }
+
+  const { member } = profile.data;
+  const name = memberDisplayName(member);
+
+  return (
+    <NavLink
+      to="/account"
+      className={styles.memberCard}
+      aria-label={`${name}. Open account`}
+    >
+      <Avatar name={name} src={member.avatarUrl} size="md" />
+      <span className={styles.memberText}>
+        <span className={styles.memberName}>{name}</span>
+        <span className={styles.memberLink}>View account</span>
+      </span>
+    </NavLink>
+  );
+}
+
+/**
  * Responsive member shell: a bottom tab bar on mobile (1:1 with the Figma)
  * that becomes a left sidebar from the md breakpoint (768px). Pages render
  * into the centered content column via <Outlet/> and provide their own
@@ -47,9 +88,13 @@ export function AppShell() {
     <div className={styles.shell}>
       <nav className={styles.sidebar} aria-label="Primary">
         <div className={styles.sidebarBrand}>
-          <BrandMark size={40} />
+          <BrandMark size={34} className={styles.brandMark} />
+          <span className={styles.wordmark}>Club70</span>
         </div>
-        <NavItems />
+        <div className={styles.navRail}>
+          <NavItems />
+        </div>
+        <SidebarMember />
       </nav>
 
       <div className={styles.contentArea}>

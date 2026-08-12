@@ -110,8 +110,9 @@
        --breakpoint-md: 768px   shell switches bottom tab bar -> sidebar
        --breakpoint-lg: 1024px  multi-column page layouts
   */
-  --app-frame-max: 1120px; /* sidebar + content frame on desktop */
-  --content-max: 720px; /* default reading column inside the shell */
+  --app-frame-max: 1320px; /* sidebar + content frame on desktop */
+  --content-max: 720px; /* default reading column inside the shell (forms) */
+  --content-wide: 1080px; /* list/grid pages that fill the desktop width */
   --sidebar-width: 240px;
   --bottombar-height: 68px;
   --gutter: var(--space-lg);

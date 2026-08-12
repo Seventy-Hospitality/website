@@ -104,7 +104,7 @@ export function BillingPage() {
 
 function BillingFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className={styles.page}>
+    <div className={[styles.page, styles.pageWide].join(' ')}>
       <Link to="/account" className={styles.backLink}>
         <ChevronLeft aria-hidden />
         Back to account

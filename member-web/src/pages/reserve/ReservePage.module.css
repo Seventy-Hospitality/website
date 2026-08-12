@@ -101,3 +101,68 @@
   font-size: var(--text-sm-size);
   line-height: var(--text-sm-line);
 }
+
+/* ── Desktop: the amenity stack becomes a deliberate card grid that fills
+   the width. Each full-width mobile row reflows into a vertical card
+   (icon, name, availability, then a rate / chevron footer). Mobile keeps
+   the stacked rows byte-for-byte. ── */
+
+@media (min-width: 768px) {
+  .list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-md);
+  }
+
+  .list > li {
+    display: flex;
+  }
+
+  .row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-md);
+    width: 100%;
+    padding: var(--space-lg);
+    border: 1px solid var(--color-border);
+    transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+  }
+
+  .rowInteractive:hover {
+    border-color: var(--color-border-active);
+    transform: translateY(-2px);
+  }
+
+  .rowText {
+    flex: none;
+    gap: var(--space-2xs);
+  }
+
+  .rowTitle {
+    font-size: var(--text-h3-size);
+    line-height: var(--text-h3-line);
+  }
+
+  /* Rate on the left, chevron/lock on the right: a card footer that lines
+     up across every card in the row. */
+  .rowTrailing {
+    width: 100%;
+    margin-top: auto;
+    padding-top: var(--space-sm);
+    justify-content: space-between;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .rowRate {
+    font-size: var(--text-body-size);
+    line-height: var(--text-body-line);
+    color: var(--color-text);
+    font-weight: 600;
+  }
+}
+
+@media (min-width: 1280px) {
+  .list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

@@ -12,6 +12,21 @@
   padding-bottom: var(--space-xl);
 }
 
+/* Desktop width: forms/landings (join, members) keep the comfortable
+   reading column; the club grid and detail opt into the wide column via
+   .pageWide so they fill the desktop content area. */
+@media (min-width: 768px) {
+  .page {
+    max-width: var(--content-max);
+    margin-inline: auto;
+    width: 100%;
+  }
+
+  .pageWide {
+    max-width: var(--content-wide);
+  }
+}
+
 .sublead {
   margin-top: calc(-1 * var(--space-md));
   color: var(--color-text-muted);
