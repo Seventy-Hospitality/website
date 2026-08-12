@@ -1,6 +1,7 @@
 export { Button, ButtonLink, type ButtonProps, type ButtonVariant } from './Button';
 export { FormField, Input, PasswordInput, type FieldControlProps } from './FormField';
 export { Checkbox, type CheckboxProps } from './Checkbox';
+export { Switch, type SwitchProps } from './Switch';
 export { Card } from './Card';
 export { Badge } from './Badge';
 export { Chip } from './Chip';

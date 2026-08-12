@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { api, type MembershipSummary, type Plan, type Principal } from '../../lib/api';
 import { TERMS_VERSION } from '../../lib/onboarding';
 import { SessionProvider } from '../../lib/session';
+import { billingOverview } from '../../test/billing-overview';
 import { CheckoutPage } from './CheckoutPage';
 
 vi.mock('../../lib/api', async (importOriginal) => {
@@ -119,7 +120,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   getMe.mockResolvedValue(PRINCIPAL);
   getPlans.mockResolvedValue([PLAN]);
-  getMyMembership.mockResolvedValue({ membership: INCOMPLETE });
+  getMyMembership.mockResolvedValue(billingOverview(INCOMPLETE));
   subscribeMembership.mockResolvedValue({
     subscriptionId: 'sub1',
     clientSecret: 'cs_retry',
@@ -132,7 +133,7 @@ describe('CheckoutPage redirect return', () => {
   it.each(['failed', 'requires_payment_method'])(
     'returns a %s payment to the form with the failure notice, not the processing hold',
     async (redirectStatus) => {
-      confirmMembership.mockResolvedValue({ activated: false, membership: INCOMPLETE });
+      confirmMembership.mockResolvedValue({ activated: false, paymentStatus: 'processing', membership: INCOMPLETE });
 
       renderCheckout(
         `/onboarding/checkout?plan=monthly&redirect_status=${redirectStatus}&payment_intent=pi_1&payment_intent_client_secret=pi_1_secret`,
@@ -153,7 +154,7 @@ describe('CheckoutPage redirect return', () => {
   );
 
   it('holds a successful redirect that has not activated yet as processing', async () => {
-    confirmMembership.mockResolvedValue({ activated: false, membership: INCOMPLETE });
+    confirmMembership.mockResolvedValue({ activated: false, paymentStatus: 'processing', membership: INCOMPLETE });
 
     renderCheckout(
       '/onboarding/checkout?plan=monthly&redirect_status=succeeded&payment_intent=pi_1&payment_intent_client_secret=pi_1_secret',
@@ -167,7 +168,7 @@ describe('CheckoutPage redirect return', () => {
   });
 
   it('advances to the ID step when the redirect payment activated the membership', async () => {
-    confirmMembership.mockResolvedValue({ activated: true, membership: ACTIVE });
+    confirmMembership.mockResolvedValue({ activated: true, paymentStatus: 'succeeded', membership: ACTIVE });
 
     renderCheckout(
       '/onboarding/checkout?plan=monthly&redirect_status=succeeded&payment_intent=pi_1&payment_intent_client_secret=pi_1_secret',
@@ -178,8 +179,8 @@ describe('CheckoutPage redirect return', () => {
 
   it('lets Check again advance once a held payment clears', async () => {
     confirmMembership
-      .mockResolvedValueOnce({ activated: false, membership: INCOMPLETE })
-      .mockResolvedValue({ activated: true, membership: ACTIVE });
+      .mockResolvedValueOnce({ activated: false, paymentStatus: 'processing', membership: INCOMPLETE })
+      .mockResolvedValue({ activated: true, paymentStatus: 'succeeded', membership: ACTIVE });
 
     renderCheckout(
       '/onboarding/checkout?plan=monthly&redirect_status=processing&payment_intent=pi_1&payment_intent_client_secret=pi_1_secret',
@@ -194,7 +195,7 @@ describe('CheckoutPage redirect return', () => {
 describe('CheckoutPage inline payment', () => {
   it('enters the processing hold when an async charge succeeds but has not cleared', async () => {
     confirmPayment.mockResolvedValue({});
-    confirmMembership.mockResolvedValue({ activated: false, membership: INCOMPLETE });
+    confirmMembership.mockResolvedValue({ activated: false, paymentStatus: 'processing', membership: INCOMPLETE });
 
     renderCheckout('/onboarding/checkout?plan=monthly');
 

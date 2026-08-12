@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
-import { api, ApiError, type MembershipSummary, type Plan } from '../../lib/api';
+import { api, ApiError, type BillingOverview, type MembershipSummary, type Plan } from '../../lib/api';
 import { TERMS_VERSION } from '../../lib/onboarding';
 import { formatAmountWithCents } from '../../lib/plan-pricing';
 import { getStripe } from '../../lib/stripe';
@@ -90,8 +90,19 @@ export function CheckoutPage() {
     mutationFn: api.confirmMembership,
     onSuccess: async (data) => {
       // Write the fresh membership into the cache BEFORE navigating so the
-      // OnboardingGate resolves the new step from current data.
-      queryClient.setQueryData(membershipQuery.queryKey, { membership: data.membership });
+      // OnboardingGate resolves the new step from current data. The key
+      // holds the full billing overview (W6); patch only the membership
+      // and leave the rest stale for the billing page to refetch.
+      queryClient.setQueryData<BillingOverview>(membershipQuery.queryKey, (prev) => ({
+        membership: data.membership,
+        defaultPaymentMethod: prev?.defaultPaymentMethod ?? null,
+        paymentMethods: prev?.paymentMethods ?? [],
+        months: prev?.months ?? [],
+      }));
+      void queryClient.invalidateQueries({
+        queryKey: membershipQuery.queryKey,
+        refetchType: 'none',
+      });
       if (data.activated) {
         await refreshSession();
         navigate('/onboarding/verify-identity', { replace: true });

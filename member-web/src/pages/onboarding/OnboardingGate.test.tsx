@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { api, type IdVerificationView, type MembershipSummary, type Principal } from '../../lib/api';
 import { SessionProvider } from '../../lib/session';
+import { billingOverview } from '../../test/billing-overview';
 import { OnboardingGate } from './OnboardingGate';
 
 vi.mock('../../lib/api', async (importOriginal) => {
@@ -92,7 +93,7 @@ beforeEach(() => {
 
 describe('OnboardingGate resume gating', () => {
   it('pushes a member with no membership from home into plan selection', async () => {
-    getMyMembership.mockResolvedValue({ membership: null });
+    getMyMembership.mockResolvedValue(billingOverview(null));
 
     renderAt('/');
 
@@ -100,7 +101,7 @@ describe('OnboardingGate resume gating', () => {
   });
 
   it('resumes an unpaid purchase at checkout', async () => {
-    getMyMembership.mockResolvedValue({ membership: membership('incomplete') });
+    getMyMembership.mockResolvedValue(billingOverview(membership('incomplete')));
 
     renderAt('/');
 
@@ -108,7 +109,7 @@ describe('OnboardingGate resume gating', () => {
   });
 
   it('sends a paid member with an unanswered ID step to the identity modal', async () => {
-    getMyMembership.mockResolvedValue({ membership: membership('active') });
+    getMyMembership.mockResolvedValue(billingOverview(membership('active')));
 
     renderAt('/');
 
@@ -116,7 +117,7 @@ describe('OnboardingGate resume gating', () => {
   });
 
   it('keeps a paid member out of the purchase steps', async () => {
-    getMyMembership.mockResolvedValue({ membership: membership('active') });
+    getMyMembership.mockResolvedValue(billingOverview(membership('active')));
 
     renderAt('/onboarding/plan');
 
@@ -124,7 +125,7 @@ describe('OnboardingGate resume gating', () => {
   });
 
   it('lets a fully onboarded member (ID skipped) into the app and out of onboarding', async () => {
-    getMyMembership.mockResolvedValue({ membership: membership('active') });
+    getMyMembership.mockResolvedValue(billingOverview(membership('active')));
     getIdVerification.mockResolvedValue(idView({ skippedAt: '2026-08-11T00:00:00.000Z' }));
 
     renderAt('/onboarding/plan');
@@ -133,7 +134,7 @@ describe('OnboardingGate resume gating', () => {
   });
 
   it('does not force a lapsed (canceled) member back into onboarding', async () => {
-    getMyMembership.mockResolvedValue({ membership: membership('canceled') });
+    getMyMembership.mockResolvedValue(billingOverview(membership('canceled')));
     getIdVerification.mockResolvedValue(idView({ status: 'verified' }));
 
     renderAt('/');

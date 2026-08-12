@@ -513,6 +513,169 @@ export interface MemberQrToken {
   ttlSeconds: number;
 }
 
+// ── Account types (W6: profile, preferences, billing, deletion) ──
+
+/** Lifetime confirmed-courts activity stats (GET /api/me/profile). */
+export interface LifetimeStats {
+  courtsBooked: number;
+  /** Decimal hours (30-minute slots give .5 granularity). */
+  badmintonHours: number;
+  tennisHours: number;
+}
+
+/**
+ * GET /api/me/profile. `member` is the same serializeMember shape the home
+ * feed carries (HomeMember); `plans` is the raw catalog the route bundles
+ * (unused by the account screens, typed for completeness).
+ */
+export interface MyProfile {
+  member: HomeMember;
+  plans: Plan[];
+  stats: LifetimeStats;
+}
+
+/** GET/PUT /api/me/preferences. Absent row = all true server-side. */
+export interface NotificationPreferences {
+  pushNotifications: boolean;
+  emailNotifications: boolean;
+  bookingReminders: boolean;
+}
+
+/** A stored card as serialized by GET /api/me/billing. */
+export interface PaymentMethodSummary {
+  /** The Stripe payment-method id (pm_...). */
+  id: string;
+  brand: string;
+  last4: string;
+  expMonth: number;
+  expYear: number;
+  isDefault: boolean;
+}
+
+/** One venue-local month bucket of the billing ledger, newest first. */
+export interface BillingMonth {
+  /** "YYYY-MM" in the venue timezone. */
+  month: string;
+  debitCents: number;
+  creditCents: number;
+  /** debits minus credits; positive means the member paid on net. */
+  netCents: number;
+  count: number;
+}
+
+/**
+ * GET /api/me/billing: the full billing screen read (W6). W1 reads only
+ * `membership` from the same endpoint via getMyMembership.
+ */
+export interface BillingOverview {
+  membership: MembershipSummary | null;
+  defaultPaymentMethod: PaymentMethodSummary | null;
+  paymentMethods: PaymentMethodSummary[];
+  months: BillingMonth[];
+}
+
+export type TransactionKind =
+  | 'membership_fee'
+  | 'booking_fee'
+  | 'booking_refund'
+  | 'membership_refund'
+  | 'adjustment';
+export type TransactionStatus = 'pending' | 'succeeded' | 'failed' | 'canceled';
+
+/** One ledger row (GET /api/me/billing/transactions?month=YYYY-MM). */
+export interface BillingTransaction {
+  id: string;
+  kind: TransactionKind;
+  /** debit = the member paid; credit = money back (refund). */
+  direction: 'debit' | 'credit';
+  /** Always positive; direction carries the sign. */
+  amountCents: number;
+  taxCents: number;
+  currency: string;
+  status: TransactionStatus;
+  occurredAt: string;
+  description: string;
+  receiptUrl: string | null;
+  reservationId: string | null;
+}
+
+/** POST /api/me/payment-methods/setup-intent ("edit payment method"). */
+export interface SetupIntentResult {
+  clientSecret: string;
+  customerId: string;
+  /** Minted for the mobile PaymentSheet; unused on web. */
+  ephemeralKeySecret: string;
+}
+
+/**
+ * Latest-invoice collection state on POST /api/me/membership/confirm:
+ * tells an async charge still clearing (processing) from a failed one
+ * (requires_payment_method) while the membership status still reads
+ * incomplete.
+ */
+export type MembershipPaymentStatus =
+  | 'succeeded'
+  | 'processing'
+  | 'requires_action'
+  | 'requires_payment_method'
+  | 'canceled'
+  | 'unknown';
+
+/**
+ * POST /api/me/membership/change. Upgrades (tier up, monthly -> annual,
+ * price up) apply immediately with prorations; `clientSecret` is non-null
+ * when the proration invoice needs payment/SCA (confirm it, then read back
+ * with confirmMembership). Downgrades schedule at period end, no refund.
+ */
+export interface ChangeMembershipResult {
+  kind: 'upgraded' | 'downgrade_scheduled';
+  clientSecret: string | null;
+  pendingPlanEffectiveAt: string | null;
+  membership: MembershipSummary | null;
+}
+
+/** DELETE /api/me/membership (default at period end; ?now=true immediate). */
+export interface CancelMembershipResult {
+  canceledImmediately: boolean;
+  effectiveAt: string;
+  membership: MembershipSummary | null;
+}
+
+/** GET /api/me/auth-identities: how this account can prove itself. */
+export interface AuthIdentities {
+  hasPassword: boolean;
+  identities: {
+    provider: 'google' | 'apple';
+    email: string | null;
+    isPrivateRelay: boolean;
+    linkedAt: string;
+    lastUsedAt: string | null;
+  }[];
+}
+
+/** Step-up methods DELETE /api/me accepts (403 STEP_UP_REQUIRED lists them). */
+export type StepUpMethod = 'password' | 'oauth' | 'reauth_email';
+
+/**
+ * Exactly one step-up proof for DELETE /api/me: the current password, a
+ * fresh OAuth assertion, or the emailed re-auth code from
+ * POST /api/me/reauth-email.
+ */
+export type DeleteAccountProof =
+  | { password: string }
+  | { provider: 'google' | 'apple'; idToken: string; nonce: string }
+  | { reauthToken: string };
+
+/**
+ * 202 from DELETE /api/me. The deletion saga is resumable server-side;
+ * whatever the status, the client signs out locally. Blocked deletions
+ * (open dispute, refund in flight) answer 409 DELETION_BLOCKED with
+ * `details.reasons` instead.
+ */
+export interface DeleteAccountResult {
+  status: 'completed' | 'in_progress' | 'failed';
+}
+
 function normalizeJsonResponse(text: string) {
   if (!text) {
     return {};
@@ -669,11 +832,12 @@ export const api = {
   // ── Plans & membership ──
   getPlans: () => request<Plan[]>('/api/plans'),
   /**
-   * The member's current membership. Reads GET /api/me/billing (the one
-   * membership read endpoint); W6 widens the typing for the full billing
-   * screen (payment methods, ledger months) when it builds that page.
+   * The member's current membership AND the rest of the billing screen
+   * (default payment method, ledger months). One endpoint, one query key
+   * (['membership']): W1 reads `membership` for onboarding gating, W6
+   * reads the full overview for the billing page.
    */
-  getMyMembership: () => request<{ membership: MembershipSummary | null }>('/api/me/billing'),
+  getMyMembership: () => request<BillingOverview>('/api/me/billing'),
   /**
    * Subscription-first purchase: creates (or re-fetches, on retry of the
    * same plan) an incomplete Stripe subscription and returns the client
@@ -687,10 +851,11 @@ export const api = {
     }),
   /** Synchronous read-back after payment; never waits on a webhook. */
   confirmMembership: () =>
-    request<{ activated: boolean; membership: MembershipSummary | null }>(
-      '/api/me/membership/confirm',
-      { method: 'POST', body: '{}' },
-    ),
+    request<{
+      activated: boolean;
+      paymentStatus: MembershipPaymentStatus;
+      membership: MembershipSummary | null;
+    }>('/api/me/membership/confirm', { method: 'POST', body: '{}' }),
 
   // ── Identity verification (private upload: authenticated endpoint, never /uploads) ──
   getIdVerification: () => request<IdVerificationView>('/api/me/id-verification'),
@@ -923,4 +1088,82 @@ export const api = {
     request<HomeFeed>(`/api/me/home${tz ? `?${new URLSearchParams({ tz })}` : ''}`),
   /** Short-lived member-card QR token (see MemberQrToken). */
   getMemberQr: () => request<MemberQrToken>('/api/me/qr'),
+
+  // ── Account: profile & avatar (W6) ──
+  getMyProfile: () => request<MyProfile>('/api/me/profile'),
+  /** Edits only the display name; null (or blank, normalized server-side)
+      clears it back to the "First Last" fallback. */
+  updateMyProfile: (input: { displayName: string | null }) =>
+    request<{ member: HomeMember }>('/api/me/profile', {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+  /** Replaces the avatar (multipart; normalized to a 512px square webp). */
+  uploadAvatar: (image: File) => {
+    const body = new FormData();
+    body.append('image', image);
+    return request<{ avatarUrl: string }>('/api/me/avatar', { method: 'POST', body });
+  },
+
+  // ── Account: notification preferences (W6) ──
+  getPreferences: () => request<NotificationPreferences>('/api/me/preferences'),
+  /** Partial update: send ONLY the toggled key, so a stale client saving
+      one switch can never clobber the others. Returns the full row. */
+  updatePreferences: (changes: Partial<NotificationPreferences>) =>
+    request<NotificationPreferences>('/api/me/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(changes),
+    }),
+
+  // ── Billing (W6; the overview itself is getMyMembership above) ──
+  /** One venue-local month of ledger rows, loaded on expand. */
+  getBillingTransactions: (month: string) =>
+    request<{ month: string; transactions: BillingTransaction[] }>(
+      `/api/me/billing/transactions?${new URLSearchParams({ month })}`,
+    ),
+  /** "Edit payment method": a setup-mode client secret for the Payment Element. */
+  createPaymentMethodSetupIntent: () =>
+    request<SetupIntentResult>('/api/me/payment-methods/setup-intent', {
+      method: 'POST',
+      body: '{}',
+    }),
+  /** Default on BOTH the Stripe customer and the live subscription; a pm_
+      id not owned by the caller's own customer 404s. */
+  setDefaultPaymentMethod: (paymentMethodId: string) =>
+    request<{ default: string }>(
+      `/api/me/payment-methods/${encodeURIComponent(paymentMethodId)}/default`,
+      { method: 'POST', body: '{}' },
+    ),
+
+  // ── Membership change & cancel (W6) ──
+  changeMembership: (planId: string) =>
+    request<ChangeMembershipResult>('/api/me/membership/change', {
+      method: 'POST',
+      body: JSON.stringify({ planId }),
+    }),
+  /** Default cancels at period end; `now` cancels immediately, no refund. */
+  cancelMembership: (options: { now?: boolean } = {}) =>
+    request<CancelMembershipResult>(
+      `/api/me/membership${options.now ? '?now=true' : ''}`,
+      { method: 'DELETE' },
+    ),
+
+  // ── Account deletion (W6; step-up gated per the backend contract) ──
+  /** Which step-up proofs this account can produce (password vs code). */
+  getAuthIdentities: () => request<AuthIdentities>('/api/me/auth-identities'),
+  /** Emails a single-use re-auth code (10 min TTL, session-bound);
+      rate-limited to 3 per 15 minutes. */
+  requestReauthEmail: () =>
+    request<{ sent: true }>('/api/me/reauth-email', { method: 'POST', body: '{}' }),
+  /**
+   * Starts (or resumes) the deletion saga. Requires exactly one step-up
+   * proof; failures surface as ApiError codes STEP_UP_FAILED (bad proof),
+   * DELETION_BLOCKED (409, details.reasons), or STEP_UP_REQUIRED
+   * (details.acceptableMethods). Rate-limited to 5 per 15 minutes.
+   */
+  deleteAccount: (proof: DeleteAccountProof) =>
+    request<DeleteAccountResult>('/api/me', {
+      method: 'DELETE',
+      body: JSON.stringify(proof),
+    }),
 };

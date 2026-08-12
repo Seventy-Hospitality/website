@@ -13,6 +13,7 @@ import {
 import { addDaysToDateKey, formatDateLong, todayDateKey } from '../../lib/booking';
 import { ToastProvider } from '../../components';
 import { EditReservationPage } from './EditReservationPage';
+import { billingOverview } from '../../test/billing-overview';
 
 /**
  * The 2-step reschedule wizard: current-slot pre-selection with the dirty
@@ -195,8 +196,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   getReservation.mockResolvedValue(DETAIL);
   getResourceTypes.mockResolvedValue([TYPE]);
-  getMyMembership.mockResolvedValue({
-    membership: {
+  getMyMembership.mockResolvedValue(billingOverview({
       id: 'sub1',
       status: 'active',
       currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000).toISOString(),
@@ -204,8 +204,7 @@ beforeEach(() => {
       plan: null,
       pendingPlan: null,
       pendingPlanEffectiveAt: null,
-    },
-  });
+  }));
   // Only 21:00 is free on the grid; the reservation's own 21:30/22:00 are
   // merged in as available-to-itself.
   getAvailability.mockResolvedValue([

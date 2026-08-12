@@ -14,6 +14,7 @@ import {
 import { todayDateKey } from '../../lib/booking';
 import { ToastProvider } from '../../components';
 import { BookingWizardPage } from './BookingWizardPage';
+import { billingOverview } from '../../test/billing-overview';
 
 /**
  * Wizard-level regression tests for the checkout hold lifecycle: the
@@ -175,8 +176,7 @@ async function goToCheckout() {
 beforeEach(() => {
   vi.clearAllMocks();
   getResourceTypes.mockResolvedValue([TYPE]);
-  getMyMembership.mockResolvedValue({
-    membership: {
+  getMyMembership.mockResolvedValue(billingOverview({
       id: 'sub1',
       status: 'active',
       currentPeriodEnd: new Date(Date.now() + 30 * 86_400_000).toISOString(),
@@ -184,8 +184,7 @@ beforeEach(() => {
       plan: null,
       pendingPlan: null,
       pendingPlanEffectiveAt: null,
-    },
-  });
+  }));
   getAvailability.mockResolvedValue([
     { date: todayDateKey(), slots: [{ start: '21:30', startsAt: new Date().toISOString() }] },
   ]);

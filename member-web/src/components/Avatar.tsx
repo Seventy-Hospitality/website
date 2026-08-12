@@ -5,7 +5,8 @@ export interface AvatarProps {
   /** Full name; used for the alt text and the initials fallback. */
   name: string;
   src?: string | null;
-  size?: 'sm' | 'md' | 'lg';
+  /** xl is the account profile header (Figma 168:15494). */
+  size?: 'sm' | 'md' | 'lg' | 'xl';
 }
 
 function initialsOf(name: string): string {
